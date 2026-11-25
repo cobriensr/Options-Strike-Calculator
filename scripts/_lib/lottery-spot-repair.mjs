@@ -37,17 +37,24 @@
  * only a tagged template is lazy on both neon and the pglite test client.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { PERISCOPE_LOTTERY_THRESHOLDS } from '../../api/_lib/periscope-lottery-types.ts';
 import {
+  EXIT_FAILED,
+  EXIT_OK,
   WRITE_BATCH,
   chunk,
   marketHoursRefusal,
   retryTransientDb,
 } from './backfill-cli.mjs';
-import { REPAIR_LISTS, stampOf } from './index-candle-repair.mjs';
+import {
+  REPAIR_LISTS,
+  parseBackupText,
+  stampOf,
+  writeBackup,
+} from './index-candle-repair.mjs';
 
 // ── The scope ──────────────────────────────────────────────
 
@@ -66,6 +73,14 @@ export const LOTTERY_SPOT_SCOPE = Object.freeze({
 });
 
 const { CALL, PUT } = PERISCOPE_LOTTERY_THRESHOLDS;
+
+/**
+ * A bar older than this at the fire is reported (`stale_bar`). On a repaired
+ * day the latest bar is under a minute old at a fire, and 5 minutes leaves
+ * room for a missing minute or two. Hours old means that day's candles were
+ * not repaired, or have a hole there.
+ */
+const STALE_BAR_MINUTES = 5;
 
 /**
  * Whether the finder would still keep a fire: a call needs `strike > spot`
@@ -92,6 +107,11 @@ function stillPasses(fireType, dist) {
  *             same-session bar, oldest first (`id` is text, `fire_time` an ISO
  *             string, the spots and distances numbers of at most 4 decimals)
  *   `no_bar`  { id, fire_time } for each fire that has none
+ *   `stale_bar`  { id, fire_time, bar_time } for each fire in `fires` whose bar
+ *             is more than STALE_BAR_MINUTES before it (exactly that is not).
+ *             The fire is still planned: this is a report. It is what an
+ *             unrepaired day looks like, when the nearest same-day bar is hours
+ *             old.
  * The new spot is rounded to the column's 4 decimals in SQL and the distance
  * is exact numeric arithmetic on that, so what is planned is what is stored.
  * The fire's ET date is taken with AT TIME ZONE on the timestamptz, which does
@@ -107,6 +127,7 @@ export async function planLotterySpots(sql) {
              f.event_strike AS event_strike,
              f.spot_at_event::text AS old_spot,
              f.strike_dist::text AS old_dist,
+             bar.bar_time AS bar_time,
              round(bar.close, 4)::text AS new_spot,
              (CASE f.fire_type
                 WHEN 'call_lottery' THEN f.event_strike - round(bar.close, 4)
@@ -114,7 +135,7 @@ export async function planLotterySpots(sql) {
               END)::text AS new_dist
       FROM periscope_lottery_fires f
       LEFT JOIN LATERAL (
-        SELECT c.close
+        SELECT c.close, c.timestamp AS bar_time
         FROM index_candles_1m c
         WHERE c.symbol = 'SPX'
           AND c.date = (f.fire_time AT TIME ZONE 'America/New_York')::date
@@ -132,11 +153,19 @@ export async function planLotterySpots(sql) {
 
   const fires = [];
   const noBar = [];
+  const staleBar = [];
   for (const row of rows) {
     const fireTime = new Date(row.fire_time).toISOString();
     if (row.new_spot == null) {
       noBar.push({ id: row.id, fire_time: fireTime });
       continue;
+    }
+    const barTime = new Date(row.bar_time).toISOString();
+    if (
+      Date.parse(fireTime) - Date.parse(barTime) >
+      STALE_BAR_MINUTES * 60_000
+    ) {
+      staleBar.push({ id: row.id, fire_time: fireTime, bar_time: barTime });
     }
     const eventStrike = Number(row.event_strike);
     const spot = Number(row.new_spot);
@@ -153,7 +182,7 @@ export async function planLotterySpots(sql) {
       still_passes: stillPasses(row.fire_type, dist),
     });
   }
-  return { fires, no_bar: noBar };
+  return { fires, no_bar: noBar, stale_bar: staleBar };
 }
 
 /** A fire whose stored spot or distance differs from the planned one. */
@@ -165,8 +194,8 @@ function isChanged(fire) {
  * What a plan says: `in_scope` fires (with or without a bar), how many
  * `updated` (those that change; an apply of a repaired table finds 0),
  * `no_longer_pass` (of those with a bar, whether or not they change: it is a
- * fact of the fire, so a second run reports the same number) and the
- * `no_bar` fires.
+ * fact of the fire, so a second run reports the same number), the `no_bar`
+ * fires and the `stale_bar` ones.
  */
 function countPlan(plan) {
   return {
@@ -174,6 +203,7 @@ function countPlan(plan) {
     updated: plan.fires.filter(isChanged).length,
     no_longer_pass: plan.fires.filter((f) => !f.still_passes).length,
     no_bar: plan.no_bar,
+    stale_bar: plan.stale_bar,
   };
 }
 
@@ -190,8 +220,45 @@ function readStored(sql, ids) {
   );
 }
 
-/** One unnest UPDATE of up to WRITE_BATCH fires: `rows` are { id, spot, dist }. */
-function updateStatement(sql, rows) {
+/**
+ * The apply's UPDATE of up to WRITE_BATCH fires, fenced: `rows` are { id, spot,
+ * dist, oldSpot, oldDist }, and a fire changes only while it still holds the
+ * old values the plan read (R6: a conditional UPDATE, not a lock). The same
+ * statement counts what it changed and fails when that is not every fire in it.
+ * A statement cannot raise a custom error and sql.transaction cannot branch on
+ * a result, so the failing branch casts its own message to int: the cast
+ * fails, the statement fails, and with it the whole transaction, every batch.
+ * Resolves to one row, { updated }.
+ */
+function fencedUpdateStatement(sql, rows) {
+  return sql`
+    WITH changed AS (
+      UPDATE periscope_lottery_fires AS f
+      SET spot_at_event = t.spot_at_event, strike_dist = t.strike_dist
+      FROM unnest(
+        ${rows.map((r) => r.id)}::bigint[],
+        ${rows.map((r) => r.spot)}::numeric[],
+        ${rows.map((r) => r.dist)}::numeric[],
+        ${rows.map((r) => r.oldSpot)}::numeric[],
+        ${rows.map((r) => r.oldDist)}::numeric[]
+      ) AS t(id, spot_at_event, strike_dist, old_spot, old_dist)
+      WHERE f.id = t.id
+        AND f.spot_at_event = t.old_spot
+        AND f.strike_dist = t.old_dist
+      RETURNING f.id
+    )
+    SELECT CASE
+             WHEN count(*) = ${rows.length}::int THEN count(*)::int
+             ELSE format(
+               'the fenced update changed %s of %s fires in its batch: a spot ' ||
+               'or distance moved after the plan was read',
+               count(*), ${rows.length}::int)::int
+           END AS updated
+    FROM changed`;
+}
+
+/** The undo's UPDATE of up to WRITE_BATCH fires, unfenced: `rows` are { id, spot, dist }. */
+function restoreStatement(sql, rows) {
   return sql`
     UPDATE periscope_lottery_fires AS f
     SET spot_at_event = t.spot_at_event, strike_dist = t.strike_dist
@@ -202,10 +269,6 @@ function updateStatement(sql, rows) {
     ) AS t(id, spot_at_event, strike_dist)
     WHERE f.id = t.id
     RETURNING f.id`;
-}
-
-function updatedCount(results) {
-  return results.reduce((n, result) => n + result.length, 0);
 }
 
 // ── Backup files ───────────────────────────────────────────
@@ -228,41 +291,11 @@ function isBackupRow(row) {
   );
 }
 
-/** A backup's JSONL text as rows; throws on a line that is not a backup row. */
-function parseBackupText(text, file) {
-  const rows = [];
-  for (const [i, line] of text.split('\n').entries()) {
-    if (line === '') continue;
-    let row;
-    try {
-      row = JSON.parse(line);
-    } catch (err) {
-      throw new Error(`backup ${file} line ${i + 1} is malformed JSON`, {
-        cause: err,
-      });
-    }
-    if (!isBackupRow(row)) {
-      throw new Error(`backup ${file} line ${i + 1} is malformed`);
-    }
-    rows.push(backupRowOf(row));
-  }
-  return rows;
-}
-
 /**
- * Write `rows` as JSONL to `file` ('wx': an existing file is an error, never
- * overwritten), then read it back. A backup that cannot be read back is no
- * backup, so the run stops before anything is updated.
+ * What this repair's backup rows look like. The JSONL writer, with its read-back
+ * check, and the parser are index-candle-repair.mjs's: they take this shape.
  */
-async function writeBackup(backupDir, file, rows) {
-  await mkdir(backupDir, { recursive: true });
-  const text = rows.map((r) => `${JSON.stringify(r)}\n`).join('');
-  await writeFile(file, text, { encoding: 'utf8', flag: 'wx' });
-  const back = parseBackupText(await readFile(file, 'utf8'), file);
-  if (JSON.stringify(back) !== JSON.stringify(rows)) {
-    throw new Error(`backup ${file} does not read back as written`);
-  }
-}
+const LOTTERY_BACKUP_ROWS = { isRow: isBackupRow, project: backupRowOf };
 
 function isIdList(value) {
   return (
@@ -323,6 +356,10 @@ export async function manifestKind(manifestFile) {
  * The backup is read from the table now, not taken from the plan, and the
  * run refuses a plan whose fires have changed or vanished since it was read
  * (`stale plan`): the backup must hold exactly what the UPDATE overwrites.
+ * What could still move between that check and the transaction is fenced out:
+ * each UPDATE changes a fire only while it holds the values the plan read, and
+ * counts what it changed (fencedUpdateStatement), so a fire that moved in that
+ * window fails the whole transaction and the error names the shortfall.
  *
  * Failure ordering, so that nothing is lost:
  *   - the backup is written and read back before the manifest, and the
@@ -334,8 +371,9 @@ export async function manifestKind(manifestFile) {
  *   - after the commit the manifest is rewritten `committed: true`; if that
  *     write fails the error says so, and the leftover manifest still undoes
  *     the run (an undo does not read `committed`).
- * The transaction is not retried: it is idempotent, but a retry after a lost
- * response would report 0 updated for a run that wrote.
+ * The transaction is not retried: after a lost response a retry would find
+ * the first attempt's values in place, fail the fence and report a shortfall
+ * for a run that wrote.
  */
 export async function applyLotterySpots(sql, plan, { backupDir }) {
   const counts = countPlan(plan);
@@ -371,7 +409,7 @@ export async function applyLotterySpots(sql, plan, { backupDir }) {
   const backupFile = `${base}.jsonl`;
   const manifestFile = `${base}.manifest.json`;
   const backedUp = changed.map((f) => backupRowOf(stored.get(f.id)));
-  await writeBackup(backupDir, backupFile, backedUp);
+  await writeBackup(backupDir, backupFile, backedUp, LOTTERY_BACKUP_ROWS);
   const manifest = {
     version: MANIFEST_VERSION,
     kind: LOTTERY_KIND,
@@ -379,6 +417,7 @@ export async function applyLotterySpots(sql, plan, { backupDir }) {
     backedUpIds: backedUp.map((r) => r.id),
     noLongerPass: counts.no_longer_pass,
     noBar: plan.no_bar.map((f) => f.id),
+    staleBar: plan.stale_bar.map((f) => f.id),
     updated: null,
     committed: false,
   };
@@ -388,9 +427,15 @@ export async function applyLotterySpots(sql, plan, { backupDir }) {
   });
 
   const statements = chunk(changed, WRITE_BATCH).map((part) =>
-    updateStatement(
+    fencedUpdateStatement(
       sql,
-      part.map((f) => ({ id: f.id, spot: f.new_spot, dist: f.new_dist })),
+      part.map((f) => ({
+        id: f.id,
+        spot: f.new_spot,
+        dist: f.new_dist,
+        oldSpot: f.old_spot,
+        oldDist: f.old_dist,
+      })),
     ),
   );
   let results;
@@ -404,7 +449,7 @@ export async function applyLotterySpots(sql, plan, { backupDir }) {
       { cause: err },
     );
   }
-  const updated = updatedCount(results);
+  const updated = results.reduce((n, rows) => n + rows[0].updated, 0);
 
   try {
     await writeFile(
@@ -444,6 +489,7 @@ async function loadUndo(manifestFile) {
   const rows = parseBackupText(
     await readFile(manifest.backup, 'utf8'),
     manifest.backup,
+    LOTTERY_BACKUP_ROWS,
   );
   const matches =
     rows.length === manifest.backedUpIds.length &&
@@ -468,7 +514,7 @@ export async function undoLotterySpots(sql, manifestFile) {
   const { rows } = await loadUndo(manifestFile);
   if (rows.length === 0) return { restored: 0 };
   const statements = chunk(rows, WRITE_BATCH).map((part) =>
-    updateStatement(
+    restoreStatement(
       sql,
       part.map((r) => ({
         id: r.id,
@@ -477,7 +523,10 @@ export async function undoLotterySpots(sql, manifestFile) {
       })),
     ),
   );
-  return { restored: updatedCount(await sql.transaction(statements)) };
+  const results = await sql.transaction(statements);
+  return {
+    restored: results.reduce((n, rows) => n + rows.length, 0),
+  };
 }
 
 /** The lines of what undoLotterySpots(manifest) would do, read from the files only. */
@@ -501,16 +550,34 @@ export function lotterySpotsGuardRefusal() {
   return marketHoursRefusal({ allowMarketHours: false, offerFlag: false });
 }
 
-/** The lines that report a repairLotterySpots result, each no_bar fire by id and fire_time. */
+/**
+ * The lines that report a repairLotterySpots result: each no_bar fire by id and
+ * fire_time, each stale_bar fire by id, fire_time and bar time.
+ */
 export function lotterySpotLines(result, { apply }) {
   const { in_scope: inScope, updated, no_longer_pass: noLongerPass } = result;
-  const noBar = result.no_bar;
+  const { no_bar: noBar, stale_bar: staleBar } = result;
   return [
     `  in scope: ${inScope} ${inScope === 1 ? 'fire' : 'fires'}`,
     `  ${apply ? 'updated' : 'would update'}: ${updated}`,
     `  no longer pass their filter (kept, not deleted): ${noLongerPass}`,
     `  no same-day SPX bar (left unchanged): ${noBar.length}`,
     ...noBar.map((f) => `    id ${f.id}  ${f.fire_time}`),
+    `  bar more than ${STALE_BAR_MINUTES} minutes before the fire ` +
+      `(updated all the same): ${staleBar.length}`,
+    ...staleBar.map(
+      (f) => `    id ${f.id}  fire ${f.fire_time}  bar ${f.bar_time}`,
+    ),
     ...(result.manifest == null ? [] : [`  manifest: ${result.manifest}`]),
   ];
+}
+
+/**
+ * The CLI's exit code for a repairLotterySpots result: 1 when any fire has no
+ * same-day bar (it keeps its stale spot, so the run is not done, as a skipped
+ * date is not done in the candle repair), dry run or apply alike, else 0. A
+ * stale bar is reported, not failed.
+ */
+export function lotterySpotsExitCode(result) {
+  return result.no_bar.length > 0 ? EXIT_FAILED : EXIT_OK;
 }

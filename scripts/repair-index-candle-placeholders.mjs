@@ -47,12 +47,17 @@
  * `spot_at_event` and `strike_dist` of the gap days' periscope_lottery_fires
  * from those candles (scripts/_lib/lottery-spot-repair.mjs has the rules).
  * Dry run unless --apply: it prints how many fires would change, how many no
- * longer pass their own filter (they are kept, not deleted) and each fire with
- * no same-day SPX bar (left unchanged). With --apply the old values go to a
- * JSONL backup and a manifest beside it first, then one transaction updates
- * the two columns and nothing else. It needs only DATABASE_URL (no UW key, no
- * Schwab call) and keeps only the 08:15-15:30 CT guard, so run it after 15:00
- * CT, once the candle repair is done.
+ * longer pass their own filter (they are kept, not deleted), each fire with no
+ * same-day SPX bar (left unchanged) and each fire whose bar is more than 5
+ * minutes older than the fire (updated all the same: it means that day's
+ * candles are not repaired). With --apply the old values go to a JSONL backup
+ * and a manifest beside it first, then one transaction updates the two columns
+ * and nothing else, each fire only while it still holds the values the plan
+ * read. It needs only DATABASE_URL (no UW key, no Schwab call) and keeps only
+ * the 08:15-15:30 CT guard, which refuses until 15:30 CT, so run it after
+ * 15:30 CT, once the candle repair is done (spec decision 5's "after 15:00 CT"
+ * is the looser bound). Exit 1 when any fire has no same-day bar, dry run or
+ * apply: those fires keep their stale spot.
  *
  * Schwab: the token record is read from the PRODUCTION Upstash Redis and, when
  * it has run out, refreshed in place with a compare-and-set, so the repair
@@ -123,6 +128,7 @@ import {
 import {
   describeUndoLotterySpots,
   lotterySpotLines,
+  lotterySpotsExitCode,
   lotterySpotsGuardRefusal,
   manifestKind,
   repairLotterySpots,
@@ -278,7 +284,7 @@ async function runRepair() {
 /**
  * The gap days' lottery fire spots: report the plan, and with --apply write
  * it. Only the market-hours guard applies (no Schwab call is made). Returns
- * the exit code.
+ * the exit code: 1 when any fire has no same-day bar (lotterySpotsExitCode).
  */
 async function runLotterySpots() {
   const { apply } = plan;
@@ -308,7 +314,14 @@ async function runLotterySpots() {
   if (!apply) {
     say('(dry run: nothing written. Re-run with --apply to update.)');
   }
-  return EXIT_OK;
+  const exitCode = lotterySpotsExitCode(result);
+  if (exitCode !== EXIT_OK) {
+    say(
+      '(exit 1: the fires with no same-day SPX bar keep their stale spot; ' +
+        'repair the candles of those days, then run this again)',
+    );
+  }
+  return exitCode;
 }
 
 const RUNNERS = {

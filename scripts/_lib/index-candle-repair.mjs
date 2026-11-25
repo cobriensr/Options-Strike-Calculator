@@ -355,8 +355,16 @@ function isBackupRow(row) {
   );
 }
 
-/** A backup's JSONL text as rows; throws on a line that is not a backup row. */
-function parseBackupText(text, file) {
+/** What this repair's backup rows look like, for parseBackupText and writeBackup. */
+const CANDLE_BACKUP_ROWS = { isRow: isBackupRow, project: backupRowOf };
+
+/**
+ * A backup's JSONL text as rows; throws on a line that is not a backup row.
+ * `shape` says what a row is: `isRow(value)` is whether a parsed line is one,
+ * `project(value)` the row cut down to its columns, in their fixed order. Both
+ * repairs' backups go through here (the lottery-spot repair passes its own).
+ */
+export function parseBackupText(text, file, { isRow, project }) {
   const rows = [];
   for (const [i, line] of text.split('\n').entries()) {
     if (line === '') continue;
@@ -368,24 +376,25 @@ function parseBackupText(text, file) {
         cause: err,
       });
     }
-    if (!isBackupRow(row)) {
+    if (!isRow(row)) {
       throw new Error(`backup ${file} line ${i + 1} is malformed`);
     }
-    rows.push(backupRowOf(row));
+    rows.push(project(row));
   }
   return rows;
 }
 
 /**
  * Write `rows` as JSONL to `file` ('wx': an existing file is an error, never
- * overwritten), then read it back. A backup that cannot be read back is no
- * backup, so the run stops before anything is deleted.
+ * overwritten), then read it back with `shape` (see parseBackupText). A backup
+ * that cannot be read back is no backup, so the run stops before anything is
+ * changed. Shared with the lottery-spot repair.
  */
-async function writeBackup(backupDir, file, rows) {
+export async function writeBackup(backupDir, file, rows, shape) {
   await mkdir(backupDir, { recursive: true });
   const text = rows.map((r) => `${JSON.stringify(r)}\n`).join('');
   await writeFile(file, text, { encoding: 'utf8', flag: 'wx' });
-  const back = parseBackupText(await readFile(file, 'utf8'), file);
+  const back = parseBackupText(await readFile(file, 'utf8'), file, shape);
   if (JSON.stringify(back) !== JSON.stringify(rows)) {
     throw new Error(`backup ${file} does not read back as written`);
   }
@@ -663,7 +672,7 @@ export async function repairDay(
   const backupFile = `${base}.jsonl`;
   const manifestFile = `${base}.manifest.json`;
   const backedUp = selected.map(backupRowOf);
-  await writeBackup(backupDir, backupFile, backedUp);
+  await writeBackup(backupDir, backupFile, backedUp, CANDLE_BACKUP_ROWS);
   const manifest = {
     version: MANIFEST_VERSION,
     symbol,
@@ -742,6 +751,7 @@ async function loadUndo(manifestFile) {
   const rows = parseBackupText(
     await readFile(manifest.backup, 'utf8'),
     manifest.backup,
+    CANDLE_BACKUP_ROWS,
   );
   const matches =
     rows.length === manifest.backedUpIds.length &&

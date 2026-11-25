@@ -42,9 +42,10 @@ import {
   applyMigration,
   neonOverPglite,
 } from '../../api/__tests__/pglite-migrations';
-import { marketHoursRefusal } from './backfill-cli.mjs';
+import { EXIT_FAILED, EXIT_OK, marketHoursRefusal } from './backfill-cli.mjs';
 import {
   REPAIR_LISTS,
+  parseBackupText,
   parseRepairArgs,
   undoRepair,
 } from './index-candle-repair.mjs';
@@ -104,6 +105,7 @@ import {
   applyLotterySpots,
   describeUndoLotterySpots,
   lotterySpotLines,
+  lotterySpotsExitCode,
   lotterySpotsGuardRefusal,
   manifestKind,
   planLotterySpots,
@@ -488,6 +490,32 @@ describe('planLotterySpots', () => {
     expect(plan.no_bar).toEqual([
       { id: lonely, fire_time: '2026-09-22T14:00:00.000Z' },
     ]);
+    // No bar is not an old bar.
+    expect(plan.stale_bar).toEqual([]);
+  });
+
+  it('lists a fire whose bar is more than 5 minutes older, and still plans it', async () => {
+    await seedBar({ date: GAP_DAY, at: OPEN, close: 6700 }); // 13:30:00
+    const fresh = await seedFire({ at: '2026-09-22T13:30:30Z', strike: 6740 });
+    const onTheLimit = await seedFire({ at: '2026-09-22T13:35:00Z' });
+    const pastIt = await seedFire({ at: '2026-09-22T13:35:01Z', strike: 6730 });
+
+    const plan = await planLotterySpots(makeSql());
+
+    // All three are planned with the 13:30 close; only the last is reported.
+    expect(plan.fires.map((f) => [f.id, f.new_spot])).toEqual([
+      [fresh, 6700],
+      [onTheLimit, 6700],
+      [pastIt, 6700],
+    ]);
+    expect(plan.stale_bar).toEqual([
+      {
+        id: pastIt,
+        fire_time: '2026-09-22T13:35:01.000Z',
+        bar_time: '2026-09-22T13:30:00.000Z',
+      },
+    ]);
+    expect(plan.no_bar).toEqual([]);
   });
 
   it('propagates a database failure instead of planning nothing', async () => {
@@ -557,7 +585,21 @@ describe('applyLotterySpots', () => {
       updated: 2,
       noLongerPass: 0,
       noBar: [],
+      // The 13:30 bar is 30 and 40 minutes old at these two fires.
+      staleBar: [call, put],
     });
+    expect(out.stale_bar).toEqual([
+      {
+        id: call,
+        fire_time: '2026-09-22T14:00:00.000Z',
+        bar_time: '2026-09-22T13:30:00.000Z',
+      },
+      {
+        id: put,
+        fire_time: '2026-09-22T14:10:00.000Z',
+        bar_time: '2026-09-22T13:30:00.000Z',
+      },
+    ]);
   });
 
   it('leaves outcome columns, trade_strike, entry_px and every other row untouched', async () => {
@@ -694,7 +736,7 @@ describe('applyLotterySpots', () => {
     const sql = makeSql();
     const out = await applyLotterySpots(
       sql,
-      { fires: [], no_bar: [] },
+      { fires: [], no_bar: [], stale_bar: [] },
       { backupDir: undefined },
     );
     expect(out).toEqual({
@@ -702,6 +744,7 @@ describe('applyLotterySpots', () => {
       updated: 0,
       no_longer_pass: 0,
       no_bar: [],
+      stale_bar: [],
     });
     expect(sql.transaction).not.toHaveBeenCalled();
   });
@@ -732,11 +775,14 @@ describe('applyLotterySpots', () => {
     expect(sql.transaction).toHaveBeenCalledTimes(1);
     const [statements] = sql.transaction.mock.calls[0];
     expect(statements).toHaveLength(3);
-    const sizes = statements.map((s) => s.params.map((p) => p.length));
+    // Five arrays per statement: id, new spot and distance, old spot and distance.
+    const sizes = statements.map((s) =>
+      s.params.filter(Array.isArray).map((p) => p.length),
+    );
     expect(sizes).toEqual([
-      [500, 500, 500],
-      [500, 500, 500],
-      [1, 1, 1],
+      [500, 500, 500, 500, 500],
+      [500, 500, 500, 500, 500],
+      [1, 1, 1, 1, 1],
     ]);
     const { rows } = await pg.query(
       `SELECT count(*)::int AS n FROM periscope_lottery_fires
@@ -782,6 +828,52 @@ describe('applyLotterySpots', () => {
     await undoLotterySpots(makeSql(), manifestFile);
     expect(await snapshot()).toEqual(before);
   });
+
+  it.each([
+    ['spot', 'spot_at_event = 1234.5', { spot_txt: '1234.5000' }],
+    ['distance', 'strike_dist = 12.5', { dist_txt: '12.5000' }],
+  ])(
+    'fences the update: a fire whose %s moved after the stale check rolls the whole run back, naming the shortfall',
+    async (_label, set, moved_) => {
+      await seedBar({ date: GAP_DAY, at: OPEN, close: 6700 });
+      const moved = await seedFire({ at: '2026-09-22T14:00:00Z' });
+      const other = await seedFire({
+        at: '2026-09-22T14:05:00Z',
+        strike: 6730,
+      });
+      const sql = makeSql();
+      // Another writer's UPDATE lands after the stale check, just before the
+      // transaction: the one window the stale check cannot see.
+      const realTransaction = neonOverPglite(pg).transaction;
+      sql.transaction.mockImplementationOnce(async (queries) => {
+        await pg.query(
+          `UPDATE periscope_lottery_fires SET ${set} WHERE id = $1::bigint`,
+          [moved],
+        );
+        return realTransaction(queries);
+      });
+
+      const error = await planAndApply(sql).catch((e) => e);
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toMatch(/the transaction failed/);
+      expect(error.message).toMatch(/the fenced update changed 1 of 2 fires/);
+      // The fire that matched the fence was rolled back with the rest.
+      const byId = Object.fromEntries(
+        (await snapshot()).map((r) => [String(r.id), r]),
+      );
+      expect(byId[moved]).toMatchObject(moved_);
+      expect(byId[other]).toMatchObject({
+        spot_txt: '6650.5000',
+        dist_txt: '79.5000',
+      });
+      const [manifestFile] = manifestFilesIn(backupDirOf());
+      expect(readJson(manifestFile)).toMatchObject({
+        committed: false,
+        updated: null,
+      });
+    },
+  );
 
   it('a failed backup changes nothing', async () => {
     await seedBar({ date: GAP_DAY, at: OPEN, close: 6700 });
@@ -949,8 +1041,8 @@ describe('applyLotterySpots', () => {
 describe('repairLotterySpots', () => {
   it('a dry run counts what would change and writes nothing', async () => {
     await seedBar({ date: GAP_DAY, at: OPEN, close: 6700 });
-    await seedFire({ at: '2026-09-22T14:00:00Z', strike: 6720 });
-    await seedFire({ at: '2026-09-22T14:01:00Z', strike: 6710 });
+    const first = await seedFire({ at: '2026-09-22T14:00:00Z', strike: 6720 });
+    const second = await seedFire({ at: '2026-09-22T14:01:00Z', strike: 6710 });
     const hole = await seedFire({ at: '2026-09-23T14:00:00Z' });
     const before = await snapshot();
     const sql = makeSql();
@@ -965,6 +1057,19 @@ describe('repairLotterySpots', () => {
       updated: 2,
       no_longer_pass: 1,
       no_bar: [{ id: hole, fire_time: '2026-09-23T14:00:00.000Z' }],
+      // The 13:30 bar is 30 and 31 minutes old at those fires.
+      stale_bar: [
+        {
+          id: first,
+          fire_time: '2026-09-22T14:00:00.000Z',
+          bar_time: '2026-09-22T13:30:00.000Z',
+        },
+        {
+          id: second,
+          fire_time: '2026-09-22T14:01:00.000Z',
+          bar_time: '2026-09-22T13:30:00.000Z',
+        },
+      ],
     });
     expect(sql.transaction).not.toHaveBeenCalled();
     expect(await snapshot()).toEqual(before);
@@ -1179,6 +1284,34 @@ describe('undoLotterySpots', () => {
   });
 });
 
+// ── The backup parser both repairs share ───────────────────
+
+describe('parseBackupText', () => {
+  const shape = {
+    isRow: (row) => typeof row?.id === 'string',
+    project: (row) => ({ id: row.id }),
+  };
+
+  it('keeps what its shape accepts, cut down to the shape, and skips blank lines', () => {
+    expect(
+      parseBackupText(
+        '{"id":"1","extra":"x"}\n\n{"id":"2"}\n',
+        'f.jsonl',
+        shape,
+      ),
+    ).toEqual([{ id: '1' }, { id: '2' }]);
+  });
+
+  it('names the file and line of a row its shape rejects, and of bad JSON', () => {
+    expect(() =>
+      parseBackupText('{"id":"1"}\n{"id":2}\n', 'f.jsonl', shape),
+    ).toThrow('backup f.jsonl line 2 is malformed');
+    expect(() => parseBackupText('nope\n', 'f.jsonl', shape)).toThrow(
+      'backup f.jsonl line 1 is malformed JSON',
+    );
+  });
+});
+
 // ── manifestKind ───────────────────────────────────────────
 
 describe('manifestKind', () => {
@@ -1209,10 +1342,24 @@ describe('lotterySpotLines', () => {
     { id: '42', fire_time: '2026-09-23T14:10:00.000Z' },
   ];
 
-  it('reads a dry run, each no_bar fire by id and fire_time', () => {
+  const staleBar = [
+    {
+      id: '43',
+      fire_time: '2026-09-24T14:00:00.000Z',
+      bar_time: '2026-09-24T13:30:00.000Z',
+    },
+  ];
+
+  it('reads a dry run, each no_bar and stale_bar fire by id and time', () => {
     expect(
       lotterySpotLines(
-        { in_scope: 10, updated: 7, no_longer_pass: 2, no_bar: noBar },
+        {
+          in_scope: 10,
+          updated: 7,
+          no_longer_pass: 2,
+          no_bar: noBar,
+          stale_bar: staleBar,
+        },
         { apply: false },
       ),
     ).toEqual([
@@ -1222,6 +1369,8 @@ describe('lotterySpotLines', () => {
       '  no same-day SPX bar (left unchanged): 2',
       '    id 41  2026-09-23T14:00:00.000Z',
       '    id 42  2026-09-23T14:10:00.000Z',
+      '  bar more than 5 minutes before the fire (updated all the same): 1',
+      '    id 43  fire 2026-09-24T14:00:00.000Z  bar 2026-09-24T13:30:00.000Z',
     ]);
   });
 
@@ -1233,6 +1382,7 @@ describe('lotterySpotLines', () => {
           updated: 3,
           no_longer_pass: 0,
           no_bar: [],
+          stale_bar: [],
           manifest: '/b/lottery-spots-1.manifest.json',
         },
         { apply: true },
@@ -1242,8 +1392,62 @@ describe('lotterySpotLines', () => {
       '  updated: 3',
       '  no longer pass their filter (kept, not deleted): 0',
       '  no same-day SPX bar (left unchanged): 0',
+      '  bar more than 5 minutes before the fire (updated all the same): 0',
       '  manifest: /b/lottery-spots-1.manifest.json',
     ]);
+  });
+});
+
+// ── The exit code ──────────────────────────────────────────
+
+describe('lotterySpotsExitCode', () => {
+  it('is 1 when any fire has no same-day bar, whatever else the run did', () => {
+    const noBar = [{ id: '41', fire_time: '2026-09-23T14:00:00.000Z' }];
+    expect(
+      lotterySpotsExitCode({ updated: 5, no_bar: noBar, stale_bar: [] }),
+    ).toBe(EXIT_FAILED);
+    expect(
+      lotterySpotsExitCode({ updated: 0, no_bar: noBar, stale_bar: [] }),
+    ).toBe(EXIT_FAILED);
+  });
+
+  it('is 0 with no such fire, a stale bar or no longer passing fires included', () => {
+    const stale = [
+      {
+        id: '43',
+        fire_time: '2026-09-24T14:00:00.000Z',
+        bar_time: '2026-09-24T13:30:00.000Z',
+      },
+    ];
+    expect(
+      lotterySpotsExitCode({
+        updated: 3,
+        no_longer_pass: 3,
+        no_bar: [],
+        stale_bar: stale,
+      }),
+    ).toBe(EXIT_OK);
+  });
+
+  it('follows a real dry run and a real apply of a day with a hole', async () => {
+    await seedBar({ date: GAP_DAY, at: OPEN, close: 6700 });
+    await seedFire({ at: '2026-09-22T14:00:00Z' });
+    await seedFire({ at: '2026-09-23T14:00:00Z' }); // no bar that day
+    for (const apply of [false, true]) {
+      const result = await repairLotterySpots(makeSql(), {
+        apply,
+        backupDir: backupDirOf(),
+      });
+      expect(lotterySpotsExitCode(result)).toBe(EXIT_FAILED);
+    }
+
+    await pg.query('TRUNCATE periscope_lottery_fires RESTART IDENTITY');
+    await seedFire({ at: '2026-09-22T14:00:00Z' });
+    const whole = await repairLotterySpots(makeSql(), {
+      apply: false,
+      backupDir: backupDirOf(),
+    });
+    expect(lotterySpotsExitCode(whole)).toBe(EXIT_OK);
   });
 });
 
