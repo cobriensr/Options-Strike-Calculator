@@ -45,6 +45,7 @@ import type {
   QuotesResponse,
 } from '../../types/api';
 import { isPastETDate } from '../../utils/timezone';
+import { clusterMultForSave } from '../../utils/volatility-cluster';
 import { resolveYesterday } from '../../utils/yesterday';
 
 // ============================================================
@@ -217,18 +218,20 @@ function quotesAt(n: number): QuotesResponse {
 // HARNESS
 // ============================================================
 
-function useLiveSession() {
+/**
+ * `heldYesterday` is the live /api/yesterday body the app holds: the day it
+ * has, or null when it has none (the gap the app fills in a poll tick later).
+ */
+function useLiveSession(heldYesterday: DaySummary | null = LIVE_YESTERDAY) {
   const [quotes, setQuotes] = useState<QuotesResponse>(quotesAt(0));
   const market = useMemo<MarketDataState>(
     () => ({
       data: {
         quotes,
         intraday: null,
-        yesterday: {
-          yesterday: LIVE_YESTERDAY,
-          twoDaysAgo: null,
-          asOf: LOAD,
-        },
+        yesterday: heldYesterday
+          ? { yesterday: heldYesterday, twoDaysAgo: null, asOf: LOAD }
+          : null,
         events: null,
         movers: null,
       },
@@ -240,7 +243,7 @@ function useLiveSession() {
       session: 'regular',
       marketOpen: true,
     }),
-    [quotes],
+    [quotes, heldYesterday],
   );
   const spot = useSpotInputs();
   const iv = useIvInputs();
@@ -368,7 +371,7 @@ function useLiveSession() {
         [iv.multiplier, iv.dMult],
       ],
       skewPct: 0,
-      clusterMult,
+      clusterMult: clusterMultForSave(cluster.signal),
     }),
     true,
   );
@@ -527,9 +530,15 @@ function savedRows(): Map<string, Record<string, unknown>> {
   );
 }
 
-/** Load the page, then poll every minute until `minutes` after the load. */
-async function runSession(minutes: number) {
-  const hook = renderHook(() => useLiveSession());
+/**
+ * Load the page, then poll every minute until `minutes` after the load.
+ * `heldYesterday` is the live yesterday the app holds (see `useLiveSession`).
+ */
+async function runSession(
+  minutes: number,
+  heldYesterday: DaySummary | null = LIVE_YESTERDAY,
+) {
+  const hook = renderHook(() => useLiveSession(heldYesterday));
   await settle(2000);
   for (let n = 1; n <= minutes; n += 1) {
     await advance(58_000);
@@ -970,7 +979,29 @@ describe('the saved cluster multiplier, with no Market Regime panel mounted', ()
     expect(posts.some((p) => p.body.clusterMult === 1)).toBe(false);
   });
 
-  it("saves 1, not today's yesterday, when the past date's history has no previous day", async () => {
+  // The app's own gap: it holds no current yesterday (Schwab's daily candle is
+  // late, or its request failed) and re-asks each poll tick. The panels keep
+  // working with 1; a row saved meanwhile must say it has no multiplier, not
+  // store a 1 that reads like "no clustering".
+  it('saves no multiplier, tilts or RV on a live row while the app has no current yesterday, and still saves the row', async () => {
+    await runSession(12, null);
+
+    const live = postsFor(TODAY);
+    expect(live.length).toBeGreaterThan(0);
+    for (const post of live) {
+      const slot = String(post.body.entryTime);
+      expect(post.body.isBacktest, slot).toBe(false);
+      expect(typeof post.body.spx, slot).toBe('number');
+      expect(post.body.clusterMult, slot).toBeNull();
+      expect(post.body.clusterPutMult, slot).toBeNull();
+      expect(post.body.clusterCallMult, slot).toBeNull();
+      expect(post.body.rvAnnualized, slot).toBeNull();
+      expect(post.body.rvIvRatio, slot).toBeNull();
+    }
+    expect(posts.some((p) => p.body.clusterMult === 1)).toBe(false);
+  });
+
+  it("saves no multiplier, not today's yesterday, when the past date's history has no previous day", async () => {
     const withoutPreviousDay = () => {
       const history = historyFor(PAST_DATE);
       return Promise.resolve(
@@ -989,10 +1020,11 @@ describe('the saved cluster multiplier, with no Market Regime panel mounted', ()
     expect(past.length).toBeGreaterThan(0);
     for (const post of past) {
       const slot = String(post.body.entryTime);
-      // The live feed's day would give 1.203 here, with a call-side tilt.
-      expect(post.body.clusterMult, slot).toBe(1);
-      expect(post.body.clusterPutMult, slot).toBe(1);
-      expect(post.body.clusterCallMult, slot).toBe(1);
+      // The live feed's day would give 1.203 here, with a call-side tilt. With
+      // no previous day there is no multiplier to store, and no tilts: not 1.
+      expect(post.body.clusterMult, slot).toBeNull();
+      expect(post.body.clusterPutMult, slot).toBeNull();
+      expect(post.body.clusterCallMult, slot).toBeNull();
       // No previous day, so no RV/IV: NULL, not the live feed's day's values.
       expect(post.body.rvAnnualized, slot).toBeNull();
       expect(post.body.rvIvRatio, slot).toBeNull();

@@ -15,6 +15,7 @@ import { useIvInputs } from './hooks/useIvInputs';
 import { useSpotInputs } from './hooks/useSpotInputs';
 import { useStrategyInputs } from './hooks/useStrategyInputs';
 import { useClusterMultiplier } from './hooks/useClusterMultiplier';
+import { clusterMultForSave } from './utils/volatility-cluster';
 import { resolveYesterday } from './utils/yesterday';
 import { currentOpeningRange } from './utils/current-opening-range';
 import { currentYesterday } from './utils/current-yesterday';
@@ -698,7 +699,9 @@ export default function StrikeCalculator() {
         [multiplier, dMult],
       ],
       skewPct,
-      clusterMult,
+      // Null when there is no current yesterday: the working value 1 keeps the
+      // screen going, but a stored 1 would read like a real "no clustering".
+      clusterMult: clusterMultForSave(cluster.signal),
     }),
     // The owner only: a guest or public visitor's post draws a 401.
     isOwner && (market.hasData || !!historySnapshot),

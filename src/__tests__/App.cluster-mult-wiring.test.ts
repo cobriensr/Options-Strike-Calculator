@@ -75,12 +75,24 @@ describe('App cluster multiplier wiring', () => {
     );
   });
 
-  it.each(['useComputedSignals', 'buildSnapshotMeta', 'useAnalysisContext'])(
+  it.each(['useComputedSignals', 'useAnalysisContext'])(
     '%s gets the derived clusterMult',
     (name) => {
       expect(callArgs(name)).toMatch(/\bclusterMult,/);
     },
   );
+
+  // The working value is 1 when there is no yesterday, which is right for the
+  // screen but not for a stored row: the save gets null for it.
+  it('hands the snapshot save the multiplier for a row, null when the signal had no inputs', () => {
+    expect(callArgs('buildSnapshotMeta')).toMatch(
+      /\bclusterMult: clusterMultForSave\(cluster\.signal\),/,
+    );
+    expect(callArgs('buildSnapshotMeta')).not.toMatch(/\bclusterMult,/);
+    expect(appCode).toMatch(
+      /^import \{ clusterMultForSave \} from '\.\/utils\/volatility-cluster';$/m,
+    );
+  });
 
   it('hands the Market Regime card the hook result', () => {
     const card = /<MarketRegimeSection([\s\S]*?)\/>/.exec(appCode);
