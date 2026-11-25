@@ -268,6 +268,30 @@ describe('computeSettlement', () => {
     expect(result!.survived).toBe(true);
   });
 
+  // ── The entry at the open: no bar has ended, so the scan starts at bar 0 ─
+
+  it('scans every bar when entryIndex is -1, the open, where no bar has ended', () => {
+    // The first bar's high (6050) is after the entry, which is the open.
+    // The short call at 6040 is touched, so the condor did not survive. With
+    // an entry at bar 0 that bar is the entry and is not scanned.
+    const candles = [
+      candle(6050, 6000, 6020), // index 0: ends after the open
+      candle(6010, 5990, 6000),
+      candle(6005, 5985, 5995),
+    ];
+
+    const atOpen = computeSettlement(candles, -1, 6040, 5900, 10);
+    expect(atOpen).not.toBeNull();
+    expect(atOpen!.survived).toBe(false);
+    expect(atOpen!.callBreached).toBe(true);
+    expect(atOpen!.remainingHigh).toBe(6050);
+
+    const afterFirstBar = computeSettlement(candles, 0, 6040, 5900, 10);
+    expect(afterFirstBar).not.toBeNull();
+    expect(afterFirstBar!.survived).toBe(true);
+    expect(afterFirstBar!.remainingHigh).toBe(6010);
+  });
+
   // ── settledSafe boundary tests (ported from legacy test file) ────────
 
   it('settledSafe = false when settlement equals call strike', () => {

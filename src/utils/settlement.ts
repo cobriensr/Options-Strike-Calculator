@@ -5,24 +5,31 @@ import { round2 } from './formatting.js';
 /**
  * Compute whether an iron condor would have survived from entry to settlement.
  *
- * Entry convention: `entryIndex` is the candle whose **close** is used as the
- * entry price (matching `useHistoryData.getStateAtTime` which sets
- * `spot = candle.close` at the matching candle's close). The entry candle's
- * high and low therefore represent price action *before* the entry price was
- * established and MUST NOT count as post-entry breaches. The breach scan
- * starts at `entryIndex + 1` for this reason.
+ * Entry convention: `entryIndex` is the last bar that had ended by the entry
+ * slot, as `historySnapshotAt` / `spxSlotStateAsOf` report it as `candleIndex`
+ * / `entryIndex` ("a row at slot T uses only bars that end at or before T").
+ * The entry price is that bar's **close**. The entry bar's high and low
+ * therefore represent price action *before* the entry price was established
+ * and MUST NOT count as post-entry breaches. The breach scan starts at
+ * `entryIndex + 1` for this reason.
  *
- * This keeps the semantic consistent with `useHistoryData.computeRunningOHLC`,
- * which already includes the entry candle in the *pre-entry* running OHLC
- * (loop runs `i = 0; i <= endIdx`). If we included the entry candle here too,
- * the same bar would be counted on both sides of the entry line.
+ * This keeps the semantic consistent with the running OHLC at entry, which
+ * covers the bars ended by the slot, the entry bar included. If we included
+ * the entry bar here too, the same bar would be counted on both sides of the
+ * entry line.
+ *
+ * `entryIndex` is -1 at the open (8:30 CT), where no bar has ended. The entry
+ * price is then the first bar's open, nothing before it is a pre-entry bar,
+ * and the scan starts at bar 0: the whole session is post-entry.
  *
  * Pure function — no React dependencies — suitable for unit testing.
  *
  * @param allCandles Full day's 5-min candles in chronological order.
- * @param entryIndex Index of the candle at whose close we are committing.
- *                   Must be strictly less than `allCandles.length - 1`
- *                   (there needs to be at least one candle after entry).
+ * @param entryIndex Index of the last bar ended by the entry slot, whose close
+ *                   is the entry price; -1 when no bar has ended (the entry is
+ *                   the first bar's open). Must be strictly less than
+ *                   `allCandles.length - 1` (there needs to be at least one
+ *                   candle after entry).
  * @param callStrike Short call strike (a breach is `high >= callStrike`).
  * @param putStrike  Short put strike (a breach is `low <= putStrike`).
  * @param delta      Row delta, passed through unchanged.
