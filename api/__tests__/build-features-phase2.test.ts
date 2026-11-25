@@ -33,6 +33,7 @@ import {
   addVvixPercentileFeatures,
   addMaxPainFeatures,
   addDarkPoolFeatures,
+  addOiChangeFeatures,
   addOptionsVolumeFeatures,
   optionsVolumeFeaturesFromRow,
 } from '../_lib/build-features-phase2.js';
@@ -3298,5 +3299,131 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
       // A date the guard skips is not a missing row: nothing is reported.
       expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ── NUMERIC(8,4) overflow guard ─────────────────────────────
+//
+// dp_support_resistance_ratio and oic_oi_change_pcr are DECIMAL(8,4)
+// columns: at most 4 integer digits, so |value| must stay below 10000 once
+// rounded to 4 decimals. One out-of-range value fails the whole row's
+// upsert (2026-03-26: ratio 35,853, Sentry SENTRY-EMERALD-DESERT-MB). Each
+// case is a ratio `numerator / denominator` built from integers so the
+// division is exact in the test and the production code sees the same
+// number the table names.
+
+describe('NUMERIC(8,4) ratio overflow guard', () => {
+  const DATE_STR = '2026-03-24';
+  const originalEnv = process.env;
+
+  const RATIO_CASES: ReadonlyArray<{
+    ratio: number;
+    numerator: number;
+    denominator: number;
+    expected: number | null;
+  }> = [
+    { ratio: 35853, numerator: 35_853, denominator: 1, expected: null },
+    { ratio: -35853, numerator: -35_853, denominator: 1, expected: null },
+    // The first value that no longer fits.
+    { ratio: 10000, numerator: 10_000, denominator: 1, expected: null },
+    // Under 10000 before rounding, 10000 after: the column rounds first.
+    {
+      ratio: 9999.99996,
+      numerator: 999_999_996,
+      denominator: 100_000,
+      expected: null,
+    },
+    // The largest value that fits.
+    {
+      ratio: 9999.9999,
+      numerator: 999_999_990,
+      denominator: 100_000,
+      expected: 9999.9999,
+    },
+    // 2026-11-05: a legitimate dark-pool ratio of this size.
+    { ratio: 1471, numerator: 1_471, denominator: 1, expected: 1471 },
+    { ratio: 0.5, numerator: 1, denominator: 2, expected: 0.5 },
+  ];
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSql.mockResolvedValue([]);
+    process.env = { ...originalEnv };
+    // getDarkPoolLevels opens its own client through getDb().
+    process.env.DATABASE_URL = 'postgresql://test/test';
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  describe('dp_support_resistance_ratio', () => {
+    it.each(RATIO_CASES)(
+      'ratio $ratio -> $expected',
+      async ({ numerator, denominator, expected }) => {
+        // Support = premium at or below spx_open, resistance = above it. The
+        // negative case uses a negative support premium: the guard is
+        // symmetric even though live premiums are positive.
+        mockSql.mockResolvedValueOnce([
+          {
+            level: 5800,
+            total_premium: numerator,
+            trade_count: 1,
+            total_shares: 1,
+          },
+          {
+            level: 5810,
+            total_premium: denominator,
+            trade_count: 1,
+            total_shares: 1,
+          },
+        ]);
+
+        const features: FeatureRow = { spx_open: 5800 };
+        await addDarkPoolFeatures(mockSql as never, DATE_STR, features);
+
+        expect(features.dp_support_resistance_ratio).toBe(expected);
+        expect(features.dp_support_premium).toBe(numerator);
+        expect(features.dp_resistance_premium).toBe(denominator);
+      },
+    );
+  });
+
+  describe('oic_oi_change_pcr', () => {
+    it.each(RATIO_CASES)(
+      'ratio $ratio -> $expected',
+      async ({ numerator, denominator, expected }) => {
+        // pcr = put OI change / call OI change.
+        mockSql.mockResolvedValueOnce([
+          {
+            option_symbol: 'SPX260324C05800',
+            strike: 5800,
+            is_call: true,
+            oi_diff: denominator,
+            prev_ask_volume: 0,
+            prev_bid_volume: 0,
+            prev_multi_leg_volume: 0,
+            prev_total_premium: 0,
+          },
+          {
+            option_symbol: 'SPX260324P05750',
+            strike: 5750,
+            is_call: false,
+            oi_diff: numerator,
+            prev_ask_volume: 0,
+            prev_bid_volume: 0,
+            prev_multi_leg_volume: 0,
+            prev_total_premium: 0,
+          },
+        ]);
+
+        const features: FeatureRow = { spx_open: 5800 };
+        await addOiChangeFeatures(mockSql as never, DATE_STR, features);
+
+        expect(features.oic_oi_change_pcr).toBe(expected);
+        expect(features.oic_call_oi_change).toBe(denominator);
+        expect(features.oic_put_oi_change).toBe(numerator);
+      },
+    );
   });
 });

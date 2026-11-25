@@ -94,6 +94,26 @@ export function isWithinUWWindow(
 type Sql = NeonQueryFunction<false, false>;
 
 /**
+ * Round a ratio to the 4 decimals of a NUMERIC(8,4) column, or return null
+ * when the rounded value has more than 4 integer digits (|value| >= 10000).
+ *
+ * Postgres rounds to the column's scale first and then checks the range, so
+ * this does the same: 9999.99996 rounds to 10000 and is out of range. An
+ * out-of-range value fails the whole row's upsert, not just its own column
+ * (dp_support_resistance_ratio was 35,853 on 2026-03-26 and that date's
+ * features never rebuilt).
+ *
+ * This only prevents the overflow. A null here does not clear a value already
+ * stored: the upsert keeps the existing value over a null
+ * (COALESCE(EXCLUDED.col, existing) in build-features-upsert.ts), and for
+ * oic_oi_change_pcr it still does.
+ */
+function roundToNumeric84(value: number): number | null {
+  const rounded = Math.round(value * 1e4) / 1e4;
+  return Math.abs(rounded) >= 1e4 ? null : rounded;
+}
+
+/**
  * Previous-day features: range, direction, range category, VIX delta.
  * Reads `outcomes` for the most recent prior date and computes the VIX
  * change using the already-populated `features.vix` (set by the caller
@@ -391,9 +411,7 @@ export async function addDarkPoolFeatures(
         features.dp_support_premium = support;
         features.dp_resistance_premium = resistance;
         features.dp_support_resistance_ratio =
-          resistance > 0
-            ? Math.round((support / resistance) * 10000) / 10000
-            : null;
+          resistance > 0 ? roundToNumeric84(support / resistance) : null;
       }
 
       // Concentration: how much of total premium is at the single top level
@@ -748,7 +766,7 @@ export async function addOiChangeFeatures(
       features.oic_put_oi_change = putOiChange || null;
       features.oic_oi_change_pcr =
         callOiChange !== 0
-          ? Math.round((putOiChange / callOiChange) * 10000) / 10000
+          ? roundToNumeric84(putOiChange / callOiChange)
           : null;
       features.oic_net_premium = callPremium + putPremium || null;
       features.oic_call_premium = callPremium || null;
