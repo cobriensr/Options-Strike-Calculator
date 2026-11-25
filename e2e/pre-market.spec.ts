@@ -56,7 +56,10 @@ function yesterdayMocks(now: string) {
           open: 6780,
           high: 6830,
           low: 6750,
-          close: 6790,
+          // Not the quote mock's SPX price (6790): the gap preview falls back to
+          // the spot when it has no prior close, and the two must differ for a
+          // page that rejected this yesterday to show.
+          close: 6795,
           rangePct: 1.18,
           rangePts: 80,
         },
@@ -92,7 +95,7 @@ async function openPreMarket(page: Page, now: string) {
   await page.goto('/');
 }
 
-/** Globex close vs prevClose from mocked /api/yesterday (6790). */
+/** Globex close vs prevClose from mocked /api/yesterday (6795). */
 async function expectGapPreview(page: Page) {
   const section = page.locator('section[aria-label="Pre-Market Futures"]');
   await expect(section).toBeVisible({ timeout: 15000 });
@@ -101,10 +104,14 @@ async function expectGapPreview(page: Page) {
   await section.getByLabel('Globex Low').fill('6770');
   await section.getByLabel('Globex Close').fill('6780');
 
-  // Gap = 6780 - 6790 = -10.0 (DOWN)
+  // Gap = 6780 - 6795 = -15.0 (DOWN), the prior close from the mocked
+  // /api/yesterday. Without a live yesterday the preview falls back to the
+  // quote mock's SPX price, 6790, and shows -10.0 (also DOWN), so the number
+  // is what tells the two apart: the direction alone does not.
   await expect(section.getByText('ES vs SPX')).toBeVisible({
     timeout: 5000,
   });
+  await expect(section.getByText('-15.0', { exact: true })).toBeVisible();
   await expect(section.getByText('DOWN')).toBeVisible();
 }
 
