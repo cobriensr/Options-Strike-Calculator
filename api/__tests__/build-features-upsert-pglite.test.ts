@@ -33,9 +33,11 @@ vi.mock('../_lib/db.js', () => ({
 import { DP_COLUMNS, upsertFeatures } from '../_lib/build-features-upsert.js';
 import type { FeatureRow } from '../_lib/build-features-types.js';
 
-// Every migration that adds a column the upsert writes: #9 creates
-// training_features, the rest add columns. Each stands alone, so they apply in
-// order. #214 is left out: the upsert writes none of its columns yet.
+// Every migration that creates training_features (#9) or adds a column the
+// INSERT writes. Each stands alone, so they apply in order. Add the id of any
+// migration that adds a training_features column the INSERT writes; until then
+// this file's INSERT fails on the missing column. #214 adds only columns the
+// INSERT does not write yet, so it is left out.
 const TRAINING_FEATURES_MIGRATIONS = [
   9, 11, 21, 22, 24, 26, 29, 31, 33, 61, 213,
 ];

@@ -3339,12 +3339,15 @@ describe('upsertFeatures overwrite option', () => {
     iv_rank: 42.1,
     dp_total_premium: 1500000,
     dp_cluster_count: 3,
-    dp_top_cluster_dist: -12.5,
+    // dp_top_cluster_dist is absent on purpose: a failed or empty dark-pool
+    // read leaves the key unset, and an overwrite must turn that into a NULL
+    // too. Its neighbours, and those of the explicit nulls (vix1d,
+    // dp_concentration), hold a different kind of value, so a test that reads
+    // the wrong position cannot pass by luck.
     dp_support_premium: 900000,
     dp_resistance_premium: 600000,
-    dp_support_resistance_ratio: null,
-    // dp_concentration is absent on purpose: a failed or empty dark-pool read
-    // leaves the key unset, and an overwrite must turn that into a NULL too.
+    dp_support_resistance_ratio: 1.5,
+    dp_concentration: null,
   };
 
   beforeEach(() => {
@@ -3398,11 +3401,21 @@ describe('upsertFeatures overwrite option', () => {
     });
   }
 
+  /** The INSERT's last column, read from a default statement. */
+  async function lastColumn(): Promise<string> {
+    const columns = insertColumns(rendered(await sentStatement()));
+    mockSql.mockClear();
+    return columns.at(-1)!;
+  }
+
   it('keeps COALESCE for every column by default', async () => {
-    const text = rendered(await sentStatement());
+    const call = await sentStatement();
+    const text = rendered(call);
 
     expect(setLines(text)).toEqual(expectedSet(text, []));
-    expect(setLines(text).length).toBeGreaterThan(150);
+    // One SET line per bound value but the conflict key: call[0] is the
+    // strings, call[1] is the date.
+    expect(setLines(text)).toHaveLength(call.length - 2);
     expect(text).not.toMatch(/= EXCLUDED\./);
   });
 
@@ -3427,10 +3440,11 @@ describe('upsertFeatures overwrite option', () => {
     expect(text).toContain(
       'vix1d = COALESCE(EXCLUDED.vix1d, training_features.vix1d)',
     );
-    // The last SET line has no comma; an overwrite there must keep it so.
-    const last = setLines(text).at(-1);
-    expect(last).toBe(
-      'nope_am_cum_delta = COALESCE(EXCLUDED.nope_am_cum_delta, training_features.nope_am_cum_delta)',
+    // The last SET line has no comma and is not in the list, so it stays
+    // COALESCE.
+    const last = insertColumns(text).at(-1)!;
+    expect(setLines(text).at(-1)).toBe(
+      `${last} = COALESCE(EXCLUDED.${last}, training_features.${last})`,
     );
   });
 
@@ -3445,45 +3459,46 @@ describe('upsertFeatures overwrite option', () => {
   });
 
   it('keeps the comma and the end of the statement when the last column is overwritten', async () => {
-    const text = rendered(
-      await sentStatement({ overwrite: ['nope_am_cum_delta'] }),
-    );
+    const last = await lastColumn();
+    const text = rendered(await sentStatement({ overwrite: [last] }));
 
-    expect(setLines(text).at(-1)).toBe(
-      'nope_am_cum_delta = EXCLUDED.nope_am_cum_delta',
-    );
-    expect(setLines(text)).toEqual(expectedSet(text, ['nope_am_cum_delta']));
+    expect(setLines(text).at(-1)).toBe(`${last} = EXCLUDED.${last}`);
+    expect(setLines(text)).toEqual(expectedSet(text, [last]));
   });
 
   it('writes an explicit NULL for an overwritten column', async () => {
     const call = await sentStatement({
-      overwrite: ['dp_support_resistance_ratio', 'dp_concentration'],
+      overwrite: ['dp_top_cluster_dist', 'dp_concentration'],
     });
     const text = rendered(call);
     const columns = insertColumns(text);
     const values = (name: string) => call[columns.indexOf(name) + 1];
 
-    // Null in the row, and the key absent from it: both bind NULL ...
-    expect(values('dp_support_resistance_ratio')).toBeNull();
-    expect(values('dp_concentration')).toBeUndefined();
+    // The position is right: a column the row sets reads back its value.
+    expect(values('dp_support_resistance_ratio')).toBe(1.5);
+    expect(values('dp_support_premium')).toBe(900000);
+    // A null in the row and a key absent from it both bind NULL ...
+    expect(values('dp_concentration')).toBeNull();
+    expect(values('dp_top_cluster_dist')).toBeUndefined();
     // ... and the SET takes EXCLUDED as is, so that NULL replaces the stored
     // value. A column left out of the list keeps COALESCE for the same NULL.
-    expect(text).toContain(
-      'dp_support_resistance_ratio = EXCLUDED.dp_support_resistance_ratio',
-    );
     expect(text).toContain('dp_concentration = EXCLUDED.dp_concentration');
+    expect(text).toContain(
+      'dp_top_cluster_dist = EXCLUDED.dp_top_cluster_dist',
+    );
     expect(values('vix1d')).toBeNull();
     expect(text).toContain(
       'vix1d = COALESCE(EXCLUDED.vix1d, training_features.vix1d)',
     );
-    // The rendered VALUES list shows both as NULL.
+    // The rendered VALUES list shows both as NULL, and the set values as values.
     const valueList = text.slice(
       text.indexOf(') VALUES (') + ') VALUES ('.length,
       text.indexOf('ON CONFLICT'),
     );
     const shown = valueList.split(',').map((v) => v.trim());
-    expect(shown[columns.indexOf('dp_support_resistance_ratio')]).toBe('NULL');
     expect(shown[columns.indexOf('dp_concentration')]).toBe('NULL');
+    expect(shown[columns.indexOf('dp_top_cluster_dist')]).toBe('NULL');
+    expect(shown[columns.indexOf('dp_support_resistance_ratio')]).toBe('1.5');
   });
 
   it('DP_COLUMNS lists the seven dp columns', async () => {
@@ -3529,6 +3544,21 @@ describe('upsertFeatures overwrite option', () => {
 
       // No statement went out, not even for the valid name beside it.
       expect(mockSql).not.toHaveBeenCalled();
+    },
+  );
+
+  // A failed write must reach the caller, which counts it and reports it;
+  // upsertFeatures must not swallow it on either path.
+  it.each([
+    ['by default', undefined],
+    ['with an overwrite list', { overwrite: ['vix'] }],
+  ])(
+    'rejects with the database error when the INSERT fails %s',
+    async (_label, opts) => {
+      mockSql.mockRejectedValueOnce(new Error('db down'));
+
+      await expect(upsertFeatures(ROW, opts)).rejects.toThrow('db down');
+      expect(mockSql).toHaveBeenCalledTimes(1);
     },
   );
 });
