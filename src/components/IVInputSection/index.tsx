@@ -8,6 +8,7 @@ import VIXRegimeCard from '../VIXRegimeCard';
 import VIXTermStructure from '../VIXTermStructure';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
+import { historySlotKey } from '../../utils/history-slot-key';
 import { isPastETDate } from '../../utils/timezone';
 import IVTooltip from './IVTooltip';
 
@@ -111,18 +112,12 @@ export default function IVInputSection({
   const liveQuotes = pastDate ? null : market.data.quotes;
   // Remount the card when its source changes, so a value it took from an
   // earlier source (today's live VIX1D, say) can't stay on a past date, and an
-  // edit resets at the next slot. The slot label tells slots apart exactly.
-  // The candle does not: under the as-of rule it is the same first bar at 8:30
-  // and 8:35 CT, and the same last ended bar either side of a missing SPX bar.
-  // The date separates two dates read at the same label. Without a label, the
-  // candle and its index are the best identity there is.
-  const historySlotKey = historySnapshot
-    ? (entryTimeLabel ??
-      `${historySnapshot.candle.datetime}:${historySnapshot.candleIndex}`)
-    : null;
+  // edit resets at the next slot: the slot (historySlotKey) and the date,
+  // which separates two dates read at the same label.
+  const slotKey = historySlotKey(historySnapshot, entryTimeLabel);
   let termStructureKey = 'live';
-  if (historySlotKey != null) {
-    termStructureKey = `hist-${selectedDate}-${historySlotKey}`;
+  if (slotKey != null) {
+    termStructureKey = `hist-${selectedDate}-${slotKey}`;
   } else if (pastDate) {
     termStructureKey = `past-${selectedDate}`;
   }

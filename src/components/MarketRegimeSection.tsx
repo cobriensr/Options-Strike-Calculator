@@ -18,6 +18,7 @@ import type { HistorySnapshot } from '../hooks/useHistoryData';
 import type { ChainResponse, HistoryCandle } from '../types/api';
 import type { ComputedSignals } from '../hooks/useComputedSignals';
 import { isPastETDate } from '../utils/timezone';
+import { historySlotKey } from '../utils/history-slot-key';
 import { currentOpeningRange } from '../utils/current-opening-range';
 import { currentYesterday } from '../utils/current-yesterday';
 
@@ -118,21 +119,15 @@ export default function MarketRegimeSection({
       : heldYesterday;
 
   // What an edit in the opening-range card is tied to, so it resets at the
-  // next slot and on the next date. The slot label tells slots apart exactly.
-  // The candle does not: under the as-of rule it is the same first bar at 8:30
-  // and 8:35 CT, and the same last ended bar either side of a missing SPX bar.
-  // The date separates two dates read at the same label. Without a label, the
-  // candle and its index are the best identity there is. A past date with no
+  // next slot and on the next date: the slot (historySlotKey) and the date,
+  // which separates two dates read at the same label. A past date with no
   // snapshot is keyed on the date alone, and the live card on the ET date: a
   // held tab that crosses into a new ET day remounts to empty inputs, since the
   // card syncs only when a range is set and would keep the old day's values.
-  const historySlotKey = historySnapshot
-    ? (entryTimeLabel ??
-      `${historySnapshot.candle.datetime}:${historySnapshot.candleIndex}`)
-    : null;
+  const slotKey = historySlotKey(historySnapshot, entryTimeLabel);
   let openingRangeKey = `live-or-${etToday}`;
-  if (historySlotKey != null) {
-    openingRangeKey = `hist-or-${selectedDate}-${historySlotKey}`;
+  if (slotKey != null) {
+    openingRangeKey = `hist-or-${selectedDate}-${slotKey}`;
   } else if (pastDate) {
     openingRangeKey = `past-or-${selectedDate}`;
   }
