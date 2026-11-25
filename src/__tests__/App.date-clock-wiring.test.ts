@@ -178,6 +178,30 @@ describe('App date-clock wiring', () => {
     expect(appCode).not.toMatch(/market\.data\.intraday\?\.openingRange/);
   });
 
+  // The history snapshot supplies a past date's VIX family. It is null at a
+  // time before the open and while the date's history loads, and the signals
+  // then fall back to the live quote: ungated, a past date's term-structure
+  // badge, sigma source and data note are worked out from today's VIX1D, VIX9D
+  // and VVIX.
+  it.each([
+    ['liveVix1d', 'vix1d'],
+    ['liveVix9d', 'vix9d'],
+    ['liveVvix', 'vvix'],
+  ])(
+    'gives the signals no %s on a past date, where today’s quote is not that date’s',
+    (input, quote) => {
+      const inputs = /useComputedSignals\(\{([\s\S]*?)\n {2}\}\);/.exec(
+        appCode,
+      )?.[1];
+      expect(inputs).toMatch(
+        new RegExp(
+          String.raw`^\s+${input}:\s*analysisIsBacktest\s*\?\s*undefined\s*:\s*\(?market\.data\.quotes\?\.${quote}\?\.price \?\? undefined\)?,$`,
+          'm',
+        ),
+      );
+    },
+  );
+
   it('judges the live yesterday against the date clock, and nowhere else reads the raw one', () => {
     // A held or day-old /api/yesterday body names another day. The one call
     // carries the date clock, and the raw field is read only inside it, so a

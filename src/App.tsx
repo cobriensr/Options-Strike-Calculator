@@ -644,9 +644,18 @@ export default function StrikeCalculator() {
     timezone,
     ivMode,
     ivModeVix: IV_MODES.VIX,
-    liveVix1d: market.data.quotes?.vix1d?.price ?? undefined,
-    liveVix9d: market.data.quotes?.vix9d?.price ?? undefined,
-    liveVvix: market.data.quotes?.vvix?.price ?? undefined,
+    // None on a past date, where today's quote is not that date's. Its history
+    // snapshot supplies the VIX family, and is null before the open and while
+    // the history loads: the signals would then fall back to these.
+    liveVix1d: analysisIsBacktest
+      ? undefined
+      : (market.data.quotes?.vix1d?.price ?? undefined),
+    liveVix9d: analysisIsBacktest
+      ? undefined
+      : (market.data.quotes?.vix9d?.price ?? undefined),
+    liveVvix: analysisIsBacktest
+      ? undefined
+      : (market.data.quotes?.vvix?.price ?? undefined),
     // Only the current session's range: the held body can be a previous
     // session's, read against the same ET clock the selected date follows.
     // And none on a past date, where today's range is not that date's: its
