@@ -83,7 +83,7 @@ There are four steps (1a–1c for the opening range, 1d for yesterday), each thr
   - 6 bars and no 10:00 ET bar gives `complete: false`; with a 10:00 ET bar, `complete: true`;
   - a missing 9:45 bar with a 10:00 ET bar gives `complete: true` and `minutes: 25`;
   - today's pre-9:30 bars only: `sessionDate` today, range null, short cache.
-- **Fixtures.** No typed test fixture builds an `IntradayResponse`. The bodies that need `sessionDate` are the untyped fetch mocks in `useMarketData.test.ts` (1b) and `MarketRegimeSection.test.tsx` (1c).
+- **Fixtures.** One typed fixture builds an `IntradayResponse`: the `intraday` body of the market state in `MarketRegimeSection.test.tsx`, which gets `sessionDate` in 1a (`e13e29f16`). The other bodies that need it are the untyped ones: the fetch mocks in `useMarketData.test.ts` (`mockIntraday` and its held bodies, 1b) and the held-body variants in `MarketRegimeSection.test.tsx` (1c).
 
 ### 1b: the client keeps asking, and refetches on a new day (4 files)
 

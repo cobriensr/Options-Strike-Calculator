@@ -339,3 +339,37 @@ export function historySnapshotAt(
   - A tab on an old bundle still writes look-ahead rows.
   - Phase 6 rebuilds every backtest row, so the mix is temporary.
   - **Owner, 2026-11-22: keep the page's backtest saves until phase 5.** The PC replay repair drives the page, so refusing these saves now would also remove the only repair path until the phase-5 fill and phase-6 rebuild exist. Phase 5 makes the server write these rows and refuse the page's in one step.
+
+---
+
+## As built (2026-11-24)
+
+All five tasks are in, on branch `feat/snapshot-phase2` (landed on `main` by cherry-pick), with the fixes from the Task 4 and 5 review.
+
+**Commits, in order**
+
+| Commit | What |
+|---|---|
+| `dddf33f58` | Task 1: `symbolPriceAsOf` and `spxSlotStateAsOf`. |
+| `fdd5de295` | Task 2: the opening-range card shows empty inputs when there is no range, is keyed on the slot, and takes no live range on a past date. |
+| `a485f640e` | Task 3: the term-structure card is keyed on the slot (`entryTimeLabel` on `IVInputSection`), and Market Regime keeps today's live data off past dates. |
+| `f04ac2d49` | Not in the plan: today's flow regime and option chain kept off past dates, with the App wiring pinned. |
+| `5f3efb9cb` | Task 4, first half: `useRangeAnalysis` takes the snapshot's opening range and nothing else when there is a snapshot, and App gives the signals no live range on a past date. |
+| `004b679a0` | Task 4, second half: the `settlement.ts` entry doc, and a test that entry index -1 scans from bar 0. **Task 4 is two commits**, because one would have been 6 files. |
+| `37d30892d` | Task 5: `historySnapshotAt`, `HistorySnapshot` moved into `snapshot-slot.ts` (re-exported from `useHistoryData`), `getStateAtTime` on top of it, the four look-ahead helpers deleted, and the pins that changed (below). |
+| `b5d31bd94` | The shared slot key, `historySlotKey` in `src/utils/history-slot-key.ts`, which both cards use. It had been deferred until Task 5 settled what `candle` means, and still applied: `candle` is now documented as the React-key identity. |
+| `fe735284c` | Review fix 1: App gives the signals no `liveVix1d`, `liveVix9d` or `liveVvix` on a past date. |
+| `41d993510` | Review fix 2: `BacktestDiag`'s Open Range row says "none yet" for null and ", partial" before 10:00 ET. |
+| `07bc6c42b` | Review fix 3: `SettlementCheck`'s `entryTimeLabel` is required and the `candle.time` fallback is gone. |
+
+**What differs from the plan**
+
+- **Two App gates, not one.** Task 4 asked for the opening-range gate. The review found the VIX family had the same hole, so App now passes `undefined` for `liveOpeningRange`, `liveVix1d`, `liveVix9d` and `liveVvix` when `analysisIsBacktest`. `liveSpx` needs no App gate: `useComputedSignals` already drops it for a backtest (`!isBacktest && quotesMarketOpen`).
+- **The "Known limit, accepted" under Task 5 is closed for the VIX family and the opening range.** The plan accepted that a null snapshot (a first bar that is not 9:30 ET, and now every time before the open on a past date) lets the signals fall back to today's live VIX family and intraday range. With the two gates above that no longer happens. A date whose first bar is not 9:30 ET still has history and no state, as planned.
+- **`BacktestDiag` changed after all.** The plan left it alone because "candle 0/78" reads correctly at the open, and that row is unchanged. But its Open Range row showed a partial range (8:35 to 8:55 CT) like a complete one, and called null "incomplete" when null now means no bar has ended. It reads "none yet" for null and appends ", partial" before 10:00 ET.
+- **`SettlementCheck` takes its label from the slot.** Under the as-of rule `snapshot.candle` is the last bar ended by the slot, so its `time` is a bar early (a 10:00 ET slot says "9:55"). `entryTimeLabel` is required, and `MarketRegimeSection` renders the check only when it has one (App passes a label with every history snapshot, and the wiring test pins it). The `candle` doc on `HistorySnapshot` says it is for React keys.
+- **Null before the open, and `candleIndex` -1 at it.** `historySnapshotAt` returns null for a time before 9:30 ET (the old lookup answered with the first bar), and at 8:30 CT the entry index is -1 and the opening range is null.
+
+**Pins that changed from a look-ahead value to an as-of value** (the only consumer tests that did):
+- `useHistoryData.test.ts`: 10:00 ET spot 5138 to 5132 (index 6 to 5); 10:03 ET index 6 to 5; 8:00 ET a snapshot to null; running OHLC at 10:30 ET high 5162 to 5160 and last 5160 to 5157; at 10:00 ET high 5140 to 5135 and last 5138 to 5132; the opening range, always the full 30 minutes, is now null at 9:30 ET, partial before 10:00 ET and complete from it.
+- `liveSessionSave.test.ts`: a past date's VIX at 9:40 CT, 18.28 to 18.26 (`AS_OF_940_VIX`).

@@ -229,6 +229,16 @@ includes completeness-0 days.
       rebuild. A later live regression would then land as a repeat event on
       that open issue, and repeat events email nobody (memory
       sentry-cron-alert-routing).
+    - **As built: an empty-table first run is a backfill.** A run with no
+      `?date=` and no `?backfill=true` on an empty `training_features` table
+      (the first run) takes `mode = 'backfill'` too, in
+      `api/cron/build-features.ts`.
+    - It processes every `flow_data` date, oldest first, after the same
+      trading-day filter, and logs `build-features: empty table, backfilling
+      all dates`.
+    - Its no-pick event therefore goes out at `warning`, under the backfill
+      fingerprint and tag, not at `error`. Only a run that finds the table
+      non-empty is a `daily` run.
   - **Daily runs send at `error`; `?date=` and backfill runs at `warning`.**
     - The project's high-priority issue rule skips warnings.
     - A new day leaving training is the "data silently lost" case the alert
