@@ -96,10 +96,13 @@ const repairedDate: DatePlan = {
   previousClose: { expected: 7150, off: [] },
 };
 
+const PLAN_FILE = `${BACKUP_DIR}/dry-run-2026-11-16-x.json`;
+
 const DRY_RESULT: RunResult = {
   apply: false,
   dates: [repairedDate],
   backupFile: null,
+  planFile: PLAN_FILE,
   applied: null,
 };
 
@@ -170,7 +173,12 @@ describe('repair-stale-opening-range CLI', () => {
   // Each case imports the CLI afresh. Keep this file to 9 CLI imports or fewer:
   // past 10 fresh imports in one file Node warns about a listener leak.
 
-  it('is a dry run with no arguments: prints the database host and the history origin before it runs, never a credential', async () => {
+  it('is a dry run with no arguments: needs no APP_URL or OWNER_SECRET of its own, prints the database host and the plan file, never a credential', async () => {
+    // Only a run that plans a date with candles reads the cookie settings, and
+    // that is the library's check, not the CLI's.
+    delete process.env.OWNER_SECRET;
+    delete process.env.APP_URL;
+
     expect(await runCli()).toBe(0);
 
     expect(runRepair).toHaveBeenCalledTimes(1);
@@ -179,7 +187,7 @@ describe('repair-stale-opening-range CLI', () => {
       since: null,
       until: null,
       apply: false,
-      all: false,
+      planFile: null,
       backupDir: BACKUP_DIR,
     });
     expect(runUndo).not.toHaveBeenCalled();
@@ -190,18 +198,11 @@ describe('repair-stale-opening-range CLI', () => {
     });
     const out = printed(log);
     expect(out).toContain('Database host: ep-test-1.neon.tech');
-    expect(out).toContain('History origin: app.example.test');
     expect(out).toContain('DRY RUN');
+    expect(out).toContain(`Plan file: ${PLAN_FILE}`);
     expect(out).toContain('id 41  2026-11-16 9:00 AM CT');
     expect(out).not.toContain('s3cret');
     expect(out).not.toContain('owner');
-    // The origin is printed before the first fetch could happen.
-    const originLine = log.mock.calls.findIndex((call) =>
-      String(call[0]).startsWith('History origin:'),
-    );
-    expect(log.mock.invocationCallOrder[originLine]).toBeLessThan(
-      runRepair.mock.invocationCallOrder[0] ?? 0,
-    );
     expect(error).not.toHaveBeenCalled();
     // process.exit would cut a piped stdout short on Windows.
     expect(exit).not.toHaveBeenCalled();
@@ -245,25 +246,27 @@ describe('repair-stale-opening-range CLI', () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  it('applies one date with --apply --date: prints the apply report and the backup file', async () => {
+  it('applies the reviewed plan with --apply --plan: prints the apply report and the backup file', async () => {
     runRepair.mockResolvedValue({
       apply: true,
       dates: [repairedDate],
       backupFile: BACKUP_FILE,
+      planFile: PLAN_FILE,
       applied: APPLIED,
     });
 
-    expect(await runCli('--apply', '--date', '2026-11-16')).toBe(0);
+    expect(await runCli('--apply', '--plan', PLAN_FILE)).toBe(0);
 
     expect(runRepair).toHaveBeenCalledWith({
-      date: '2026-11-16',
+      date: null,
       since: null,
       until: null,
       apply: true,
-      all: false,
+      planFile: PLAN_FILE,
       backupDir: BACKUP_DIR,
     });
     const out = printed(log);
+    expect(out).toContain('APPLY');
     expect(out).toContain('APPLIED: 1 of 1 planned rows written');
     expect(out).toContain(`Backup: ${BACKUP_FILE}`);
     expect(out).not.toContain('s3cret');
@@ -274,10 +277,11 @@ describe('repair-stale-opening-range CLI', () => {
       apply: true,
       dates: [repairedDate],
       backupFile: BACKUP_FILE,
+      planFile: PLAN_FILE,
       applied: { ...APPLIED, written: 0, changedSinceRead: [41] },
     });
 
-    expect(await runCli('--apply', '--all')).toBe(1);
+    expect(await runCli('--apply', '--plan', PLAN_FILE)).toBe(1);
 
     expect(printed(log)).toMatch(
       /Rows that changed since the read, so not written: 41/,
@@ -311,7 +315,7 @@ describe('repair-stale-opening-range CLI', () => {
     expect(out).toContain(
       'Usage: npx tsx scripts/repair-stale-opening-range.ts',
     );
-    expect(out).toContain('NULL median_hl_pct');
+    expect(out).toMatch(/NULL\s+median_hl_pct/);
     expect(out).not.toContain('Database host');
     expect(resolveEnvFile).not.toHaveBeenCalled();
     expect(config).not.toHaveBeenCalled();
@@ -320,8 +324,8 @@ describe('repair-stale-opening-range CLI', () => {
   });
 
   it.each([
-    [['--apply'], /Refusing to apply without --date/],
-    [['--date', '2026-11-16', '--all'], /--date cannot be combined/],
+    [['--apply'], /Refusing to apply without --plan/],
+    [['--apply', '--date', '2026-11-16'], /Refusing to apply without --plan/],
   ])(
     'rejects %j with exit 1 before loading any env or touching the database',
     async (args, message) => {
@@ -334,14 +338,17 @@ describe('repair-stale-opening-range CLI', () => {
     },
   );
 
-  it('exits 1 before running when OWNER_SECRET is missing, without printing it', async () => {
-    delete process.env.OWNER_SECRET;
+  it('exits 1 with the run’s message, and no report, when the run fails', async () => {
+    runRepair.mockRejectedValue(
+      new Error(
+        'A fresh plan is not the plan in p.json. Nothing was written.\n  row 41: the new values differ',
+      ),
+    );
 
-    expect(await runCli('--date', '2026-11-16')).toBe(1);
+    expect(await runCli('--apply', '--plan', PLAN_FILE)).toBe(1);
 
-    expect(printed(error)).toMatch(/OWNER_SECRET is not set/);
-    expect(runRepair).not.toHaveBeenCalled();
-    expect(printed(log)).not.toContain('s3cret');
+    expect(printed(error)).toContain('A fresh plan is not the plan in p.json');
+    expect(printed(log)).not.toContain('APPLIED');
     expect(exit).not.toHaveBeenCalled();
   });
 });
