@@ -215,7 +215,7 @@ For the unsettled keys:
 - **`.githooks/pre-commit`** keeps its `CLAUDECODE=1` early exit, so only Claude Code commits are checked.
 - **New step,** before the review-gate check:
   1. Skip it when the commit replays existing commits: `MERGE_HEAD`, `CHERRY_PICK_HEAD` or `REVERT_HEAD` exists, or a rebase is in progress (`rebase-merge/` or `rebase-apply/` in the git dir). A merge from main lists every doc main added since the branch last synced, and those docs belong to other sessions or predate the log.
-  2. List the staged paths that the commit adds under `docs/superpowers/specs/` or `docs/superpowers/plans/` and end in `.md`: `git diff --cached --no-renames --name-only --diff-filter=A`. `--no-renames` makes a doc moved in from `docs/tmp/` show as added.
+  2. List the staged paths that the commit adds under `docs/superpowers/specs/` or `docs/superpowers/plans/` and end in `.md`: `git diff --cached --no-renames --name-only --diff-filter=A`, limited to those folders by a case-insensitive pathspec. A doc moved in from `docs/tmp/` shows as added anyway, since git applies the pathspec before it looks for renames. `--no-renames` makes a rename inside `specs/` or `plans/` show as added too.
   3. Only when there are some, run `node scripts/spec-review-check.mjs <paths>`.
 - **`scripts/spec-review-check.mjs`** reads the log and blocks (exit 1) when an added doc's key has neither:
   - a completed review: a `start` and a `done` for one agent id, nor
