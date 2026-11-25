@@ -344,9 +344,10 @@ export function useGexbotData<V extends GexbotView['view']>(
   // rows, or a failure from a closed hour, and usePolling does not call fn on
   // a gate flip, so the first tick would be 30 s away. Drop the state so the
   // tiles read loading instead of showing those rows as live, and read now.
-  // Mounting open is no edge: the mount effect already read. When the flip
-  // lands while the mount read is still out (page load, once auth and quotes
-  // arrive), `fetchDeduped` joins that request, so no second one goes out.
+  // Mounting open is no edge: the mount effect already read. A flip that lands
+  // while an earlier read of the same URL is still out (a tab loaded seconds
+  // before 09:30) joins that request through `fetchDeduped`, so no second one
+  // goes out.
   // `sibling-confirm` answers for a past fire time, not for the session, and
   // keeps its own retry gate.
   useEffect(() => {

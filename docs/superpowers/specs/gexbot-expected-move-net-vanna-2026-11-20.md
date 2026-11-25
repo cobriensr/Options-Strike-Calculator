@@ -65,7 +65,13 @@ cut against `3dc04441`, moved onto `d8971cd` on 2026-11-24) and was applied on
     `fractionalDte` and `isSessionOver` do, instead of throwing a `RangeError`
     from `getETDateStr`; its docstring says so.
   - **Q.** A comment in `api/_lib/cron-helpers.ts` gave the frozen
-    post-close stamp as 16:00:00; production shows 15:59:59 ET.
+    post-close stamp as 16:00:00. It now says every key of a ticker keeps that
+    ticker's last pre-close stamp afterwards (15:59:59–16:00:01 ET across
+    tickers; SPX 15:59:59; production 2026-11-23/24).
+- 2026-11-25 cleanup after the final code review, no behaviour change: fix Q
+  made per ticker, the open-edge scenario worded as an earlier read of the
+  same URL still out, the closed-with-no-row timing (about 16:07 ET), the
+  hook's files-list entry, and `maxchange-winners` added to the open-edge test.
 - Current state: the full gate (`npm run review`: type-check, lint, Prettier,
   `vite build`, the full test run with coverage) passed and sealed tree
   `992baae5` for commit `a3f1412e5`. The second round ships as its own commit
@@ -130,7 +136,8 @@ Part 3, tiles and the shared clock:
   `src/components/Gexbot/net-vanna.ts`,
   `src/components/Gexbot/session-clock.ts`,
   `src/components/Gexbot/tile-tone.ts`
-- `src/hooks/useGexbotData.ts`: the view and its row type
+- `src/hooks/useGexbotData.ts`: the view and its row type; the open-edge
+  refetch and the read-sequence guard (fix N)
 - `src/components/Gexbot/index.tsx`, `types.ts`: mount and re-export
 - `src/components/Gexbot/CharmClock.tsx`: `useNow`, `hoursToClose` and
   `formatHoursMinutes` moved to `session-clock.ts`; it now reads the countdown
@@ -195,15 +202,19 @@ What the code does around that:
   gate flip and the mount read runs once, so a tab left open overnight would
   otherwise show yesterday's rows as live for up to 30 s, with the range
   centred on yesterday's spot after a gap open. A hook that mounts open has no
-  edge and sends no extra read. A flip that lands while the mount read is
-  still out (page load, once auth and quotes arrive) joins that request
+  edge and sends no extra read. A flip that lands while an earlier read of the
+  same URL is still out (a tab loaded seconds before 09:30) joins that request
   through the hook's in-flight dedupe: one request, not two.
   `sibling-confirm` answers for a past fire time and keeps its own retry gate.
 - **Closed with no row is not "session closed".** The tile's closed display
-  applies only when a row is present. A tab opened after hours or on a
-  weekend gets no row (no capture inside the 5-minute freshness cutoff, or a
-  pre-open stamp), so it reads "awaiting first GEXBot tick", while a tab left
-  open across the close holds its last live row and reads "session closed".
+  applies only when a row is present. The cron runs to the close plus one
+  minute (`isGexbotLiveCt`), and the last capture on 2026-11-24 landed at
+  16:01:49 ET, so a tab opened soon after the close still gets that row and
+  reads "session closed". A tab opened more than about five minutes after the
+  last capture (about 16:07 ET on a normal day), or on a weekend, gets no row
+  (no capture inside the 5-minute freshness cutoff, or a pre-open stamp), so
+  it reads "awaiting first GEXBot tick", while a tab left open across the
+  close holds its last live row and reads "session closed".
   The tile has only `marketOpen` to go by and cannot tell pre-market from
   after-hours with it, so this is intended.
 - **A pre-open stamp is not "closed".** A vendor stamp before 09:30 ET on

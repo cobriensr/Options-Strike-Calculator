@@ -674,6 +674,7 @@ describe('useGexbotData', () => {
         | 'snapshots-latest'
         | 'velocity'
         | 'convexity-trend'
+        | 'maxchange-winners'
         | 'expected-move';
       marketOpen: boolean;
     }) => useGexbotData({ view }, marketOpen);
@@ -682,6 +683,7 @@ describe('useGexbotData', () => {
       'snapshots-latest',
       'velocity',
       'convexity-trend',
+      'maxchange-winners',
       'expected-move',
     ] as const)(
       'drops the prior session rows and reads %s at once',
@@ -741,8 +743,9 @@ describe('useGexbotData', () => {
     });
 
     it('joins a read that is still in flight: one request, answered once', async () => {
-      // Page load: marketOpen starts false and flips once auth and quotes
-      // land, often while the mount read is still out.
+      // A flip that lands while an earlier read of the same URL is still out
+      // (a tab loaded seconds before 09:30): marketOpen starts false and
+      // flips at the open while the mount read has not answered.
       const mount = deferred();
       mockFetchJson.mockReturnValueOnce(mount.promise);
       const { result, rerender } = renderHook(useView, {

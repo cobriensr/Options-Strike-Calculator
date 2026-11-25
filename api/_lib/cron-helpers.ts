@@ -139,10 +139,11 @@ export function isFuturesRthCt(): boolean {
  * weekend-aware; DST-safe because it is evaluated in ET.
  *
  * Narrower than `isFuturesRthCt()` on purpose: GexBot freezes its snapshot
- * at the equity close (every ticker/state key carries the same 15:59:59 ET
- * source_timestamp afterwards; production, 2026-11-23/24), so post-close
- * fetches only re-download a duplicate — and that hour produced 99.8% of the
- * GexBot TimeoutErrors.
+ * at the equity close (every key of a ticker keeps that ticker's last
+ * pre-close source_timestamp afterwards: 15:59:59–16:00:01 ET across tickers,
+ * SPX 15:59:59; production, 2026-11-23/24), so post-close fetches only
+ * re-download a duplicate — and that hour produced 99.8% of the GexBot
+ * TimeoutErrors.
  * The extra minute keeps the close-minute snapshot despite cron jitter.
  */
 export function isGexbotLiveCt(): boolean {
