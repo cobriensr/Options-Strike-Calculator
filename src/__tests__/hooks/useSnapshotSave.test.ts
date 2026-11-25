@@ -956,6 +956,100 @@ describe('useSnapshotSave — the quote time a live save carries', () => {
 });
 
 // ============================================================
+// THE CLUSTER MULTIPLIERS A ROW STORES
+// ============================================================
+
+// With no current yesterday the app's working multiplier is 1, which on a
+// stored row reads like a real "no clustering" value. App sends null for it
+// (clusterMultForSave), and the row's two tilts go empty with it: they are
+// computed from the same multiplier.
+describe('useSnapshotSave — the cluster multipliers a row carries', () => {
+  const tilted = {
+    ...defaultSignals,
+    clusterPutMult: 1.3,
+    clusterCallMult: 1.1,
+  };
+  // The working value when there is no yesterday: both tilts equal 1.
+  const flat = { ...defaultSignals, clusterPutMult: 1, clusterCallMult: 1 };
+
+  it.each([
+    ['live', baseMeta],
+    ['backtest', backtestMeta],
+  ])(
+    'saves all three as null on a %s row whose meta has no multiplier',
+    (_kind, meta) => {
+      renderHook(() =>
+        useSnapshotSave(
+          makeResults(),
+          flat,
+          { ...meta, clusterMult: null },
+          true,
+        ),
+      );
+
+      expect(body().clusterMult).toBeNull();
+      expect(body().clusterPutMult).toBeNull();
+      expect(body().clusterCallMult).toBeNull();
+    },
+  );
+
+  it('saves them as numbers when the meta has a multiplier', () => {
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        tilted,
+        { ...baseMeta, clusterMult: 1.2 },
+        true,
+      ),
+    );
+
+    expect(body().clusterMult).toBe(1.2);
+    expect(body().clusterPutMult).toBe(1.3);
+    expect(body().clusterCallMult).toBe(1.1);
+  });
+
+  it('saves a real multiplier of 1 as 1, not null', () => {
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        flat,
+        { ...baseMeta, clusterMult: 1 },
+        true,
+      ),
+    );
+
+    expect(body().clusterMult).toBe(1);
+    expect(body().clusterPutMult).toBe(1);
+    expect(body().clusterCallMult).toBe(1);
+  });
+
+  it('nulls the tilts even when the signals carry non-1 values, for a null multiplier', () => {
+    // The tilts must not outlive the multiplier they came from.
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        tilted,
+        { ...baseMeta, clusterMult: null },
+        true,
+      ),
+    );
+
+    expect(body().clusterPutMult).toBeNull();
+    expect(body().clusterCallMult).toBeNull();
+  });
+
+  it('leaves the tilts as the signals have them when the meta says nothing about the multiplier', () => {
+    renderHook(() =>
+      useSnapshotSave(makeResults(), tilted, { ...baseMeta }, true),
+    );
+
+    expect(body()).not.toHaveProperty('clusterMult');
+    expect(body().clusterPutMult).toBe(1.3);
+    expect(body().clusterCallMult).toBe(1.1);
+  });
+});
+
+// ============================================================
 // THE META APP PASSES (wiring)
 // ============================================================
 
@@ -981,6 +1075,12 @@ describe('buildSnapshotMeta', () => {
     skewPct: 3,
     clusterMult: 1.1,
   };
+
+  it('passes a null cluster multiplier through, so the row stores none', () => {
+    expect(
+      buildSnapshotMeta({ ...source, clusterMult: null }).clusterMult,
+    ).toBeNull();
+  });
 
   it('carries the date, entry time, parsed SPY and VIX, and the other inputs', () => {
     expect(buildSnapshotMeta(source)).toEqual({

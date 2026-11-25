@@ -125,7 +125,13 @@ export interface SnapshotMeta {
   spy?: number;
   vix?: number;
   skewPct?: number;
-  clusterMult?: number;
+  /**
+   * The cluster multiplier the row stores. Null when the app had no inputs for
+   * it (no current yesterday): the row then stores no multiplier and no tilts,
+   * rather than the working value 1. Absent leaves the row as the signals have
+   * it.
+   */
+  clusterMult?: number | null;
 }
 
 /** What App knows that the snapshot meta is built from. */
@@ -145,7 +151,8 @@ export interface SnapshotMetaSource {
   /** Each debounced input the results read, as [raw, debounced]. */
   debounced: ReadonlyArray<readonly [string, string]>;
   skewPct: number;
-  clusterMult: number;
+  /** `clusterMultForSave(cluster.signal)`: null when the signal had no inputs. */
+  clusterMult: number | null;
 }
 
 /**
@@ -476,8 +483,11 @@ export function useSnapshotSave(
       openingRangeSignal: signals.openingRangeSignal,
       vixTermSignal: signals.vixTermSignal,
       vixTermShape: signals.vixTermShape,
-      clusterPutMult: signals.clusterPutMult,
-      clusterCallMult: signals.clusterCallMult,
+      // The tilts come from the same working multiplier, so a row with no
+      // multiplier has no tilts either: a flat 1 here would pass for data.
+      clusterPutMult: meta.clusterMult === null ? null : signals.clusterPutMult,
+      clusterCallMult:
+        meta.clusterMult === null ? null : signals.clusterCallMult,
       rvIvRatio: signals.rvIvRatio,
       rvIvLabel: signals.rvIvLabel,
       rvAnnualized: signals.rvAnnualized,

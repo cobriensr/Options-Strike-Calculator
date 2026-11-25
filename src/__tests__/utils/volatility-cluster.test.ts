@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { computeClusterSignal } from '../../utils/volatility-cluster';
+import {
+  clusterMultForSave,
+  computeClusterSignal,
+} from '../../utils/volatility-cluster';
 import { getClusterMultiplier } from '../../data/vixRangeStats';
 
 /**
@@ -177,5 +180,35 @@ describe('computeClusterSignal: missing or unusable input gives 1', () => {
     expect(s.rangePct).toBeCloseTo((100 / 6800) * 100, 12);
     expect(s.cluster).toBeNull();
     expect(s.mult).toBe(1);
+  });
+});
+
+// A snapshot row stores the multiplier only when the signal had inputs. The
+// no-signal fallback is 1, which on a stored row reads like a real "no
+// clustering" value and feeds the ML features as one.
+describe('clusterMultForSave', () => {
+  const base = { vix: 20, spot: 6800, open: 6800, high: 6850, low: 6750 };
+
+  it('is the multiplier when the signal has a cluster', () => {
+    const signal = computeClusterSignal(base);
+    expect(signal.cluster).not.toBeNull();
+    expect(clusterMultForSave(signal)).toBe(signal.mult);
+  });
+
+  it('keeps a real multiplier of exactly 1', () => {
+    // A signal with a cluster whose multiplier is 1 is a real value: it saves.
+    const cluster = computeClusterSignal(base).cluster!;
+    expect(clusterMultForSave({ rangePct: 1, cluster, mult: 1 })).toBe(1);
+  });
+
+  it.each([
+    ['no yesterday range', { ...base, high: undefined, low: undefined }],
+    ['a range with no VIX', { ...base, vix: null }],
+    ['a VIX of 0', { ...base, vix: 0 }],
+    ['high at low', { ...base, high: 6800, low: 6800 }],
+  ])('is null with %s, the signal the 1 fallback comes from', (_n, inputs) => {
+    const signal = computeClusterSignal(inputs);
+    expect(signal.mult).toBe(1);
+    expect(clusterMultForSave(signal)).toBeNull();
   });
 });

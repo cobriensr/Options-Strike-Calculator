@@ -49,6 +49,16 @@ function referencePrice(
   return (high + low) / 2;
 }
 
+/**
+ * The multiplier a snapshot row stores: the signal's, or null when it had no
+ * inputs (no yesterday range, or no VIX above 0). The signal's `mult` is then
+ * the working value 1, which keeps the screen going; stored, a 1 would read
+ * like a real "no clustering" day and feed the day's ML features as one.
+ */
+export function clusterMultForSave(signal: ClusterSignal): number | null {
+  return signal.cluster == null ? null : signal.mult;
+}
+
 export function computeClusterSignal({
   vix,
   spot,
