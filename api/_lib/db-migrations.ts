@@ -6142,4 +6142,57 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 212,
+    description:
+      'interval_ba source column, live settings and tape days tables',
+    statements: (sql) => [
+      // Spec: docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md,
+      // 6.2. `source` says who wrote a row: live (uw-stream, fired_at is wall
+      // clock at detection) or replay (the Full Tape, fired_at is the
+      // crossing tick). The default means uw-stream's alert INSERT needs no
+      // change. The constant default is metadata-only, so the ADD COLUMN does
+      // not rewrite the table.
+      sql`ALTER TABLE interval_ba_alerts
+            ADD COLUMN source TEXT NOT NULL DEFAULT 'live'`,
+      sql`ALTER TABLE interval_ba_alerts
+            ADD CONSTRAINT interval_ba_alerts_source_check
+            CHECK (source IN ('live', 'replay'))`,
+      // The 17,893 rows before 2026-05-13 are an old tape replay, so they are
+      // marked replay at once. The cut is strictly before 05-13.
+      sql`UPDATE interval_ba_alerts
+            SET source = 'replay'
+            WHERE expiry < DATE '2026-05-13'`,
+      // One row per uw-stream process start; written by uw-stream with
+      // ON CONFLICT (booted_at) DO NOTHING. booted_at is set once at import,
+      // so a retry carries the same key.
+      sql`CREATE TABLE interval_ba_live_settings (
+            booted_at             TIMESTAMPTZ PRIMARY KEY,
+            enabled               BOOLEAN NOT NULL,
+            tickers               TEXT[] NOT NULL,
+            ratio_threshold       NUMERIC(6,4) NOT NULL,
+            premium_floor         NUMERIC(14,2) NOT NULL,
+            window_sec            INTEGER NOT NULL,
+            multi_leg_share_max   NUMERIC(6,4) NOT NULL,
+            multi_leg_codes       TEXT[] NOT NULL,
+            confluence_window_sec INTEGER NOT NULL
+          )`,
+      // The nightly job's "done" marker and a durable per-day health record.
+      sql`CREATE TABLE interval_ba_tape_days (
+            day              DATE PRIMARY KEY,
+            done_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+            tape_alerts      INTEGER NOT NULL,
+            live_rows        INTEGER NOT NULL,
+            live_missed      INTEGER NOT NULL,
+            live_only        INTEGER NOT NULL,
+            value_mismatched INTEGER NOT NULL,
+            inserted         INTEGER NOT NULL,
+            inserts_held     TEXT,
+            removed          INTEGER NOT NULL,
+            flags_changed    INTEGER NOT NULL,
+            flags_unmatched  INTEGER NOT NULL,
+            spot_filled      INTEGER NOT NULL
+          )`,
+    ],
+  },
 ];
