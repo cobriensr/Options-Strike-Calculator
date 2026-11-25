@@ -137,12 +137,14 @@ const STALE_TAB_MINUTES = 10;
 const SPX_RANGE_TOLERANCE = 10;
 
 /**
- * The first moment the app saves a null cluster multiplier, RV and tilts while
- * it has no current yesterday (spec 2026-11-25-missing-yesterday-marking-
- * design.md): 00:00 CT on the day after that release was deployed. Every row
- * first saved at or after it was written by the new app, so a null multiplier
- * or RV on one means "no yesterday", not an ordinary empty. A Postgres
- * timestamp literal, read on the database's side with the zone named.
+ * From this moment a null RV on a slot row means "the app had no current
+ * yesterday" (spec 2026-11-25-missing-yesterday-marking-design.md). Before it,
+ * about 1,300 slot rows, mostly January to August, have no RV from before RV was
+ * saved on every row, so a plain null test would blank their dates on a
+ * rebuild. Fixed ahead of the deploy, so a delayed push is harmless: an
+ * old-app row saved after it in a gap has a multiplier of 1 but a null RV, and
+ * is caught. A Postgres timestamp literal, read on the database's side with
+ * the zone named.
  */
 const MISSING_YESTERDAY_CUTOFF = '2026-11-25 00:00 America/Chicago';
 
@@ -161,20 +163,22 @@ const MISSING_YESTERDAY_CUTOFF = '2026-11-25 00:00 America/Chicago';
  *   `date`, in days.
  * - `saved_minutes_ct`: the CT clock time of the first save, in minutes after
  *   midnight.
- * - `missing_yesterday`: the row was first saved at or after
- *   `MISSING_YESTERDAY_CUTOFF` and has no `cluster_mult` or no
- *   `rv_annualized`. From that moment the app saves those two as null while it
- *   has no current yesterday, where before it saved a multiplier of 1. Rows
- *   from before keep the empties history already has (the pre-market row has
- *   no multiplier, and about 1,300 rows from January to August have no RV), so
- *   the test is time-bounded, not a plain null check.
+ * - `missing_yesterday`: the row has no `cluster_mult` (on any date), or has no
+ *   `rv_annualized` and was first saved at or after `MISSING_YESTERDAY_CUTOFF`.
+ *   While it has no current yesterday the app saves a null multiplier, tilts
+ *   and RV, where before it saved a multiplier of 1 with a null RV. A null
+ *   multiplier on any date is safe to judge: every such row in production
+ *   (121, checked 2026-11-25) is a `pre-market` row, which has no slot. It
+ *   also catches an old row rewritten in place without yesterday, since
+ *   `created_at` is kept. A null RV is judged only from the cutoff on.
  * `created_at` is the first insert's time: an ON CONFLICT update never
  * changes it.
  */
 export const SNAPSHOT_TRUST_COLUMNS_SQL = `is_backtest,
   (created_at >= TIMESTAMPTZ '2026-10-28 00:00 America/Chicago') AS flag_reliable,
-  (created_at >= TIMESTAMPTZ '${MISSING_YESTERDAY_CUTOFF}'
-    AND (cluster_mult IS NULL OR rv_annualized IS NULL)) AS missing_yesterday,
+  (cluster_mult IS NULL
+    OR (rv_annualized IS NULL
+      AND created_at >= TIMESTAMPTZ '${MISSING_YESTERDAY_CUTOFF}')) AS missing_yesterday,
   ((created_at AT TIME ZONE 'America/Chicago')::date - date) AS saved_day_offset,
   (EXTRACT(HOUR FROM created_at AT TIME ZONE 'America/Chicago')::int * 60
     + EXTRACT(MINUTE FROM created_at AT TIME ZONE 'America/Chicago')::int) AS saved_minutes_ct`;
@@ -227,10 +231,10 @@ export type FeatureSnapshotRejection =
  *    (`no-price-range`);
  * 8. `spx` is inside its range, give or take SPX_RANGE_TOLERANCE
  *    (`spx-outside-range`);
- * 9. it was not saved, from MISSING_YESTERDAY_CUTOFF on, without a cluster
- *    multiplier or RV (`missing-yesterday`): the app had no current yesterday,
- *    and a multiplier of 1 on it would not be a real "no clustering" day.
- *    Every row, reliable backtests included, takes this test.
+ * 9. it was saved with a cluster multiplier, and, from MISSING_YESTERDAY_CUTOFF
+ *    on, with RV (`missing-yesterday`): without them the app had no current
+ *    yesterday, and a multiplier of 1 on such a row would not be a real "no
+ *    clustering" day. Every row, reliable backtests included, takes this test.
  * A reliable backtest row (`is_backtest`, first saved from 2026-10-28) skips
  * tests 3 to 5: it is built from candles for its own slot, so the time it was
  * first saved says nothing about its values, and a later replay that updated

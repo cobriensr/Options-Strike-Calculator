@@ -2771,8 +2771,9 @@ describe('featureSnapshotRejection', () => {
       'saved-late',
     ],
 
-    // Test 9: a row saved, from the cutoff on, with no multiplier or no RV
-    // (`missing_yesterday`, computed in SQL by SNAPSHOT_TRUST_COLUMNS_SQL).
+    // Test 9: a row with no multiplier, or with no RV from the cutoff on
+    // (`missing_yesterday`, computed in SQL by SNAPSHOT_TRUST_COLUMNS_SQL; the
+    // pglite suite runs that text on both sides of the cutoff).
     [
       'a row saved without yesterday’s fields fails missing-yesterday',
       '10:00 AM CT',

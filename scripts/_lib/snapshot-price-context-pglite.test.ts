@@ -1034,34 +1034,36 @@ describe('SNAPSHOT_TRUST_COLUMNS_SQL', () => {
     expect(trust).toMatchObject({ is_backtest: true, flag_reliable: reliable });
   });
 
-  // `missing_yesterday`: first saved at or after MISSING_YESTERDAY_CUTOFF,
-  // 2026-11-25 00:00 CT (06:00Z, CST), with no multiplier or no RV. Rows saved
-  // before it keep the empty values history already has: about one row a date
-  // with no multiplier (the pre-market row) and about 1,300 from January to
-  // August with no RV, which this rule must not blank.
+  // `missing_yesterday`: no multiplier on any date, or no RV on a row first saved
+  // at or after MISSING_YESTERDAY_CUTOFF (2026-11-25 00:00 CT, 06:00Z in CST).
+  // Every no-multiplier row in production is a pre-market row, which fails the
+  // slot test anyway. About 1,300 slot rows, mostly January to August, have no
+  // RV from before it was saved on every row, and the rule must not blank their
+  // dates: a null RV counts only from the cutoff on.
   it.each<[string, string, SeedOpts, boolean]>([
     [
-      'a second before the cutoff, with no multiplier',
+      'no RV a second before the cutoff',
       '05:59:59',
-      { clusterMult: null },
+      { rvAnnualized: null },
       false,
     ],
+    ['no RV at the cutoff', '06:00:00', { rvAnnualized: null }, true],
     [
-      'at the cutoff, with no multiplier',
-      '06:00:00',
+      'no multiplier a second before the cutoff',
+      '05:59:59',
       { clusterMult: null },
       true,
     ],
-    ['at the cutoff, with no RV', '06:00:00', { rvAnnualized: null }, true],
+    ['no multiplier at the cutoff', '06:00:00', { clusterMult: null }, true],
     [
-      'at the cutoff, with neither',
+      'neither at the cutoff',
       '06:00:00',
       { clusterMult: null, rvAnnualized: null },
       true,
     ],
-    ['at the cutoff, with both present', '06:00:00', {}, false],
+    ['both present at the cutoff', '06:00:00', {}, false],
   ])(
-    'the missing-yesterday cutoff: %s',
+    'the missing-yesterday rule: %s',
     async (_label, time, fields, missing) => {
       const trust = await trustOf('2026-11-25', {
         createdAt: `2026-11-25T${time}Z`,
@@ -1072,48 +1074,62 @@ describe('SNAPSHOT_TRUST_COLUMNS_SQL', () => {
     },
   );
 
+  it('keeps a slot row saved before the cutoff with no RV trusted, as it is today', async () => {
+    // March: the months of no-RV rows.
+    const trust = await trustOf('2026-03-10', {
+      createdAt: '2026-03-10T16:00:00Z',
+      rvAnnualized: null,
+    });
+
+    expect(trust.missing_yesterday).toBe(false);
+  });
+
   it.each([
     ['no multiplier', { clusterMult: null }],
-    ['no RV', { rvAnnualized: null }],
     ['neither', { clusterMult: null, rvAnnualized: null }],
   ])(
-    'leaves a row saved before the cutoff with %s trusted, as it is today',
+    'rejects a row with %s whatever its date: an old row rewritten without yesterday',
     async (_label, fields) => {
-      // March: the months of no-RV rows, and the pre-market-style empties.
       const trust = await trustOf('2026-03-10', {
         createdAt: '2026-03-10T16:00:00Z',
         ...fields,
       });
 
-      expect(trust.missing_yesterday).toBe(false);
+      expect(trust.missing_yesterday).toBe(true);
     },
   );
 
-  it('reads the cutoff on the Chicago clock whatever the session time zone is', async () => {
-    await seed([
-      [
-        '2026-11-25',
-        '10:00 AM CT',
-        null,
-        null,
-        null,
-        null,
-        null,
-        { createdAt: '2026-11-25T06:00:00Z', clusterMult: null },
-      ],
-    ]);
-    await db.query("SET TIME ZONE 'Asia/Tokyo'");
-    try {
-      const { rows } = await db.query<Trust>(
-        `SELECT ${SNAPSHOT_TRUST_COLUMNS_SQL}
-           FROM market_snapshots WHERE date = '2026-11-25'`,
-      );
+  it.each([
+    ['a second before the cutoff', '2026-11-25T05:59:59Z', false],
+    ['at the cutoff', '2026-11-25T06:00:00Z', true],
+  ])(
+    'reads the cutoff on the Chicago clock whatever the session time zone is, %s',
+    async (_label, createdAt, missing) => {
+      await seed([
+        [
+          '2026-11-25',
+          '10:00 AM CT',
+          null,
+          null,
+          null,
+          null,
+          null,
+          { createdAt, rvAnnualized: null },
+        ],
+      ]);
+      await db.query("SET TIME ZONE 'Asia/Tokyo'");
+      try {
+        const { rows } = await db.query<Trust>(
+          `SELECT ${SNAPSHOT_TRUST_COLUMNS_SQL}
+             FROM market_snapshots WHERE date = '2026-11-25'`,
+        );
 
-      expect(rows[0]?.missing_yesterday).toBe(true);
-    } finally {
-      await db.query('RESET TIME ZONE');
-    }
-  });
+        expect(rows[0]?.missing_yesterday).toBe(missing);
+      } finally {
+        await db.query('RESET TIME ZONE');
+      }
+    },
+  );
 
   it.each([
     [
