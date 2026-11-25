@@ -50,13 +50,13 @@ export interface DaySummaryRead {
   barCount: number;
 }
 
-function formatVolume(v: number): string {
+export function formatVolume(v: number): string {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
   return Math.floor(v).toString();
 }
 
-function formatDelta(d: number | null): string {
+export function formatDelta(d: number | null): string {
   if (d === null || !Number.isFinite(d)) return 'n/a';
   const sign = d >= 0 ? '+' : '';
   return `${sign}${d.toFixed(2)}`;
