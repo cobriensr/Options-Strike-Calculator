@@ -4,15 +4,20 @@ Each test runs the real replay module over a small tape written in tmp_path. The
 patched (R3):
 
 - DuckDB's R2 side: `fulltape_connection` returns a local DuckDB connection and `r2_url` the
-  local tape's path;
+  local tape's path. The connection fails the test when a database transaction is open while it
+  works: no transaction may idle through a replay;
 - psycopg2.connect returns a fake connection over an in-memory `interval_ba_alerts`. Its
-  transactions snapshot and restore the table, and psycopg2's own execute_values runs against
-  its cursor, so each page of a batched write arrives as one statement with its rows;
+  transactions snapshot and restore the table, a read-only one rejects writes, a session-level
+  read-only setting is refused (it would stick to a pooled backend), and psycopg2's own
+  execute_values runs against its cursor, so each page of a batched write arrives as one
+  statement with its rows;
 - boto3.client returns a fake R2 client.
 
-No test opens a database or R2. Run from the repo root with ml/.venv:
+The tool's shared machinery (interval_ba_tape_runs.py) is patched where it lives. No test opens
+a database or R2. Run from the repo root with ml/.venv:
 
-    ml/.venv/Scripts/python -m pytest scripts/test_interval_ba_tape.py -q
+    ml/.venv/Scripts/python -m pytest scripts/test_interval_ba_tape.py \\
+        scripts/test_interval_ba_tape_runs.py -q
 """
 
 from __future__ import annotations
@@ -32,11 +37,13 @@ from zoneinfo import ZoneInfo
 
 import duckdb
 import interval_ba_tape as tool
+import interval_ba_tape_runs as runs
 import psycopg2
 import psycopg2.errors
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from botocore.exceptions import ClientError
 
 ibr = sys.modules["interval_ba_replay"]
 
@@ -53,19 +60,24 @@ EDGE_FIRST = date(2026, 5, 13)
 EDGE_LAST = date(2026, 7, 22)
 
 SECRETS = {
+    # The pooled host, as .env.local holds it; the tool connects to the direct one.
     "DATABASE_URL": (
-        "postgresql://owner-sekret:pw-sekret-123@db-sekret.example.neon.tech/neondb?sslmode=require"
+        "postgresql://owner-sekret:pw-sekret-123@db-sekret-pooler.example.neon.tech/neondb"
+        "?sslmode=require"
     ),
     "R2_ACCESS_KEY_ID": "akid-sekret-456",
     "R2_SECRET_ACCESS_KEY": "sak-sekret-789",
     "R2_ENDPOINT_URL": "https://acct-sekret.r2.cloudflarestorage.com",
     "R2_BUCKET_FULLTAPE": "bucket-sekret",
 }
+DIRECT_URL = SECRETS["DATABASE_URL"].replace("-pooler.", ".")
 SECRET_PARTS = (
     *SECRETS.values(),
+    DIRECT_URL,
     "owner-sekret",
     "pw-sekret-123",
-    "db-sekret.example.neon.tech",
+    "db-sekret-pooler.example.neon.tech",
+    "db-sekret.example.neon.tech",  # the direct host
     "db-sekret",
     "acct-sekret.r2.cloudflarestorage.com",
     "acct-sekret",  # the R2 account id: the endpoint host's first label
@@ -207,11 +219,7 @@ class FakeDb:
         ]
 
     def writes(self) -> list[Statement]:
-        return [
-            s
-            for s in self.statements
-            if not s.sql.lstrip().startswith(("SELECT", "SET TRANSACTION"))
-        ]
+        return [s for s in self.statements if not s.sql.lstrip().startswith(_READS)]
 
     def writes_starting(self, prefix: str) -> list[Statement]:
         return [s for s in self.writes() if s.sql.lstrip().startswith(prefix)]
@@ -252,6 +260,10 @@ class FakeConn:
             self.readonly = readonly
         if autocommit is not None:
             self._autocommit = autocommit
+        if self.readonly and self._autocommit:
+            # psycopg2 would SET default_transaction_read_only on the session, which through
+            # Neon's transaction-mode pooler sticks to a backend that later writers reuse.
+            raise AssertionError("a session-level read-only setting: it outlives the session")
 
     def cursor(self, name: str | None = None) -> FakeCursor:
         return FakeCursor(self)
@@ -280,6 +292,12 @@ class FakeConn:
 _DAY_SELECT = re.compile(
     r"^SELECT (?P<columns>.+) FROM interval_ba_alerts WHERE expiry = %\(day\)s ORDER BY id$"
 )
+_MONTH_COUNTS = (
+    "SELECT to_char(expiry, 'YYYY-MM'), ticker, count(*) FROM interval_ba_alerts"
+    " WHERE expiry = ANY(%s) GROUP BY 1, 2"
+)
+# What neither writes nor needs a writable transaction.
+_READS = ("SELECT", "SET TRANSACTION", "SET LOCAL")
 
 
 class FakeCursor:
@@ -308,14 +326,23 @@ class FakeCursor:
         conn.begin()
         if db.fail_on is not None and db.fail_on in text:
             raise psycopg2.OperationalError("server closed the connection unexpectedly")
-        writes = not text.lstrip().startswith(("SELECT", "SET TRANSACTION"))
+        writes = not text.lstrip().startswith(_READS)
         if writes and conn.readonly:
             raise psycopg2.errors.ReadOnlySqlTransaction("cannot write in a read-only transaction")
         db.statements.append(Statement(text, params, conn.readonly))
         self._result, self.description = [], None
-        if text.startswith("SET TRANSACTION"):
+        if text.startswith(("SET TRANSACTION", "SET LOCAL")):
             return
-        if text == "SELECT count(*) FROM interval_ba_alerts":
+        if text == _MONTH_COUNTS:
+            assert isinstance(params, tuple)
+            (days,) = params
+            counts: dict[tuple[str, str], int] = {}
+            for row in db.rows.values():
+                if row["expiry"] in days:
+                    key = (row["expiry"].strftime("%Y-%m"), row["ticker"])
+                    counts[key] = counts.get(key, 0) + 1
+            self._result = [(*key, count) for key, count in counts.items()]
+        elif text == "SELECT count(*) FROM interval_ba_alerts":
             self._result = [(len(db.rows) + db.count_skew,)]
         elif text == "SELECT * FROM interval_ba_alerts ORDER BY id":
             self.description = [(name,) for name in TABLE_COLUMNS]
@@ -347,6 +374,8 @@ class FakeCursor:
             if "a.expiry = v.day" in text and row["expiry"] != day:
                 continue
             if "a.source = 'replay'" in text and row["source"] != "replay":
+                continue
+            if "NOT a.acknowledged" in text and row["acknowledged"]:
                 continue
             del db.rows[row_id]
             gone.append((row_id,))
@@ -382,19 +411,25 @@ class FakeCursor:
 
 class FakeS3:
     """put_object and head_object over a dict. `tamper` changes what head_object reports: its
-    "Metadata" merges into the object's metadata, any other key replaces that field."""
+    "Metadata" merges into the object's metadata, any other key replaces that field. `fail`
+    makes the named operation raise the given error."""
 
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], tuple[bytes, dict[str, str]]] = {}
         self.puts: list[str] = []
         self.tamper: dict[str, Any] = {}
+        self.fail: dict[str, Exception] = {}
 
     def put_object(self, *, Bucket: str, Key: str, Body: bytes, Metadata: dict[str, str], **_: Any):  # noqa: N803
+        if "put_object" in self.fail:
+            raise self.fail["put_object"]
         self.puts.append(Key)
         self.objects[(Bucket, Key)] = (bytes(Body), dict(Metadata))
         return {}
 
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        if "head_object" in self.fail:
+            raise self.fail["head_object"]
         body, metadata = self.objects[(Bucket, Key)]
         changes = dict(self.tamper)
         return {
@@ -453,27 +488,47 @@ class World:
         self, run: Path, *, delete: int | None = None, insert: int | None = None
     ) -> tuple[int, str]:
         """`rebuild --apply` with the plan's totals over the unapplied days, unless given."""
-        totals = plan_totals(run)
+        if delete is None or insert is None:
+            totals = plan_totals(run)
+            delete = totals["delete"] if delete is None else delete
+            insert = totals["insert"] if insert is None else insert
         return self.run(
             "rebuild",
             "--apply",
             "--run",
             str(run),
             "--expect-delete",
-            str(totals["delete"] if delete is None else delete),
+            str(delete),
             "--expect-insert",
-            str(totals["insert"] if insert is None else insert),
+            str(insert),
         )
 
 
 def plan_totals(run: Path) -> dict[str, int]:
     """The plan's delete and insert totals over the days with no marker yet."""
-    plan = tool.load_plan(run)
+    plan = runs.load_plan(run)
     days = [entry for day, entry in plan["days"].items() if not (run / f"{day}.applied").exists()]
     return {
         "delete": sum(entry["delete"] for entry in days),
         "insert": sum(entry["insert"] for entry in days),
     }
+
+
+class CheckedDuck:
+    """A local DuckDB connection that fails the test when any database transaction is open while
+    DuckDB works: a replay takes seconds, and no transaction may idle through one."""
+
+    def __init__(self, db: FakeDb) -> None:
+        self._db = db
+        self._con = duckdb.connect()
+
+    def execute(self, *args: Any) -> Any:
+        open_ = [conn for conn in self._db.conns if conn.in_transaction]
+        assert not open_, "a database transaction is open while DuckDB works"
+        return self._con.execute(*args)
+
+    def close(self) -> None:
+        self._con.close()
 
 
 @pytest.fixture
@@ -486,12 +541,12 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> World:
     for name in SECRETS:
         if name != "DATABASE_URL":
             monkeypatch.setenv(name, "")
-    monkeypatch.setattr(tool, "RUNS_DIR", w.runs)
-    monkeypatch.setattr(tool, "fulltape_connection", lambda **kwargs: duckdb.connect())
-    monkeypatch.setattr(tool, "r2_url", lambda day: w.tapes[day])
+    monkeypatch.setattr(runs, "RUNS_DIR", w.runs)
+    monkeypatch.setattr(runs, "fulltape_connection", lambda **kwargs: CheckedDuck(w.db))
+    monkeypatch.setattr(runs, "r2_url", lambda day: w.tapes[day])
     monkeypatch.setattr(psycopg2, "connect", w.db.connect)
-    monkeypatch.setattr(tool.boto3, "client", lambda *a, **k: w.s3)
-    monkeypatch.setattr(tool, "_utc_now", lambda: w.clock())
+    monkeypatch.setattr(runs.boto3, "client", lambda *a, **k: w.s3)
+    monkeypatch.setattr(runs, "utc_now", lambda: w.clock())
     return w
 
 
@@ -524,7 +579,10 @@ def test_verify_is_read_only(world: World):
     assert code == 0, out
     assert world.db.writes() == []
     (conn,) = world.db.conns
-    assert conn.readonly and conn.autocommit
+    # BEGIN READ ONLY per transaction, nothing set on the pooled session; rolled back after the
+    # day's read, so no transaction is left open.
+    assert conn.readonly and not conn.autocommit
+    assert not conn.in_transaction and conn.rollbacks == 1
     assert all(s.readonly for s in world.db.statements)
     assert "| 2026-03-10 | 2 | 2 | 2 | 0 | 0 | 0 | 0 |" in out
 
@@ -663,7 +721,8 @@ def test_rebuild_on_05_13_inserts_only_before_first_live_row_and_skips_live_twin
     assert [t["option_chain"] for t in day_plan["twins"]] == [setup["twin"]]
     report = (run / "report.md").read_text(encoding="utf-8")
     assert setup["twin"] in report and "twin" in report.lower()
-    assert tool.load_plan(run)["days"]["2026-05-13"]["twins"] == 1
+    assert "| 2026-05-13 | before first live row | 2026-05-13T15:55:37.500000+00:00 |" in report
+    assert runs.load_plan(run)["days"]["2026-05-13"]["twins"] == 1
 
     code, out = world.apply(run)
 
@@ -674,7 +733,11 @@ def test_rebuild_on_05_13_inserts_only_before_first_live_row_and_skips_live_twin
     assert code == 0, out
 
 
-def test_rebuild_on_07_22_inserts_only_after_last_live_row_and_skips_live_twins(world: World):
+def edge_last_world(
+    world: World, *, live_rows: int = 11, last: str = "14:52:46.500"
+) -> dict[str, Any]:
+    """2026-07-22: `live_rows` live rows, the last at `last` with a tape twin after it (spec 4
+    has 11, the last at 14:52:46Z)."""
     d = EDGE_LAST
     early, missed = chain("SPY", "C", 670, d), chain("QQQ", "P", 590, d)
     twin, late, spxw = (
@@ -696,22 +759,62 @@ def test_rebuild_on_07_22_inserts_only_after_last_live_row_and_skips_live_twins(
             ),
         )
     }
-    world.db.add(alerts[early], source="live", fired_at=at(d, "14:00:00.250"))
-    world.db.add(alerts[twin], source="live", fired_at=at(d, "14:52:46.500"))
+    live = [world.db.add(alerts[early], source="live", fired_at=at(d, "14:00:00.250"))]
+    for n in range(live_rows - 2):  # the morning's other live rows, at keys the tape lacks
+        live.append(
+            world.db.add(
+                replace(alerts[early], option_chain=chain("SPY", "P", 600 + n, d)),
+                source="live",
+                fired_at=at(d, f"13:{40 + n}:00"),
+            )
+        )
+    live.append(world.db.add(alerts[twin], source="live", fired_at=at(d, last)))
+    return {"insert": {late, spxw}, "twin": twin, "live": live}
 
-    code, out, run = world.dry_run(d)
+
+def test_rebuild_on_07_22_inserts_only_after_last_live_row_and_skips_live_twins(world: World):
+    setup = edge_last_world(world)
+    live_before = copy.deepcopy([world.db.rows[i] for i in setup["live"]])
+
+    code, out, run = world.dry_run(EDGE_LAST)
 
     assert code == 0, out
     day_plan = json.loads((run / "days" / "2026-07-22.json").read_text(encoding="utf-8"))
-    assert {a["option_chain"] for a in day_plan["inserts"]} == {late, spxw}
-    assert [t["option_chain"] for t in day_plan["twins"]] == [twin]
-    assert twin in (run / "report.md").read_text(encoding="utf-8")
+    assert {a["option_chain"] for a in day_plan["inserts"]} == setup["insert"]
+    assert [t["option_chain"] for t in day_plan["twins"]] == [setup["twin"]]
+    report = (run / "report.md").read_text(encoding="utf-8")
+    assert setup["twin"] in report
+    assert "| 2026-07-22 | after last live row | 2026-07-22T14:52:46.500000+00:00 |" in report
 
     code, out = world.apply(run)
 
     assert code == 0, out
-    assert {r["option_chain"] for r in world.db.day(d, "replay")} == {late, spxw}
-    assert {r["option_chain"] for r in world.db.day(d, "live")} == {early, twin}
+    assert {r["option_chain"] for r in world.db.day(EDGE_LAST, "replay")} == setup["insert"]
+    assert [world.db.rows[i] for i in setup["live"]] == live_before
+
+
+@pytest.mark.parametrize(
+    ("day", "case"),
+    [
+        (EDGE_FIRST, "first live row a second late"),
+        (EDGE_LAST, "ten live rows"),
+        (EDGE_LAST, "last live row a second late"),
+    ],
+)
+def test_edge_day_bound_must_be_the_specs(world: World, day: date, case: str):
+    if day == EDGE_FIRST:
+        setup = edge_first_world(world)
+        world.db.rows[setup["live"][0]]["fired_at"] = at(EDGE_FIRST, "15:55:38.100")
+    elif case == "ten live rows":
+        edge_last_world(world, live_rows=10)
+    else:
+        edge_last_world(world, last="14:52:47.400")
+
+    code, out, run = world.dry_run(day)
+
+    assert code == 1
+    assert day.isoformat() in out and "spec section 4" in out
+    assert not (run / "plan.json").exists()
 
 
 def test_rebuild_never_deletes_a_live_row(world: World):
@@ -729,6 +832,7 @@ def test_rebuild_never_deletes_a_live_row(world: World):
     (delete,) = world.db.writes_starting("DELETE")
     assert "a.source = 'replay'" in delete.sql
     assert "a.expiry = v.day" in delete.sql  # and only ever the day being applied
+    assert "NOT a.acknowledged" in delete.sql  # nor a row someone acknowledged
     assert delete.params == [(stale, EDGE_FIRST)]
     assert all(i in world.db.rows for i in setup["live"])
     assert stale not in world.db.rows
@@ -768,7 +872,7 @@ def test_rebuild_dry_run_flags_a_day_over_500(
 
     code, out, run = world.dry_run(OUTAGE)
 
-    plan = tool.load_plan(run)
+    plan = runs.load_plan(run)
     report = (run / "report.md").read_text(encoding="utf-8")
     assert plan["largest_day"] == {"day": "2026-08-04", "feed_rows": inside}
     assert plan["days"]["2026-08-04"]["insert"] == inside + outside
@@ -831,7 +935,7 @@ def test_report_has_before_after_per_ticker_and_month(world: World):
         "| 2026-04 | QQQ | 0 | 0 | 0 |",
     ):
         assert line in report
-    assert "| 2026-03-31 | full | 3 | 3 |" in report
+    assert "| 2026-03-31 | full | - | 3 | 3 |" in report
 
 
 def test_dry_run_stops_on_a_day_whose_tape_has_no_rows(world: World):
@@ -895,9 +999,35 @@ def test_apply_writes_the_plan_and_marks_each_day(world: World):
         assert keys(world.db.day(d, "replay")) == keys(world.alerts[d])
         marker = json.loads((run / f"{d.isoformat()}.applied").read_text(encoding="utf-8"))
         assert marker["deleted"] == 1 and marker["inserted"] == 2
-    assert "Measured after the apply" in (run / "report.md").read_text(encoding="utf-8")
+    # Each day's write transaction is bounded before its first read.
+    sql = [s.sql for s in world.db.statements]
+    for at_delete in [i for i, text in enumerate(sql) if text.startswith("DELETE")]:
+        assert sql[at_delete - 3] == "SET LOCAL statement_timeout = '60s'"
+        assert sql[at_delete - 2] == "SET LOCAL lock_timeout = '5s'"
+        assert sql[at_delete - 1].startswith("SELECT id, source, acknowledged")
+    # One grouped count for the measured table, not a read of every row of every day.
+    (grouped,) = [s for s in world.db.statements if "GROUP BY" in s.sql]
+    assert grouped.params == ([FULL_A, FULL_A2],)
+    report = (run / "report.md").read_text(encoding="utf-8")
+    measured = report.split("## Measured after the apply")[1]
+    assert "| 2026-03 | SPY | 2 | 2 | 0 |" in measured
+    assert "| 2026-03 | QQQ | 0 | 2 | +2 |" in measured
     code, out = world.run("verify", "--from", "2026-03-10", "--to", "2026-03-11")
     assert code == 0, out
+
+
+def test_connects_to_the_direct_host_never_the_pooler(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A, FULL_A2)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    code, out = world.run("verify", "--from", "2026-03-10", "--to", "2026-03-11")
+    assert code == 0, out
+
+    assert len(world.db.dsns) == 3
+    assert set(world.db.dsns) == {DIRECT_URL}
+    assert all("-pooler" not in dsn for dsn in world.db.dsns)
 
 
 @pytest.mark.parametrize("wrong", ["delete", "insert"])
@@ -933,17 +1063,33 @@ def test_resume_counts_only_unapplied_days(world: World):
     assert old[FULL_A2][0] not in world.db.rows
 
 
-@pytest.mark.parametrize("which", ["MODULE_PATH", "TOOL_PATH"])
+@pytest.mark.parametrize("which", ["replay module", *runs.TOOL_FILES])
 def test_apply_refuses_changed_module_hash(
     world: World, monkeypatch: pytest.MonkeyPatch, which: str
 ):
-    copy_path = world.tmp / "code" / f"{which}.py"
+    # Each code file in turn is a copy the test can edit: the replay module, and every file of
+    # the tool (the CLI and the shared machinery).
+    copy_path = world.tmp / "code" / Path(which).name
     copy_path.parent.mkdir()
-    shutil.copyfile(getattr(tool, which), copy_path)
-    monkeypatch.setattr(tool, which, copy_path)
+    if which == "replay module":
+        shutil.copyfile(runs.MODULE_PATH, copy_path.with_suffix(".py"))
+        copy_path = copy_path.with_suffix(".py")
+        monkeypatch.setattr(runs, "MODULE_PATH", copy_path)
+    else:
+        shutil.copyfile(runs.TOOL_FILES[which], copy_path)
+        monkeypatch.setitem(runs.TOOL_FILES, which, copy_path)
     two_full_days(world)
     code, out, run = world.dry_run(FULL_A, FULL_A2)
     assert code == 0, out
+    plan = runs.load_plan(run)
+    assert (
+        set(plan["tool_blobs"])
+        == set(runs.TOOL_FILES)
+        == {
+            "scripts/interval_ba_tape.py",
+            "scripts/interval_ba_tape_runs.py",
+        }
+    )
     with copy_path.open("a", encoding="utf-8") as handle:
         handle.write("# changed\n")
 
@@ -951,6 +1097,8 @@ def test_apply_refuses_changed_module_hash(
 
     assert code == 3
     assert "blob" in out
+    if which != "replay module":
+        assert which in out
     assert world.db.writes() == [] and world.s3.puts == []
 
 
@@ -980,6 +1128,82 @@ def test_apply_refuses_an_edited_day_file(world: World, edit: str):
     assert "2026-03-10" in out
     assert world.db.writes_starting("DELETE") == [] and world.db.writes_starting("INSERT") == []
     assert not (run / "2026-03-10.applied").exists()
+
+
+def _drop(mapping: dict[str, Any], key: str) -> None:
+    del mapping[key]
+
+
+# (what is damaged, how) over a fresh dry run of 03-10; each is refused with exit 3.
+_DAMAGES: list[tuple[str, Callable[[Path, dict[str, Any]], None]]] = [
+    ("plan without module_blob", lambda run, plan: _drop(plan, "module_blob")),
+    ("plan tool_blobs not a mapping", lambda run, plan: plan.update(tool_blobs=["x"])),
+    ("plan day without insert", lambda run, plan: _drop(plan["days"]["2026-03-10"], "insert")),
+    ("plan day delete not a count", lambda run, plan: plan["days"]["2026-03-10"].update(delete=[])),
+    ("plan day not a date", lambda run, plan: plan["days"].update({"03/10": {}})),
+    (
+        "day file not JSON",
+        lambda run, plan: (run / "days" / "2026-03-10.json").write_text("{", encoding="utf-8"),
+    ),
+    ("day file missing", lambda run, plan: (run / "days" / "2026-03-10.json").unlink()),
+    (
+        "day file without inserts",
+        lambda run, plan: (run / "days" / "2026-03-10.json").write_text(
+            '{"day": "2026-03-10"}', encoding="utf-8"
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("damage", "how"), _DAMAGES, ids=[name for name, _ in _DAMAGES])
+def test_apply_refuses_a_damaged_plan(
+    world: World, damage: str, how: Callable[[Path, dict[str, Any]], None]
+):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    totals = plan_totals(run)
+    plan = runs.load_plan(run)
+    how(run, plan)
+    (run / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    code, out = world.apply(run, delete=totals["delete"], insert=totals["insert"])
+
+    assert code == 3, out
+    assert "REFUSED" in out
+    assert len(world.db.dsns) == 1 and world.s3.puts == []  # the dry run's only
+
+
+def test_apply_with_an_unparseable_plan_is_a_bad_argument(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    (run / "plan.json").write_text('{"mode": "rebuild", "days": {', encoding="utf-8")
+
+    code, out = world.run(
+        "rebuild", "--apply", "--run", str(run), "--expect-delete", "1", "--expect-insert", "2"
+    )
+
+    assert code == 2
+    assert "does not parse" in out
+    assert len(world.db.dsns) == 1  # the dry run's only
+
+
+def test_apply_refuses_plan_counts_that_disagree_with_the_day_file(world: World):
+    # plan.json's count is what --expect is checked against, and the day file's write lists
+    # are what is written: an edit to the count alone must not pass the --expect check.
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    plan = runs.load_plan(run)
+    plan["days"]["2026-03-10"]["insert"] = 1
+    (run / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    code, out = world.apply(run, delete=1, insert=1)
+
+    assert code == 3
+    assert "2026-03-10" in out and "1 inserts" in out
+    assert len(world.db.dsns) == 1  # the dry run's only
 
 
 def test_day_already_in_end_state_is_marked_and_skipped_before_the_sha_check(world: World):
@@ -1104,6 +1328,12 @@ def test_first_apply_backs_up_every_row_locally_and_in_r2(world: World):
     assert json.loads((run / "backup.json").read_text(encoding="utf-8"))["r2_key"] == key
     (snapshot,) = [s for s in world.db.statements if s.sql.startswith("SET TRANSACTION")]
     assert "REPEATABLE READ" in snapshot.sql and "READ ONLY" in snapshot.sql
+    at = world.db.statements.index(snapshot)
+    assert [s.sql for s in world.db.statements[at + 1 : at + 4]] == [
+        "SET LOCAL statement_timeout = '60s'",
+        "SET LOCAL lock_timeout = '5s'",
+        "SELECT count(*) FROM interval_ba_alerts",
+    ]
 
 
 @pytest.mark.parametrize("failure", ["table count", "file bytes"])
@@ -1119,7 +1349,7 @@ def test_backup_readback_failure_stops_before_any_write(
     else:
         real = hashlib.file_digest
         monkeypatch.setattr(
-            tool.hashlib,
+            runs.hashlib,
             "file_digest",
             lambda handle, name: real(_Prefixed(handle), name),
         )
@@ -1174,6 +1404,44 @@ def test_r2_metadata_mismatch_stops_before_any_write(
     assert "R2" in out and named in out
     assert world.db.writes() == [] and world.db.rows == rows_before
     assert not (run / "backup.json").exists()
+
+
+@pytest.mark.parametrize("operation", ["put_object", "head_object"])
+def test_r2_client_error_stops_before_any_write(world: World, operation: str):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A, FULL_A2)
+    assert code == 0, out
+    rows_before = copy.deepcopy(world.db.rows)
+    world.s3.fail[operation] = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "denied for bucket-sekret"}},
+        "PutObject" if operation == "put_object" else "HeadObject",
+    )
+
+    code, out = world.apply(run)
+
+    assert code == 1
+    assert "ClientError" in out
+    assert "AccessDenied" not in out and "denied for" not in out  # its text is not shown
+    assert world.db.writes() == [] and world.db.rows == rows_before
+    assert not (run / "backup.json").exists()
+
+
+def test_database_error_during_the_backup_stream_stops_before_any_write(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A, FULL_A2)
+    assert code == 0, out
+    rows_before = copy.deepcopy(world.db.rows)
+    world.db.fail_on = "SELECT * FROM interval_ba_alerts"
+
+    code, out = world.apply(run)
+
+    assert code == 1
+    assert "FAILED: OperationalError" in out
+    assert "server closed" not in out
+    assert world.db.writes() == [] and world.db.rows == rows_before
+    assert not (run / "backup.json").exists() and world.s3.puts == []
+    (conn,) = world.db.conns[-1:]
+    assert not conn.in_transaction
 
 
 def test_resume_takes_no_new_backup(world: World):
@@ -1351,11 +1619,11 @@ def test_never_prints_secrets(world: World, monkeypatch: pytest.MonkeyPatch):
     outputs.append(out)
     assert code == 0, out
     outputs.append(world.run("verify", "--from", "2026-03-10", "--to", "2026-03-11")[1])
-    assert world.db.dsns and set(world.db.dsns) == {SECRETS["DATABASE_URL"]}
+    assert world.db.dsns and set(world.db.dsns) == {DIRECT_URL}
 
     # A tape the tape reader cannot find, at a path that names the bucket and the endpoint.
     monkeypatch.setattr(
-        tool,
+        runs,
         "r2_url",
         lambda day: str(
             world.tmp / "acct-sekret.r2.cloudflarestorage.com" / "bucket-sekret" / f"{day}.parquet"
@@ -1382,10 +1650,10 @@ def test_never_prints_secrets(world: World, monkeypatch: pytest.MonkeyPatch):
     def broken(**kwargs: Any):
         raise RuntimeError(
             f"endpoint {SECRETS['R2_ENDPOINT_URL']} key {SECRETS['R2_SECRET_ACCESS_KEY']}"
-            " for account acct-sekret"
+            " for account acct-sekret, database at db-sekret.example.neon.tech"
         )
 
-    monkeypatch.setattr(tool, "fulltape_connection", broken)
+    monkeypatch.setattr(runs, "fulltape_connection", broken)
     code, out = world.run("verify", "--from", "2026-03-10", "--to", "2026-03-10")
     outputs.append(out)
     assert code == 1 and "RuntimeError" in out

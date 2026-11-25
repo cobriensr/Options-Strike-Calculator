@@ -4,6 +4,9 @@ the live feed never covered.
 Spec: docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md, section 6.5. The
 detector is the shared replay module nightly/src/interval_ba_replay.py, loaded by its path. The
 tape is read from R2 through DuckDB's httpfs (ml/src/utils/r2.py); the table is production Neon.
+The mode-agnostic machinery (connections, windows, run folders, the backup and the apply
+driver) is in interval_ba_tape_runs.py beside this file; this file holds the command line and
+the modes.
 
 Modes:
 
@@ -20,24 +23,29 @@ Modes:
 The rebuild's days: every trading day from 2026-01-02 to 2026-05-12 and from 2026-07-23 to
 2026-09-04, plus 2026-05-13 for the tape alerts that fired before that day's first live row and
 2026-07-22 for those after its last live row. It refuses any other day. Per day it deletes the
-day's `source = 'replay'` rows and inserts the tape alerts in the window as `source = 'replay'`.
-A tape key that already has a live row is skipped and listed on the two edge days; on any other
-day a live row stops the dry run, because live never ran there. A live row is never deleted.
+day's unacknowledged `source = 'replay'` rows and inserts the tape alerts in the window as
+`source = 'replay'`. A tape key that already has a live row is skipped and listed on the two
+edge days; on any other day a live row stops the dry run, because live never ran there. The two
+edge days' bounds must be the ones spec section 4 names (the first live row in 15:55:37Z on
+05-13; 11 live rows on 07-22, the last in 14:52:46Z), or the run stops. A live row is never
+deleted.
 
 A run folder, docs/tmp/interval-ba-rebuild/<UTC stamp>-rebuild/, holds:
 
 - plan.json: per day and ticker the counts, one sha256 per day over the day and its exact write
-  set, the git blob hashes of the module and this tool, and root_label_mismatch;
+  set, the git blob hash of the replay module and of every file of the tool, and
+  root_label_mismatch;
 - days/<day>.json: the day's full write lists;
-- report.md: the counts per day, the live twins skipped, and before/after per ticker and month;
+- report.md: the counts and bound per day, the live twins skipped, and before/after per ticker
+  and month;
 - once applied: backup.jsonl and backup.json (the backup), and a <day>.applied marker per day.
 
-An apply refuses (exit 3) when a refusal window is open, when the module's or the tool's blob
-hash differs from the plan's, or when an --expect total differs from the plan's total over the
-days not yet applied. Its first apply writes every row of interval_ba_alerts to backup.jsonl,
-reads it back, copies it to R2 at backups/interval-ba-alerts/<UTC stamp>.jsonl and checks the
-copy's metadata, before any write; a later apply of the same run takes no new backup. Then, per
-day not yet marked:
+An apply refuses (exit 3) when a refusal window is open, when a code file's blob hash differs
+from the plan's, when plan.json or a pending day file is damaged or disagrees with the other,
+or when an --expect total differs from the plan's total over the days not yet applied. Its first
+apply writes every row of interval_ba_alerts to backup.jsonl, reads it back, copies it to R2 at
+backups/interval-ba-alerts/<UTC stamp>.jsonl and checks the copy, before any write; a later
+apply of the same run takes no new backup. Then, per day not yet marked:
 
 1. if the day's rows already equal the plan's end state, write the marker and go on;
 2. replay the day and, in the day's transaction before any write, re-plan it and compare the
@@ -53,7 +61,8 @@ overrides it, for a market holiday) and every day 07:15 to 12:30 UTC, the nightl
 
 Secrets: DATABASE_URL and the four R2_* names come from --env-file, else this checkout's
 .env.local, else the main checkout's. No value is ever printed; every line of output is
-redacted, and a database or R2 client error prints its class only. DATABASE_URL is production.
+redacted, and a database or R2 client error prints its class only. DATABASE_URL is production;
+the tool connects to its direct host, never the pooler.
 
 Usage, from the repo root, with ml/.venv (Windows):
 
@@ -70,192 +79,50 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
-import importlib.util
-import itertools
 import json
-import os
 import sys
-import tempfile
 import traceback
-import warnings
-from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
-from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
+from datetime import UTC, date, datetime, time
 from pathlib import Path
-from types import ModuleType
 from typing import Any
-from urllib.parse import unquote, urlsplit
-from zoneinfo import ZoneInfo
 
-import boto3
 import duckdb
 import psycopg2
 import psycopg2.extras
-from boto3.exceptions import Boto3Error
-from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
-from urllib3.exceptions import InsecureRequestWarning
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPO_ROOT / "nightly" / "src" / "interval_ba_replay.py"
-TOOL_PATH = Path(__file__).resolve()
-RUNS_DIR = REPO_ROOT / "docs" / "tmp" / "interval-ba-rebuild"
+# The shared machinery sits beside this file; -I keeps this folder off sys.path.
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
 
-# ml/src holds utils.r2 (the tape over httpfs) and the --env-file resolution this tool shares
-# with the anchor backfill. -I keeps both off sys.path, so add the folder here.
-_ML_SRC = str(REPO_ROOT / "ml" / "src")
-if _ML_SRC not in sys.path:
-    sys.path.insert(0, _ML_SRC)
+import interval_ba_tape_runs as runs  # noqa: E402
+from interval_ba_tape_runs import CheckFailedError, RefusedError, UsageError  # noqa: E402
 
-from anchor_backfill_extract import parse_env_file, resolve_env_file  # noqa: E402
-from utils.r2 import fulltape_connection, r2_url  # noqa: E402
-
-
-def _load_replay_module() -> ModuleType:
-    """nightly/src/interval_ba_replay.py, by its path. nightly/src never goes on sys.path: its
-    other modules would shadow this suite's. The module is registered under its name before it
-    runs, because @dataclass under `from __future__ import annotations` looks it up there."""
-    name = "interval_ba_replay"
-    loaded = sys.modules.get(name)
-    if loaded is not None and Path(loaded.__file__ or "").resolve() == MODULE_PATH.resolve():
-        return loaded
-    spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {MODULE_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        del sys.modules[name]
-        raise
-    return module
-
-
-ibr = _load_replay_module()
-
-_CT = ZoneInfo("America/Chicago")
+ibr = runs.ibr
 
 # The rebuild's days (spec 6.5 and 9). On the two edge days only the stretch with no live rows.
 FULL = "full"
 BEFORE_FIRST_LIVE = "before first live row"
 AFTER_LAST_LIVE = "after last live row"
-FIRST_LIVE_DAY = ibr.LIVE_START  # 2026-05-13, first live row 15:55:37Z
-LAST_LIVE_DAY_BEFORE_OUTAGE = date(2026, 7, 22)  # last live row 14:52:46Z
+FIRST_LIVE_DAY = ibr.LIVE_START  # 2026-05-13
+LAST_LIVE_DAY_BEFORE_OUTAGE = date(2026, 7, 22)
 _FULL_REBUILD_RANGES = (
     (date(2026, 1, 2), date(2026, 5, 12)),
     (date(2026, 7, 23), date(2026, 9, 4)),
 )
-# NYSE full-day closures in 2026, copied from MARKET_CLOSED_DATES in src/data/marketHours.ts.
-# The tool covers 2026 only and refuses other years.
-_CLOSED_2026 = frozenset(
-    date.fromisoformat(day)
-    for day in (
-        "2026-01-01",
-        "2026-01-19",
-        "2026-02-16",
-        "2026-04-03",
-        "2026-05-25",
-        "2026-06-19",
-        "2026-07-03",
-        "2026-09-07",
-        "2026-11-26",
-        "2026-12-25",
-    )
-)
-_CALENDAR_YEAR = 2026
+# The two edges as spec section 4 ("Live day edges") measured them, to the second. A table
+# that no longer holds them is not the one the windows were checked against.
+FIRST_LIVE_ROW_AT = datetime(2026, 5, 13, 15, 55, 37, tzinfo=UTC)
+LAST_LIVE_ROW_AT = datetime(2026, 7, 22, 14, 52, 46, tzinfo=UTC)
+LIVE_ROWS_ON_LAST_LIVE_DAY = 11
 
 # The feed shows at most this many alerts a day, between 08:30 and 15:00 CT (Review Focus 5).
 FEED_CAP = 500
 _FEED_START, _FEED_END = time(8, 30), time(15, 0)
 
-# Refusal windows: weekdays in CT, every day in UTC (the nightly run).
-_MARKET_START, _MARKET_END = time(8, 15), time(16, 0)
-_NIGHTLY_START, _NIGHTLY_END = time(7, 15), time(12, 30)
-
-BACKUP_PREFIX = "backups/interval-ba-alerts/"
-_BACKUP_PAGE = 2000
 _PAGE_ROWS = 500  # rows per write statement (spec 9)
-
-_ENV_NAMES = (
-    "DATABASE_URL",
-    "R2_ACCESS_KEY_ID",
-    "R2_SECRET_ACCESS_KEY",
-    "R2_ENDPOINT_URL",
-    "R2_BUCKET_FULLTAPE",
-)
-_R2_ENV_NAMES = _ENV_NAMES[1:]
-
-
-class UsageError(Exception):
-    """Exit 2."""
-
-
-class RefusedError(Exception):
-    """Exit 3: a window, a hash, an --expect total or the day list says no."""
-
-
-class CheckFailedError(Exception):
-    """Exit 1: a check on the data failed. Its text names days, keys, ids and counts only."""
-
-
-class BackupFailedError(CheckFailedError):
-    """The backup did not verify; nothing was written."""
-
-
-# --- Time and days ----------------------------------------------------------------------------
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def _stamp(now: datetime) -> str:
-    return now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-
-
-def window_refusal(now: datetime, *, allow_market_hours: bool) -> str | None:
-    """Why a writing mode may not run at `now`, or None."""
-    utc = now.astimezone(UTC)
-    if _NIGHTLY_START <= utc.time() < _NIGHTLY_END:
-        return (
-            f"{utc:%H:%M} UTC is inside 07:15-12:30 UTC, the nightly run's window"
-            " (--allow-market-hours does not cover it)"
-        )
-    local = now.astimezone(_CT)
-    if (
-        not allow_market_hours
-        and local.weekday() < 5
-        and _MARKET_START <= local.time() < _MARKET_END
-    ):
-        return (
-            f"{local:%a %H:%M} CT is inside weekdays 08:15-16:00 CT"
-            " (pass --allow-market-hours on a market holiday)"
-        )
-    return None
-
-
-def _refuse_in_window(allow_market_hours: bool, label: str = "") -> None:
-    reason = window_refusal(_utc_now(), allow_market_hours=allow_market_hours)
-    if reason is not None:
-        raise RefusedError(f"{label}{reason}")
-
-
-def trading_days(start: date, end: date) -> list[date]:
-    """The NYSE trading days from start to end, both included."""
-    if start > end:
-        raise UsageError(f"--from {start} is after --to {end}")
-    if start.year != _CALENDAR_YEAR or end.year != _CALENDAR_YEAR:
-        raise UsageError(f"the tool's holiday table covers {_CALENDAR_YEAR} only")
-    days, day = [], start
-    while day <= end:
-        if day.weekday() < 5 and day not in _CLOSED_2026:
-            days.append(day)
-        day += timedelta(days=1)
-    return days
 
 
 def rebuild_kind(day: date) -> str | None:
@@ -271,7 +138,7 @@ def rebuild_kind(day: date) -> str | None:
 
 REBUILD_DAYS: tuple[date, ...] = tuple(
     day
-    for day in trading_days(_FULL_REBUILD_RANGES[0][0], _FULL_REBUILD_RANGES[-1][1])
+    for day in runs.trading_days(_FULL_REBUILD_RANGES[0][0], _FULL_REBUILD_RANGES[-1][1])
     if rebuild_kind(day) is not None
 )
 
@@ -279,7 +146,7 @@ REBUILD_DAYS: tuple[date, ...] = tuple(
 def rebuild_days(start: date | None, end: date | None) -> list[date]:
     """The trading days from start to end (the whole list by default). Refuses a range that
     holds any day outside the rebuild's list."""
-    days = trading_days(start or REBUILD_DAYS[0], end or REBUILD_DAYS[-1])
+    days = runs.trading_days(start or REBUILD_DAYS[0], end or REBUILD_DAYS[-1])
     outside = [day for day in days if rebuild_kind(day) is None]
     if outside:
         listed = ", ".join(day.isoformat() for day in outside[:5])
@@ -292,123 +159,6 @@ def rebuild_days(start: date | None, end: date | None) -> list[date]:
     if not days:
         raise UsageError("no trading day in that range")
     return days
-
-
-# --- Output -----------------------------------------------------------------------------------
-
-
-class Output:
-    """stdout and stderr with every secret value, and each part of the two URLs, redacted."""
-
-    def __init__(self) -> None:
-        self._secrets: list[str] = []
-
-    def hide(self, env: dict[str, str]) -> None:
-        parts: set[str] = set()
-        for name, value in env.items():
-            parts.add(value)
-            if name.endswith("_URL"):
-                url = urlsplit(value)
-                host = url.hostname or ""
-                # The host's first label is the R2 account id or the Neon endpoint id.
-                parts.update(
-                    filter(
-                        None,
-                        (url.netloc, host, host.split(".")[0], url.username, url.password),
-                    )
-                )
-                if url.password:
-                    parts.add(unquote(url.password))
-        # Longest first, so a whole URL goes before its host. A part too short to be a secret
-        # would only mangle the output.
-        self._secrets = sorted((p for p in parts if len(p) >= 4), key=len, reverse=True)
-
-    def redact(self, text: str) -> str:
-        for secret in self._secrets:
-            text = text.replace(secret, "<redacted>")
-        return text
-
-    def say(self, text: str = "", *, err: bool = False) -> None:
-        print(self.redact(text), file=sys.stderr if err else sys.stdout, flush=True)
-
-
-# Their text can carry the database host or the R2 account; only their class is printed.
-_QUIET_ERRORS = (psycopg2.Error, BotoCoreError, ClientError, Boto3Error)
-
-
-@contextlib.contextmanager
-def _stops_at(out: Output, day: date) -> Iterator[None]:
-    try:
-        yield
-    except BaseException:
-        out.say(f"{day}: the run stops at this day", err=True)
-        raise
-
-
-# --- Environment and connections --------------------------------------------------------------
-
-
-def load_env(cli_path: str | None) -> dict[str, str]:
-    """DATABASE_URL and the four R2 names from the env file. The R2 names are copied into
-    os.environ, where utils.r2 reads them. Nothing is printed."""
-    try:
-        path = resolve_env_file(cli_path)
-    except SystemExit as exc:  # an --env-file that is not a file
-        raise UsageError(str(exc.code)) from None
-    if path is None:
-        raise UsageError("no .env.local in this checkout or the main one; pass --env-file")
-    values = parse_env_file(path)
-    env = {name: values.get(name, "").strip() for name in _ENV_NAMES}
-    missing = [name for name, value in env.items() if not value]
-    if missing:
-        raise UsageError(f"{path.name} lacks {', '.join(missing)}")
-    for name in _R2_ENV_NAMES:
-        os.environ[name] = env[name]
-    return env
-
-
-def _connect(env: dict[str, str], *, readonly: bool) -> Any:
-    conn = psycopg2.connect(
-        env["DATABASE_URL"], connect_timeout=30, application_name="interval-ba-tape"
-    )
-    if readonly:
-        conn.set_session(readonly=True, autocommit=True)
-    return conn
-
-
-def _tape_connection() -> duckdb.DuckDBPyConnection:
-    """DuckDB over the R2 tape, at the spec's limits. Spills go to the system temp folder, not
-    the in-memory default `.tmp` under the working directory (the repo root)."""
-    con = fulltape_connection(threads=4, memory_limit="3000MiB")
-    spill = (Path(tempfile.gettempdir()) / "interval-ba-tape-duckdb").as_posix()
-    con.execute(f"SET temp_directory = '{spill.replace(chr(39), chr(39) * 2)}'")
-    return con
-
-
-def _tape(day: date) -> str:
-    return r2_url(day.isoformat())
-
-
-@dataclass(frozen=True)
-class R2Bucket:
-    client: Any  # one boto3 S3 client, used from one thread
-    name: str
-
-
-def _r2_bucket(env: dict[str, str]) -> R2Bucket:
-    # One client, single-threaded puts: a client shared across threads once sent requests
-    # without certificate checks. Should that ever happen here, the warning becomes an error.
-    warnings.simplefilter("error", InsecureRequestWarning)
-    client = boto3.client(
-        "s3",
-        endpoint_url=env["R2_ENDPOINT_URL"],
-        aws_access_key_id=env["R2_ACCESS_KEY_ID"],
-        aws_secret_access_key=env["R2_SECRET_ACCESS_KEY"],
-        region_name="auto",
-        verify=True,
-        config=Config(signature_version="s3v4", retries={"mode": "standard", "max_attempts": 5}),
-    )
-    return R2Bucket(client, env["R2_BUCKET_FULLTAPE"])
 
 
 # --- The table's rows -------------------------------------------------------------------------
@@ -445,7 +195,7 @@ class StoredRow:
 
 
 def read_day_rows(conn: Any, day: date) -> list[StoredRow]:
-    """Every row of `day`, live and replay, by id."""
+    """Every row of `day`, live and replay, by id. The caller ends the transaction."""
     with conn.cursor() as cur:
         cur.execute(_DAY_ROWS_SQL, {"day": day})
         return [
@@ -478,8 +228,14 @@ def _row_values(row: StoredRow) -> dict[str, Any]:
 
 
 def _in_feed_window(fired_at: datetime, day: date) -> bool:
-    local = fired_at.astimezone(_CT)
+    local = fired_at.astimezone(runs.CT)
     return local.date() == day and _FEED_START <= local.time() < _FEED_END
+
+
+def _show(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    return str(value)
 
 
 # --- One rebuild day --------------------------------------------------------------------------
@@ -581,10 +337,15 @@ def _write_set_sha(day: date, inserts: Sequence[Any], deletes: Sequence[int]) ->
     return ibr._write_set_sha(day, inserts, deletes, (), ())
 
 
+def _to_second(at: datetime) -> datetime:
+    return at.astimezone(UTC).replace(microsecond=0)
+
+
 def _edge_window(
     day: date, kind: str, alerts: Sequence[Any], live: Sequence[StoredRow]
 ) -> tuple[datetime, list[Any]]:
-    """An edge day's bound and the tape alerts on the rebuild's side of it."""
+    """An edge day's bound and the tape alerts on the rebuild's side of it. The bound must be
+    the one spec section 4 measured, or the run stops."""
     if not live:
         raise CheckFailedError(
             f"{day}: no live rows, so the rebuild window ({kind}) has no bound."
@@ -592,16 +353,28 @@ def _edge_window(
         )
     if kind == BEFORE_FIRST_LIVE:
         bound = min(row.fired_at for row in live)
+        if _to_second(bound) != FIRST_LIVE_ROW_AT:
+            raise CheckFailedError(
+                f"{day}: the first live row fired at {_show(bound)}, not in the second"
+                f" {_show(FIRST_LIVE_ROW_AT)} that spec section 4 names. The table is not the"
+                " one the window was checked against; the run stops"
+            )
         return bound, [alert for alert in alerts if alert.fired_at < bound]
     bound = max(row.fired_at for row in live)
+    if len(live) != LIVE_ROWS_ON_LAST_LIVE_DAY or _to_second(bound) != LAST_LIVE_ROW_AT:
+        raise CheckFailedError(
+            f"{day}: {len(live)} live rows, the last at {_show(bound)}; spec section 4 has"
+            f" {LIVE_ROWS_ON_LAST_LIVE_DAY}, the last in the second {_show(LAST_LIVE_ROW_AT)}."
+            " The table is not the one the window was checked against; the run stops"
+        )
     return bound, [alert for alert in alerts if alert.fired_at > bound]
 
 
 def plan_rebuild_day(day: date, replay: Any, rows: Sequence[StoredRow]) -> RebuildDay:
     """The day's delete-and-insert (spec 5.1 and 6.5), from its replay and its rows.
 
-    Raises CheckFailedError for a live row on a full rebuild day, an edge day with no live row, or a
-    replay row to delete that holds an acknowledgement. Each stops the dry run.
+    Raises CheckFailedError for a live row on a full rebuild day, an edge day whose bound is not
+    the spec's, or a replay row to delete that holds an acknowledgement. Each stops the run.
     """
     kind = rebuild_kind(day)
     if kind is None:
@@ -612,8 +385,7 @@ def plan_rebuild_day(day: date, replay: Any, rows: Sequence[StoredRow]) -> Rebui
             fired = {alert.key for alert in replay.alerts}
             at_keys = [row for row in live if row.key in fired]
             shown = "; ".join(
-                f"{row.key[0]} {row.key[1].astimezone(UTC).isoformat()} (id {row.id})"
-                for row in at_keys[:5]
+                f"{row.key[0]} {_show(row.key[1])} (id {row.id})" for row in at_keys[:5]
             )
             raise CheckFailedError(
                 f"{day}: {len(live)} live row(s) on a full rebuild day, where live never ran;"
@@ -724,12 +496,6 @@ class DayCompare:
         return bool(self.value_differs or self.stored_only or self.tape_only)
 
 
-def _show(value: Any) -> str:
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat()
-    return str(value)
-
-
 def compare_day(day: date, replay: Any, rows: Sequence[StoredRow]) -> DayCompare:
     """The stored rows against the replay, on the key and then the compared columns. On an
     edge day, the rebuild's window against the day's replay rows."""
@@ -779,15 +545,15 @@ def compare_day(day: date, replay: Any, rows: Sequence[StoredRow]) -> DayCompare
     )
 
 
-def _verify(args: argparse.Namespace, out: Output) -> int:
-    days = trading_days(args.start, args.end)
+def _verify(args: argparse.Namespace, out: runs.Output) -> int:
+    days = runs.trading_days(args.start, args.end)
     if not days:
         raise UsageError("no trading day in that range")
-    env = load_env(args.env_file)
+    env = runs.load_env(args.env_file)
     out.hide(env)
-    conn = _connect(env, readonly=True)
+    conn = runs.connect(env, readonly=True)
     try:
-        con = _tape_connection()
+        con = runs.tape_connection()
         try:
             out.say(
                 "| Day | Stored rows | Tape alerts | Keys in common"
@@ -797,9 +563,11 @@ def _verify(args: argparse.Namespace, out: Output) -> int:
             out.say("|---|---|---|---|---|---|---|---|---|")
             results: list[DayCompare] = []
             for day in days:
-                with _stops_at(out, day):
-                    replay = ibr.replay_day(con, _tape(day), day)
-                    result = compare_day(day, replay, read_day_rows(conn, day))
+                with runs.stops_at(out, day):
+                    replay = ibr.replay_day(con, runs.tape_url(day), day)
+                    with runs.rolled_back(conn):  # no transaction idles through the next replay
+                        rows = read_day_rows(conn, day)
+                    result = compare_day(day, replay, rows)
                 results.append(result)
                 out.say(
                     f"| {day} | {result.stored} | {result.tape} | {result.common}"
@@ -824,76 +592,15 @@ def _verify(args: argparse.Namespace, out: Output) -> int:
     return 1 if differing else 0
 
 
-# --- Run folders and plans --------------------------------------------------------------------
-
-
-def blob_hash(path: Path) -> str:
-    """The git blob id of the file's bytes, as `git hash-object --no-filters` gives it."""
-    data = path.read_bytes()
-    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
-
-
-def new_run(mode: str) -> Path:
-    """A fresh run folder, docs/tmp/interval-ba-rebuild/<UTC stamp>-<mode>/, with days/."""
-    stamp = _stamp(_utc_now())
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    for n in itertools.count(1):
-        run = RUNS_DIR / (f"{stamp}-{mode}" if n == 1 else f"{stamp}-{mode}-{n}")
-        try:
-            run.mkdir()
-        except FileExistsError:
-            continue
-        (run / "days").mkdir()
-        return run
-    raise AssertionError("unreachable")
-
-
-def load_plan(run: Path) -> dict[str, Any]:
-    """A run folder's plan.json. UsageError when the folder holds none."""
-    path = run / "plan.json"
-    if not path.is_file():
-        raise UsageError(f"{run} holds no plan.json: run the dry run first")
-    try:
-        plan = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError:
-        raise UsageError(f"{path} does not parse as JSON") from None
-    if not isinstance(plan, dict) or not isinstance(plan.get("days"), dict):
-        raise UsageError(f"{path} is not a plan")
-    return plan
-
-
-def _write_text(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8", newline="\n")
-
-
-def _write_json(path: Path, value: Any) -> None:
-    _write_text(path, json.dumps(value, indent=2) + "\n")
-
-
-def _marker(run: Path, day: str) -> Path:
-    return run / f"{day}.applied"
-
-
-def _mark(run: Path, day: date, how: str, deleted: int, inserted: int) -> None:
-    _write_json(
-        _marker(run, day.isoformat()),
-        {
-            "day": day.isoformat(),
-            "how": how,
-            "deleted": deleted,
-            "inserted": inserted,
-            "at": _utc_now().isoformat(),
-        },
-    )
+# --- rebuild: the plan and its report ---------------------------------------------------------
 
 
 def _plan_json(days: Sequence[RebuildDay]) -> dict[str, Any]:
     largest = max(days, key=lambda d: d.feed_rows)
     return {
         "mode": "rebuild",
-        "created_at": _utc_now().isoformat(),
-        "module_blob": blob_hash(MODULE_PATH),
-        "tool_blob": blob_hash(TOOL_PATH),
+        "created_at": runs.utc_now().isoformat(),
+        **runs.code_blobs(),
         "root_label_mismatch": sum(d.root_label_mismatch for d in days),
         "totals": {
             "delete": sum(len(d.deletes) for d in days),
@@ -944,13 +651,14 @@ def _planned_months(plan: dict[str, Any]) -> dict[tuple[str, str], tuple[int, in
 def _report(run: Path, plan: dict[str, Any], days: Sequence[RebuildDay]) -> str:
     totals = plan["totals"]
     largest = plan["largest_day"]
+    tool_blobs = ", ".join(f"{name} `{blob}`" for name, blob in plan["tool_blobs"].items())
     lines = [
         f"# Interval B/A rebuild: dry run {run.name}",
         "",
         f"- Days: {len(days)}, {days[0].day} to {days[-1].day}.",
         f"- Deletes {totals['delete']} replay rows, inserts {totals['insert']} tape alerts,"
         f" skips {totals['twins']} live twins.",
-        f"- Module blob `{plan['module_blob']}`, tool blob `{plan['tool_blob']}`.",
+        f"- Replay module blob `{plan['module_blob']}`; tool blobs: {tool_blobs}.",
         f"- root_label_mismatch: {plan['root_label_mismatch']} (kept tape rows whose"
         " underlying_symbol is not their OCC root; counted, never dropped).",
         f"- Largest day: {largest['day']}, {largest['feed_rows']} rows between 08:30 and"
@@ -976,14 +684,17 @@ def _report(run: Path, plan: dict[str, Any], days: Sequence[RebuildDay]) -> str:
         "",
         "## Days",
         "",
-        "| Day | Kind | Delete | Insert | Insert SPXW | Insert SPY | Insert QQQ"
+        "The bound is the edge day's first (05-13) or last (07-22) live fired_at.",
+        "",
+        "| Day | Kind | Bound (UTC) | Delete | Insert | Insert SPXW | Insert SPY | Insert QQQ"
         " | Live twins skipped | Feed rows (08:30-15:00 CT) | root_label_mismatch |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for d in days:
         per = " | ".join(str(d.tickers[t]["insert"]) for t in ibr.TICKERS)
+        bound = "-" if d.bound is None else _show(d.bound)
         lines.append(
-            f"| {d.day} | {d.kind} | {len(d.deletes)} | {len(d.inserts)} | {per}"
+            f"| {d.day} | {d.kind} | {bound} | {len(d.deletes)} | {len(d.inserts)} | {per}"
             f" | {len(d.twins)} | {d.feed_rows} | {d.root_label_mismatch} |"
         )
     lines += ["", "## Live twins skipped (edge days)", ""]
@@ -1029,23 +740,25 @@ def _day_line(d: RebuildDay) -> str:
 # --- rebuild: the dry run ---------------------------------------------------------------------
 
 
-def _rebuild_dry_run(args: argparse.Namespace, out: Output) -> int:
+def _rebuild_dry_run(args: argparse.Namespace, out: runs.Output) -> int:
     days = rebuild_days(args.start, args.end)
-    _refuse_in_window(args.allow_market_hours)
-    env = load_env(args.env_file)
+    runs.refuse_in_window(args.allow_market_hours)
+    env = runs.load_env(args.env_file)
     out.hide(env)
-    conn = _connect(env, readonly=True)
+    conn = runs.connect(env, readonly=True)
     try:
-        con = _tape_connection()
+        con = runs.tape_connection()
         try:
-            run = new_run("rebuild")
+            run = runs.new_run("rebuild")
             out.say(f"run folder: {run}")
             planned: list[RebuildDay] = []
             for day in days:
-                with _stops_at(out, day):
-                    replay = ibr.replay_day(con, _tape(day), day)
-                    plan_day = plan_rebuild_day(day, replay, read_day_rows(conn, day))
-                _write_json(run / "days" / f"{day}.json", plan_day.to_json())
+                with runs.stops_at(out, day):
+                    replay = ibr.replay_day(con, runs.tape_url(day), day)
+                    with runs.rolled_back(conn):  # no transaction idles through the next replay
+                        rows = read_day_rows(conn, day)
+                    plan_day = plan_rebuild_day(day, replay, rows)
+                runs.write_json(run / "days" / f"{day}.json", plan_day.to_json())
                 out.say(_day_line(plan_day))
                 planned.append(plan_day)
         finally:
@@ -1054,8 +767,8 @@ def _rebuild_dry_run(args: argparse.Namespace, out: Output) -> int:
         conn.close()
 
     plan = _plan_json(planned)
-    _write_json(run / "plan.json", plan)
-    _write_text(run / "report.md", _report(run, plan, planned))
+    runs.write_json(run / "plan.json", plan)
+    runs.write_text(run / "report.md", _report(run, plan, planned))
     totals = plan["totals"]
     out.say(
         f"plan: {run / 'plan.json'}; delete {totals['delete']}, insert {totals['insert']},"
@@ -1072,157 +785,18 @@ def _rebuild_dry_run(args: argparse.Namespace, out: Output) -> int:
     return 0
 
 
-# --- The backup -------------------------------------------------------------------------------
+# --- rebuild: the apply's day -----------------------------------------------------------------
 
-_SNAPSHOT_SQL = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
-_COUNT_SQL = "SELECT count(*) FROM interval_ba_alerts"
-_BACKUP_SQL = "SELECT * FROM interval_ba_alerts ORDER BY id"
-
-
-def _json_value(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    raise TypeError(f"no JSON form for a {type(value).__name__} value")
-
-
-def take_backup(conn: Any, run: Path, r2: R2Bucket) -> Path:
-    """Every row of interval_ba_alerts, all columns with id, to the run's backup.jsonl; then
-    read it back, copy it to R2 and check the copy. backup.json records it once all of that
-    holds. Raises BackupFailedError, before any write, when a check fails.
-
-    The count and the rows come from one REPEATABLE READ snapshot, so the count checks the
-    stream. A named cursor pages the rows instead of holding the table in memory.
-    """
-    path = run / "backup.jsonl"
-    digest = hashlib.sha256()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(_SNAPSHOT_SQL)  # the transaction's first statement
-            cur.execute(_COUNT_SQL)
-            (table_rows,) = cur.fetchone()
-        with conn.cursor(name="interval_ba_backup") as cur, path.open("wb") as handle:
-            cur.itersize = _BACKUP_PAGE
-            cur.execute(_BACKUP_SQL)
-            page = cur.fetchmany(_BACKUP_PAGE)
-            columns = [column[0] for column in cur.description]  # set once a named cursor fetched
-            while page:
-                for row in page:
-                    record = dict(zip(columns, row, strict=True))
-                    line = (
-                        json.dumps(record, default=_json_value, separators=(",", ":")) + "\n"
-                    ).encode("utf-8")
-                    handle.write(line)
-                    digest.update(line)
-                page = cur.fetchmany(_BACKUP_PAGE)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except TypeError as exc:
-        raise BackupFailedError(f"backup: {exc}") from None
-    finally:
-        conn.rollback()  # ends the read-only snapshot
-    sha256 = digest.hexdigest()
-    rows = _read_back(path, table_rows, sha256)
-    key = f"{BACKUP_PREFIX}{_stamp(_utc_now())}.jsonl"
-    _upload_backup(r2, key, path, rows, sha256)
-    _write_json(
-        run / "backup.json",
-        {
-            "rows": rows,
-            "sha256": sha256,
-            "bytes": path.stat().st_size,
-            "r2_key": key,
-            "taken_at": _utc_now().isoformat(),
-        },
-    )
-    return path
-
-
-def _read_back(path: Path, table_rows: int, sha256: str) -> int:
-    """The file as it reads back: the sha256 of what was written, and one row per line, as
-    many as the snapshot's count(*). Returns the row count."""
-    with path.open("rb") as handle:
-        again = hashlib.file_digest(handle, "sha256").hexdigest()
-    if again != sha256:
-        raise BackupFailedError("backup: read back, backup.jsonl does not hash to what was written")
-    count = 0
-    with path.open("rb") as handle:
-        for count, line in enumerate(handle, start=1):
-            try:
-                record = json.loads(line)
-            except ValueError:
-                raise BackupFailedError(
-                    f"backup: line {count} of backup.jsonl does not parse"
-                ) from None
-            if not isinstance(record, dict) or "id" not in record:
-                raise BackupFailedError(f"backup: line {count} of backup.jsonl is not a row")
-    if count != table_rows:
-        raise BackupFailedError(
-            f"backup: backup.jsonl reads back {count} rows, but the table holds {table_rows}"
-        )
-    return count
-
-
-def _upload_backup(r2: R2Bucket, key: str, path: Path, rows: int, sha256: str) -> None:
-    """One single-part put, then a HEAD: the size, the ETag (the body's MD5 for a single-part
-    put) and the sha256 and rows metadata must all read back. A failed check leaves the object
-    in place (the owner decides on deletes in the bucket) and stops the run."""
-    body = path.read_bytes()
-    if hashlib.sha256(body).hexdigest() != sha256:
-        raise BackupFailedError("backup: backup.jsonl changed between its read-back and the upload")
-    r2.client.put_object(
-        Bucket=r2.name,
-        Key=key,
-        Body=body,
-        Metadata={"sha256": sha256, "rows": str(rows)},
-        ContentType="application/x-ndjson",
-    )
-    head = r2.client.head_object(Bucket=r2.name, Key=key)
-    metadata = head.get("Metadata", {})
-    problems = [
-        what
-        for what, ok in (
-            ("size", head.get("ContentLength") == len(body)),
-            (
-                "ETag",
-                head.get("ETag", "").strip('"')
-                == hashlib.md5(body, usedforsecurity=False).hexdigest(),
-            ),
-            ("sha256 metadata", metadata.get("sha256") == sha256),
-            ("rows metadata", metadata.get("rows") == str(rows)),
-        )
-        if not ok
-    ]
-    if problems:
-        raise BackupFailedError(
-            f"backup: the R2 copy {key} does not verify ({', '.join(problems)})"
-        )
-
-
-def _check_backup_kept(run: Path) -> None:
-    """A resumed run's backup still matches its record (it is what undo restores from)."""
-    record = json.loads((run / "backup.json").read_text(encoding="utf-8"))
-    with (run / "backup.jsonl").open("rb") as handle:
-        sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
-    if sha256 != record["sha256"]:
-        raise BackupFailedError("backup: backup.jsonl no longer matches backup.json; the run stops")
-
-
-# --- rebuild: the apply -----------------------------------------------------------------------
-
+# A live row is never deleted, nor a row someone acknowledged, nor a row of another day.
 _DELETE_SQL = (
     "DELETE FROM interval_ba_alerts AS a USING (VALUES %s) AS v(id, day)"
-    " WHERE a.id = v.id AND a.expiry = v.day AND a.source = 'replay'"
+    " WHERE a.id = v.id AND a.expiry = v.day AND a.source = 'replay' AND NOT a.acknowledged"
     " RETURNING a.id"
 )
 
 
 def _delete_replay_rows(cur: Any, day: date, ids: Sequence[int]) -> int:
-    """Delete the day's replay rows by id, 500 a statement; return how many went. A live row
-    is never deleted: the WHERE names source = 'replay'."""
+    """Delete the day's replay rows by id, 500 a statement; return how many went."""
     gone = psycopg2.extras.execute_values(
         cur,
         _DELETE_SQL,
@@ -1234,48 +808,61 @@ def _delete_replay_rows(cur: Any, day: date, ids: Sequence[int]) -> int:
     return len(gone)
 
 
-def _apply_day(
+def _load_rebuild_day(run: Path, day: date, entry: dict[str, Any]) -> RebuildDay:
+    """days/<day>.json as a RebuildDay. Refused when it is damaged or edited, when its sha256 is
+    not plan.json's, or when its counts are not the ones plan.json totals for --expect."""
+    name = f"days/{day}.json"
+    try:
+        planned = RebuildDay.from_json(json.loads((run / name).read_text(encoding="utf-8")))
+        sha256, delete, insert = entry["sha256"], entry["delete"], entry["insert"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RefusedError(
+            f"{day}: {name} is not a day plan this run can apply ({type(exc).__name__}: {exc})"
+        ) from None
+    if planned.sha256 != sha256:
+        raise RefusedError(f"{day}: {name} and plan.json hold different plans")
+    if (len(planned.deletes), len(planned.inserts)) != (delete, insert):
+        raise RefusedError(
+            f"{day}: plan.json counts {delete} deletes and {insert} inserts, but {name} holds"
+            f" {len(planned.deletes)} and {len(planned.inserts)}"
+        )
+    return planned
+
+
+def _apply_rebuild_day(
     conn: Any,
     con: duckdb.DuckDBPyConnection,
-    run: Path,
     day: date,
-    entry: dict[str, Any],
-    *,
+    planned: RebuildDay,
     allow_market_hours: bool,
-) -> str:
-    """One day's apply, in the spec's order; returns a line for the log."""
-    try:
-        planned = RebuildDay.from_json(
-            json.loads((run / "days" / f"{day}.json").read_text(encoding="utf-8"))
-        )
-    except ValueError as exc:  # an edited or damaged day file, or JSON that does not parse
-        raise RefusedError(f"{day}: {exc}") from None
-    if planned.sha256 != entry["sha256"]:
-        raise RefusedError(f"{day}: days/{day}.json and plan.json hold different plans")
-
+) -> runs.DayDone:
+    """One day's apply, in the spec's order; the driver writes the marker after it."""
     # 1. A day already in its planned end state was applied by a run that died before its
-    #    marker: mark it and go on.
-    try:
+    #    marker: say so, and the driver marks it.
+    with runs.rolled_back(conn):
+        with conn.cursor() as cur:
+            runs.set_local_timeouts(cur)
         rows = read_day_rows(conn, day)
-    finally:
-        conn.rollback()
     if in_end_state(rows, planned):
-        _mark(run, day, "end state", 0, 0)
-        return f"{day}: already in its planned end state; marked"
+        return runs.DayDone(
+            "end state", {"deleted": 0, "inserted": 0}, f"{day}: already in its planned end state"
+        )
 
-    replay = ibr.replay_day(con, _tape(day), day)  # outside the transaction: it takes seconds
+    replay = ibr.replay_day(con, runs.tape_url(day), day)  # outside the transaction: seconds
     try:
-        # 2. The day's transaction starts with this read. Re-plan, and apply only the plan the
+        # 2. The day's transaction starts here, bounded. Re-plan, and apply only the plan the
         #    owner saw.
+        with conn.cursor() as cur:
+            runs.set_local_timeouts(cur)
         fresh = plan_rebuild_day(day, replay, read_day_rows(conn, day))
-        if fresh.sha256 != entry["sha256"]:
+        if fresh.sha256 != planned.sha256:
             raise ibr.PlanChanged(
                 f"{day}: the fresh plan's sha256 {fresh.sha256} is not the plan's"
-                f" {entry['sha256']}: the day's rows, its tape or the code moved since the dry"
+                f" {planned.sha256}: the day's rows, its tape or the code moved since the dry"
                 " run. Nothing was written for this day"
             )
         # 3. The windows again, right before the write.
-        _refuse_in_window(allow_market_hours, f"{day}: ")
+        runs.refuse_in_window(allow_market_hours, f"{day}: ")
         # 4. The write, exactly the plan, or nothing.
         with conn.cursor() as cur:
             deleted = _delete_replay_rows(cur, day, fresh.deletes)
@@ -1293,112 +880,74 @@ def _apply_day(
         with contextlib.suppress(psycopg2.Error):
             conn.rollback()
         raise
-    # 5. The marker.
-    _mark(run, day, "applied", deleted, inserted)
-    return f"{day}: deleted {deleted}, inserted {inserted}"
+    return runs.DayDone(
+        "applied",
+        {"deleted": deleted, "inserted": inserted},
+        f"{day}: deleted {deleted}, inserted {inserted}",
+    )
 
 
-def _measured_months(conn: Any, plan: dict[str, Any]) -> dict[tuple[str, str], tuple[int, int]]:
-    """The plan's before counts and the table's counts now, per month and ticker."""
-    counts = _planned_months(plan)
-    now: Counter[tuple[str, str]] = Counter()
-    try:
-        for day in plan["days"]:
-            for row in read_day_rows(conn, date.fromisoformat(day)):
-                now[(day[:7], row.ticker)] += 1
-    finally:
-        conn.rollback()
-    return {key: (before, now[key]) for key, (before, _) in counts.items()}
+_MONTH_COUNTS_SQL = (
+    "SELECT to_char(expiry, 'YYYY-MM'), ticker, count(*) FROM interval_ba_alerts"
+    " WHERE expiry = ANY(%s) GROUP BY 1, 2"
+)
 
 
-def _rebuild_apply(args: argparse.Namespace, out: Output) -> int:
-    run = Path(args.run)
-    plan = load_plan(run)
-    if plan.get("mode") != "rebuild":
-        raise UsageError(f"{run} holds a {plan.get('mode')} plan, not a rebuild plan")
-    _refuse_in_window(args.allow_market_hours)
-    for name, path in (("module", MODULE_PATH), ("tool", TOOL_PATH)):
-        if blob_hash(path) != plan[f"{name}_blob"]:
-            raise RefusedError(
-                f"the {name}'s blob hash {blob_hash(path)} is not the plan's"
-                f" {plan[f'{name}_blob']}: the code changed since the dry run. Run a new one"
-            )
-    pending = sorted(day for day in plan["days"] if not _marker(run, day).exists())
-    totals = {
-        "delete": sum(plan["days"][day]["delete"] for day in pending),
-        "insert": sum(plan["days"][day]["insert"] for day in pending),
+def _append_measured(conn: Any, run: Path, plan: dict[str, Any]) -> None:
+    """report.md gains the table's counts now, per month and ticker, against the plan's before."""
+    days = [date.fromisoformat(day) for day in plan["days"]]
+    with runs.rolled_back(conn), conn.cursor() as cur:
+        cur.execute(_MONTH_COUNTS_SQL, (days,))
+        now = {(month, ticker): count for month, ticker, count in cur.fetchall()}
+    measured = {
+        key: (before, now.get(key, 0)) for key, (before, _) in _planned_months(plan).items()
     }
-    for name, expected in (("delete", args.expect_delete), ("insert", args.expect_insert)):
-        if expected != totals[name]:
-            raise RefusedError(
-                f"--expect-{name} {expected} is not the plan's {totals[name]} over the"
-                f" {len(pending)} day(s) not yet applied"
-            )
-    if not pending:
-        out.say(f"every day of {run.name} is applied")
-        return 0
-
-    env = load_env(args.env_file)
-    out.hide(env)
-    conn = _connect(env, readonly=False)
-    try:
-        if (run / "backup.json").exists():
-            _check_backup_kept(run)
-            out.say("backup: taken by this run's first apply; none taken now")
-        else:
-            backup = take_backup(conn, run, _r2_bucket(env))
-            record = json.loads((run / "backup.json").read_text(encoding="utf-8"))
-            out.say(f"backup: {record['rows']} rows in {backup}, R2 copy {record['r2_key']}")
-        con = _tape_connection()
-        try:
-            for day in pending:
-                with _stops_at(out, date.fromisoformat(day)):
-                    line = _apply_day(
-                        conn,
-                        con,
-                        run,
-                        date.fromisoformat(day),
-                        plan["days"][day],
-                        allow_market_hours=args.allow_market_hours,
-                    )
-                out.say(line)
-        finally:
-            con.close()
-        measured = _measured_months(conn, plan)
-    finally:
-        conn.close()
     with (run / "report.md").open("a", encoding="utf-8", newline="\n") as report:
         report.write(
             "\n".join(
                 [
                     "",
-                    f"## Measured after the apply ({_stamp(_utc_now())})",
+                    f"## Measured after the apply ({runs.stamp(runs.utc_now())})",
                     "",
                     *_month_table(measured),
                     "",
                 ]
             )
         )
-    out.say(f"applied {len(pending)} day(s); markers and report in {run}")
-    return 0
+
+
+REBUILD = runs.ApplyMode(
+    name="rebuild",
+    expect=("delete", "insert"),
+    load_day=_load_rebuild_day,
+    apply_day=_apply_rebuild_day,
+    finish=_append_measured,
+)
 
 
 # --- The command line -------------------------------------------------------------------------
 
 
-def _rebuild(args: argparse.Namespace, out: Output) -> int:
+def _rebuild(args: argparse.Namespace, out: runs.Output) -> int:
     if args.apply:
         if args.start is not None or args.end is not None:
             raise UsageError("--apply takes its days from --run's plan, not --from/--to")
         if args.run is None or args.expect_delete is None or args.expect_insert is None:
             raise UsageError("--apply needs --run, --expect-delete and --expect-insert")
-        return _rebuild_apply(args, out)
+        return runs.apply_run(
+            REBUILD,
+            Path(args.run),
+            {"delete": args.expect_delete, "insert": args.expect_insert},
+            allow_market_hours=args.allow_market_hours,
+            env_file=args.env_file,
+            out=out,
+        )
     if args.run is not None or args.expect_delete is not None or args.expect_insert is not None:
         raise UsageError("--run and --expect-* go with --apply")
     return _rebuild_dry_run(args, out)
 
 
-def _not_yet(args: argparse.Namespace, out: Output) -> int:
+def _not_yet(args: argparse.Namespace, out: runs.Output) -> int:
     out.say(f"{args.command}: not yet (it comes with the tool's part 2)", err=True)
     return 2
 
@@ -1453,7 +1002,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    out = Output()
+    out = runs.Output()
     parser = _parser()
     try:
         args, extra = parser.parse_known_args(argv)
@@ -1469,10 +1018,10 @@ def main(argv: list[str] | None = None) -> int:
     except (RefusedError, ibr.PlanChanged) as exc:
         out.say(f"REFUSED ({type(exc).__name__}): {exc}", err=True)
         return 3
-    except CheckFailedError as exc:
+    except CheckFailedError as exc:  # BackupFailedError included
         out.say(f"STOPPED ({type(exc).__name__}): {exc}", err=True)
         return 1
-    except _QUIET_ERRORS as exc:
+    except runs.QUIET_ERRORS as exc:
         out.say(
             f"FAILED: {type(exc).__name__} (its text is not shown: it can name a host)", err=True
         )
