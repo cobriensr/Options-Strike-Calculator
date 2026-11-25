@@ -308,13 +308,16 @@ describe('buildCashWindow refusals', () => {
     ],
   ];
 
-  it.each(cases)('refuses %s', (_name, date, list, reason) => {
-    expect(buildCashWindow(date, 15, list)).toEqual({
-      ok: false,
-      nMinutes: 15,
-      reason,
-    });
-  });
+  it.each(cases)(
+    'refuses each reason in order: %s',
+    (_name, date, list, reason) => {
+      expect(buildCashWindow(date, 15, list)).toEqual({
+        ok: false,
+        nMinutes: 15,
+        reason,
+      });
+    },
+  );
 
   it('refuses an empty series for no anchor', () => {
     expect(window15([])).toEqual({
@@ -634,90 +637,106 @@ describe('cashSessionLabels', () => {
     });
   });
 
-  describe('refuses with a reason', () => {
-    const full = (): AnalogBar[] =>
-      bars(DATE, OPEN, [...fullDayRows(), AFTER_FULL]);
+  describe('refusals', () => {
+    const noReason: LabelResult = {
+      ok: true,
+      labels: {
+        open: 6000,
+        high: 6040,
+        low: 5980,
+        close: 6010,
+        rangePt: 60,
+        upExc: 40,
+        downExc: 20,
+      },
+    };
+    const refused = (reason: Refusal): LabelResult => ({ ok: false, reason });
+    const full = (rows: readonly Row[]): AnalogBar[] =>
+      bars(DATE, OPEN, [...rows, AFTER_FULL]);
+    const spiked = withRow(
+      withRow(fullDayRows(), 150, [6000, 6021, 5999, 6020, 100]),
+      151,
+      [6020, 6021, 5999, 6000, 100],
+    );
 
-    it('refuses a holiday', () => {
-      const date = '2026-11-26';
-      expect(
-        cashSessionLabels(
-          date,
-          bars(date, OPEN, [...fullDayRows(), AFTER_FULL]),
-        ),
-      ).toEqual({ ok: false, reason: 'not_trading_day' });
-    });
+    const cases: Array<[string, string, AnalogBar[], LabelResult]> = [
+      [
+        '2026-11-26 (Thanksgiving) is not_trading_day',
+        '2026-11-26',
+        bars('2026-11-26', OPEN, [...fullDayRows(), AFTER_FULL]),
+        refused('not_trading_day'),
+      ],
+      [
+        'a series with no 08:30 bar is no_anchor',
+        DATE,
+        bars(DATE, OPEN + 1, flat(389)),
+        refused('no_anchor'),
+      ],
+      [
+        '389 bars (13:07 missing) plus the 15:00 bar is too_few_bars',
+        DATE,
+        dropMinute(full(fullDayRows()), DATE, ct(13, 7)),
+        refused('too_few_bars'),
+      ],
+      [
+        'a 20 pt open gap on the 15:00 bar after the session is flagged',
+        DATE,
+        bars(DATE, OPEN, [...fullDayRows(), [6030, 6100, 6000, 6090, 100]]),
+        refused('flagged'),
+      ],
+      [
+        'one NaN high is bad_bar, and no rangePt is computed',
+        DATE,
+        full(withRow(fullDayRows(), 150, [6000, Number.NaN, 5999, 6000, 100])),
+        refused('bad_bar'),
+      ],
+      [
+        'ESZ6 plus ESH7 is mixed_contract',
+        DATE,
+        full(withRow(withRow(fullDayRows(), 3, ESZ6), 300, ESH7)),
+        refused('mixed_contract'),
+      ],
+      [
+        'a 16 pt open gap on the 13:00 bar is flagged',
+        DATE,
+        full(withRow(fullDayRows(), 270, GAP_16)), // 13:00 is minute 270
+        refused('flagged'),
+      ],
+      [
+        'a NaN close and a 16 pt gap is bad_bar (the checks run in order)',
+        DATE,
+        full(withRow(withRow(fullDayRows(), 270, GAP_16), 150, NAN_CLOSE)),
+        refused('bad_bar'),
+      ],
+      [
+        'a 20 pt reverting close spike with no gap is no reason (a crash-day minute): ok',
+        DATE,
+        full(spiked),
+        noReason,
+      ],
+    ];
 
-    it('refuses a series with no 08:30 bar', () => {
-      expect(cashSessionLabels(DATE, bars(DATE, OPEN + 1, flat(389)))).toEqual({
-        ok: false,
-        reason: 'no_anchor',
-      });
-    });
+    it.each(cases)(
+      'refuses labels with a reason: %s',
+      (_name, date, list, expected) => {
+        expect(cashSessionLabels(date, list)).toEqual(expected);
+      },
+    );
 
-    it('refuses 389 bars plus the 15:00 bar as too_few_bars', () => {
-      const list = dropMinute(full(), DATE, ct(13, 7));
-      expect(list).toHaveLength(390);
-      expect(cashSessionLabels(DATE, list)).toEqual({
-        ok: false,
-        reason: 'too_few_bars',
-      });
-    });
-
-    it('flags a 20 pt open gap on the 15:00 bar after the session', () => {
-      const after: Row = [6030, 6100, 6000, 6090, 100]; // 14:59 closed 6010
-      const list = bars(DATE, OPEN, [...fullDayRows(), after]);
-      expect(cashSessionLabels(DATE, list)).toEqual({
-        ok: false,
-        reason: 'flagged',
-      });
-    });
-
-    it('refuses one NaN high as bad_bar and computes no range', () => {
-      const rows = withRow(fullDayRows(), 150, [
-        6000,
-        Number.NaN,
-        5999,
-        6000,
-        100,
-      ]);
-      const result = cashSessionLabels(DATE, bars(DATE, OPEN, rows));
-      expect(result).toEqual({ ok: false, reason: 'bad_bar' });
-    });
-
-    it('refuses ESZ6 plus ESH7 as mixed_contract', () => {
-      let rows = fullDayRows();
-      rows = withRow(rows, 3, ESZ6);
-      rows = withRow(rows, 300, ESH7);
-      expect(cashSessionLabels(DATE, bars(DATE, OPEN, rows))).toEqual({
-        ok: false,
-        reason: 'mixed_contract',
-      });
-    });
-
-    it('flags a 16 pt open gap on the 13:00 bar', () => {
-      const rows = withRow(fullDayRows(), 270, GAP_16); // 13:00 is minute 270
-      expect(cashSessionLabels(DATE, bars(DATE, OPEN, rows))).toEqual({
-        ok: false,
-        reason: 'flagged',
-      });
-    });
-
-    it('keeps a 20 pt reverting close spike with no gap (a crash-day minute)', () => {
-      let rows = fullDayRows();
-      rows = withRow(rows, 150, [6000, 6021, 5999, 6020, 100]);
-      rows = withRow(rows, 151, [6020, 6021, 5999, 6000, 100]);
-      const labels = okLabels(cashSessionLabels(DATE, bars(DATE, OPEN, rows)));
-      expect(labels.rangePt).toBe(60);
-    });
-
-    it('applies the checks in order (a NaN and a gap: bad_bar)', () => {
-      let rows = withRow(fullDayRows(), 270, GAP_16);
-      rows = withRow(rows, 150, NAN_CLOSE);
-      expect(cashSessionLabels(DATE, bars(DATE, OPEN, rows))).toEqual({
-        ok: false,
-        reason: 'bad_bar',
-      });
+    it('covers every refusal the core can return', () => {
+      const reasons = cases.flatMap(([, , , expected]) =>
+        expected.ok ? [] : [expected.reason],
+      );
+      expect([...new Set(reasons)].sort()).toEqual(
+        [
+          'bad_bar',
+          'flagged',
+          'mixed_contract',
+          'no_anchor',
+          'not_trading_day',
+          'too_few_bars',
+        ].sort(),
+      );
     });
   });
 });

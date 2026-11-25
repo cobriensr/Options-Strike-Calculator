@@ -2796,6 +2796,26 @@
       "expect": "ES | open 6000.00 | 60m delta +12.25 | 60m high 6015.25 | 60m low 5995.50 | 60m range 19.75 | 60m vol 1.00M"
     },
     {
+      "name": "1,150 is 1.15 as a double, just below the tie: rounds down to 1.1K",
+      "window": {"nMinutes":30,"open":6000,"close":6012.25,"high":6015.25,"low":5995.5,"volume":1150},
+      "expect": "ES | open 6000.00 | 30m delta +12.25 | 30m high 6015.25 | 30m low 5995.50 | 30m range 19.75 | 30m vol 1.1K"
+    },
+    {
+      "name": "900,050 is 900.05 as a double, just below the tie: rounds down to 900.0K",
+      "window": {"nMinutes":30,"open":6000,"close":6012.25,"high":6015.25,"low":5995.5,"volume":900050},
+      "expect": "ES | open 6000.00 | 30m delta +12.25 | 30m high 6015.25 | 30m low 5995.50 | 30m range 19.75 | 30m vol 900.0K"
+    },
+    {
+      "name": "1,005,000 is 1.005 as a double, just below the tie: rounds down to 1.00M",
+      "window": {"nMinutes":60,"open":6000,"close":6012.25,"high":6015.25,"low":5995.5,"volume":1005000},
+      "expect": "ES | open 6000.00 | 60m delta +12.25 | 60m high 6015.25 | 60m low 5995.50 | 60m range 19.75 | 60m vol 1.00M"
+    },
+    {
+      "name": "999,999 rounds up to 1000.0K: the formatter keeps K below 1,000,000",
+      "window": {"nMinutes":30,"open":6000,"close":6012.25,"high":6015.25,"low":5995.5,"volume":999999},
+      "expect": "ES | open 6000.00 | 30m delta +12.25 | 30m high 6015.25 | 30m low 5995.50 | 30m range 19.75 | 30m vol 1000.0K"
+    },
+    {
       "name": "a negative delta keeps its sign",
       "window": {"nMinutes":30,"open":6000,"close":5996.5,"high":6015.25,"low":5995.5,"volume":412340},
       "expect": "ES | open 6000.00 | 30m delta -3.50 | 30m high 6015.25 | 30m low 5995.50 | 30m range 19.75 | 30m vol 412.3K"

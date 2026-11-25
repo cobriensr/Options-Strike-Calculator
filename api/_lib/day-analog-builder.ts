@@ -44,11 +44,28 @@
  *     flagged when one of its bars, or the first bar after its last one,
  *     has a gap. A reverting close spike with no open gap is a real fast
  *     move and is kept. No date span is excluded.
- *   - The summary line has no date and a generic `ES` symbol, and its
- *     rounding is `toFixed`, which rounds an exact binary tie up
- *     (`(412.25).toFixed(1)` is `412.3`). Python's own formatting rounds a
- *     tie to even, so the Python writer rounds half up on the exact float
- *     value (`Decimal(v).quantize(..., ROUND_HALF_UP)`) to match.
+ *   - What is aggregated, over the bars present in the window or session
+ *     (the slice above, not the bar after it): `high` is the largest high,
+ *     `low` the smallest low, `volume` the sum of volume and `bars` the
+ *     count. A window's `open` is the anchor bar's open and its `close` is
+ *     the last bar's close (the close carried to minute N-1). The labels,
+ *     in ES points: `open` is the anchor bar's open, `close` the last
+ *     session bar's close, `rangePt` = high - low, `upExc` = high - open
+ *     and `downExc` = open - low.
+ *   - The summary line has no date and a generic `ES` symbol. Prices print
+ *     with two decimals and the delta with its sign (`+12.25`, `-3.50`,
+ *     `+0.00` for zero). The volume is formatted from a float: `v / 1000`
+ *     to one decimal with a `K` from 1,000, `v / 1e6` to two decimals with
+ *     an `M` from 1,000,000, the bare integer below that. That is
+ *     `toFixed`, which rounds the exact binary value of the float half up,
+ *     so an exact tie rounds up (`(412.25).toFixed(1)` is `412.3`) and a
+ *     float just below a decimal tie rounds down. P2's Python must divide
+ *     as a float first (`v / 1000` or `v / 1e6`), then round that exact
+ *     float value half up (`Decimal(float).quantize(...,
+ *     ROUND_HALF_UP)`; Python's own formatting rounds a tie to even). It
+ *     must never round the integer volume: 1,150 is `1.1K` because the
+ *     float 1.15 sits just below the tie, and rounding 1150 would give
+ *     `1.2K`. 999,999 prints `1000.0K`.
  */
 
 import {
@@ -140,10 +157,11 @@ function isBadBar(bar: AnalogBar): boolean {
 /**
  * The one spelling of an ES contract: root, month code and the last year
  * digit, so `ESZ26` is `ESZ6`. Anything else passes through unchanged.
- * (`futures-contracts.ts` has the dated version, but it pulls in the UW
- * client and needs a reference year; this check only compares two names.)
+ * Not the `canonicalContract` of `futures-contracts.ts`: that one takes a
+ * root and a reference date and pulls in the UW client, and this check only
+ * compares the names of two bars.
  */
-function canonicalContract(contract: string): string {
+function foldEsContract(contract: string): string {
   return contract.replace(/^(ES[FGHJKMNQUVXZ])\d?(\d)$/, '$1$2');
 }
 
@@ -193,7 +211,7 @@ function selectCashBars(
 
   const contracts = new Set<string>();
   for (const bar of slice) {
-    if (bar.contract !== null) contracts.add(canonicalContract(bar.contract));
+    if (bar.contract !== null) contracts.add(foldEsContract(bar.contract));
   }
   if (contracts.size > 1) return { ok: false, reason: 'mixed_contract' };
 
@@ -259,27 +277,26 @@ export function buildCashWindow(
   }
 
   const { high, low, volume, close } = aggregate(slice);
-  const window: AnalogWindow = {
-    nMinutes,
-    features,
-    summary: '',
-    open: anchor.open,
-    close,
-    high,
-    low,
-    volume,
-    bars: slice.length,
-    contract,
+  const fields = { nMinutes, open: anchor.open, close, high, low, volume };
+  return {
+    ok: true,
+    window: {
+      ...fields,
+      features,
+      summary: summaryLine(fields),
+      bars: slice.length,
+      contract,
+    },
   };
-  window.summary = formatWindowSummary(window);
-  return { ok: true, window };
 }
 
-/**
- * The prediction-only summary line: open, the N-minute delta, high, low,
- * range and volume. Nothing after minute N−1 and no date.
- */
-export function formatWindowSummary(w: AnalogWindow): string {
+/** What the summary line reads from a window, so it can be built first. */
+type SummaryFields = Pick<
+  AnalogWindow,
+  'nMinutes' | 'open' | 'close' | 'high' | 'low' | 'volume'
+>;
+
+function summaryLine(w: SummaryFields): string {
   const n = w.nMinutes;
   return [
     'ES',
@@ -290,6 +307,14 @@ export function formatWindowSummary(w: AnalogWindow): string {
     `${n}m range ${(w.high - w.low).toFixed(2)}`,
     `${n}m vol ${formatVolume(w.volume)}`,
   ].join(' | ');
+}
+
+/**
+ * The prediction-only summary line: open, the N-minute delta, high, low,
+ * range and volume. Nothing after minute N−1 and no date.
+ */
+export function formatWindowSummary(w: AnalogWindow): string {
+  return summaryLine(w);
 }
 
 /**
