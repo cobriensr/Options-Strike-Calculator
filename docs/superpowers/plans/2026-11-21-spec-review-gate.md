@@ -252,7 +252,7 @@ The docs land before the pre-commit check exists (Task 6), so the check never se
 **Interfaces:**
 
 - Consumes: every event kind.
-- Produces: `block`, `release` and `ask` lines, and one stdout JSON object. An `ask` line is written the first time a key is exempt because the last message asks for its waiver; with one already in the session, a further request doesn't exempt the turn (spec, Stop gate step 3). The object has `decision` and `reason` when any key blocks, and `systemMessage` when any key is released. The texts are copied from the spec's "The Stop gate" section, with `N` the block number.
+- Produces: `block`, `release` and `ask` lines, and one stdout JSON object. An `ask` line is written the first time a key is exempt because the last message asks for its waiver; with one already in the session, a further request doesn't exempt the turn (spec, Stop gate step 3). The object has `decision` and `reason` when any key blocks; a release prints nothing (as built after Step 6: the owner's warning moved to `spec-review-waive.sh`, which writes `announced`). The texts are copied from the spec's "The Stop gate" section, with `N` the block number.
 
 - [ ] **Step 1: Write the failing tests.**
   - Each case seeds the log with `seed()` and creates real doc files under `lay.root` for the paths that "exist".
@@ -268,7 +268,7 @@ The docs land before the pre-commit check exists (Task 6), so the check never se
     - one key written at two paths, the latest one deleted → silent; the latest one present → its path in the reason.
   - Assert the third consecutive stop for one unsettled key:
     - writes a `release` line;
-    - its stdout has `systemMessage` and no `decision`;
+    - its stdout is empty (as built after Step 6; the next prompt's waiver hook prints the warning);
     - a fourth stop prints nothing.
   - Settings check: a Stop group with no matcher holds `spec-review-stop.sh`, timeout 30.
 - [ ] **Step 2: Run** the gate test. Expected: FAIL.

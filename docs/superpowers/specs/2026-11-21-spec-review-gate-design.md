@@ -50,7 +50,7 @@ Not decided by the owner (my calls, open to change): the waiver phrase, the two-
   - `{"decision":"block","reason":…}` "prevents Claude from stopping"; `reason` "tells Claude why it should continue".
   - After 8 blocks in a row with no tool call in between, Claude Code stops honouring them (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`).
   - Stop "does not run if the stoppage occurred due to a user interrupt".
-- **`systemMessage`** is shown to the user on every event unless that event's section says it is discarded. Stop's section says nothing, so it is shown. Phase 3 confirms this live.
+- **`systemMessage`** is shown to the user on every event unless that event's section says it is discarded. Stop's section says nothing, so it is shown. Phase 3's live check didn't confirm that for Stop, so the release warning moved to UserPromptSubmit ("Why the warning waits for the next prompt").
 - **Failures don't block.**
   - A hook that times out "renders no decision".
   - An exit code other than 0 or 2 is a "non-blocking error" and "the action goes ahead".
@@ -80,6 +80,7 @@ Not decided by the owner (my calls, open to change): the waiver phrase, the two-
 - **Format:** one event per line, six tab-separated fields: `epoch  event  session  agent  key  path`. Unused fields are `-`.
   - `epoch`: Unix seconds, from bash's `printf '%(%s)T' -1`.
   - `key`: `specs/<file>.md` or `plans/<file>.md`. The same doc keeps its key across worktrees and after it lands on main. Both folders are flat, and file names use `[A-Za-z0-9._-]`.
+    - The Stop gate and the waiver hook skip a line whose key doesn't have that shape. Only a hand edit makes one, and its key would go into the JSON they print.
   - `path`: the doc's full path with forward slashes, or `-`.
 - **Events:**
 
@@ -90,8 +91,9 @@ Not decided by the owner (my calls, open to change): the waiver phrase, the two-
 | `done`    | `spec-review-record.sh` (SubagentStop)        | that agent finishes                                                                                    | session, agent      |
 | `waive`   | `spec-review-waive.sh` (UserPromptSubmit)     | the owner types the waiver phrase                                                                      | session, key        |
 | `block`   | `spec-review-stop.sh` (Stop)                  | the gate blocks a turn end for a doc                                                                   | session, key        |
-| `release` | `spec-review-stop.sh`                         | the gate lets a turn end after two blocks, in the same turn it prints the warning                      | session, key        |
+| `release` | `spec-review-stop.sh`                         | the gate lets a turn end after two blocks                                                              | session, key        |
 | `ask`     | `spec-review-stop.sh`                         | a turn ends unblocked because its last message asks the owner for the waiver; once per doc per session | session, key        |
+| `announced` | `spec-review-waive.sh`                      | the session's next prompt after a `release` that doesn't start with `<`: the prompt that prints the owner's warning, or that waives the key | session, key        |
 
 - **Writes are appends** of one short line (`printf … >> log`), so concurrent sessions don't need a lock.
 - **The `state/` folder** is created once with `mkdir`, with no placeholder file. It is created only once both the `write` recorder and the `start`/`done` recorder exist, so no `write` line is logged in a stretch when reviews can't be. A hook that finds it missing writes one line to stderr and exits 0.
@@ -122,6 +124,10 @@ Not decided by the owner (my calls, open to change): the waiver phrase, the two-
 - **`done`** (`spec-review-record.sh`, SubagentStop matcher `^spec-reviewer$`):
   - The script checks `agent_type` itself as well.
   - It records `agent_id` and nothing else. Whether it counts depends on the matching `start` line.
+- **`done` of a named reviewer** (`spec-review-record.sh`, TeammateIdle, no matcher; added 2026-11-22 after a probe, live-checked 2026-11-24):
+  - An Agent call with a `name` runs as an agent-team teammate. Its `start` is recorded as above, but its SubagentStop carries `agent_type` = the teammate's name, so the matcher misses it.
+  - Its TeammateIdle carries the same `agent_id` as the `start`. When the log has a `start` with that agent id and no `done` for it, one `done` is appended. That lookup stands in for the type check, since only spec-reviewer dispatches get a `start`.
+  - A running teammate's `background_tasks` entry has a task id and `"type":"teammate"`, so the Stop gate's "running" test can't see it. A named reviewer falls back to the 45-minute window until its `done` lands.
 - **One script for `start` and `done`.** It switches on `hook_event_name`.
 - **`start` and `done` pair by agent id in either order.** A foreground reviewer writes its `done` first. Every reader (the Stop gate and the pre-commit check) collects both kinds of line before pairing them, and a `start`'s time is the time the review counts from.
 
@@ -146,30 +152,49 @@ For each key with a `write` line in this session whose `path` still exists, with
    - One request naming two keys covers both.
    - The check reads only that one field, cut out of the raw input with the same quoted-string regex as `file_path`. `session_crons[].prompt` and `background_tasks[].description` are free text too, and either could otherwise exempt the turn.
    - When a key has `write` lines at two paths (one file name in two worktrees), the session's latest `write` decides whether the doc still exists, and its path goes in the reason.
-4. **Released** when a `release` line exists for this session and key. The gate already let it go and warned the owner.
+4. **Released** when a `release` line exists for this session and key. The gate already let it go, and the owner is warned at the next prompt.
 5. Otherwise **unsettled**.
 
 For the unsettled keys:
 
 - **Under two `block` lines** for this session and key: write a `block` line and add the key to the block reason.
-- **Two or more:** write a `release` line and add the key to the owner warning.
-- **One JSON object** carries both: `decision` `block` with `reason` when any key blocks, and `systemMessage` when any key is released. A `release` is written only in the turn that prints its warning, so no warning is lost.
+- **Two or more:** write a `release` line. The turn end prints nothing for that key. The owner's warning goes out at the session's next prompt (The waiver, "Release warnings").
+- **One JSON object**, `decision` `block` with `reason`, when any key blocks. Otherwise no output, unless the log can't be written (below).
 - **The reason**, for Claude:
   > spec-review gate: `<key>` (`<path>`) was written in this session and has had no spec-reviewer run since. Dispatch the spec-reviewer agent (model opus) with only the doc's path (for a plan, also its spec's path), then settle its findings (CLAUDE.md, Plan First). If the owner said to skip the review, ask them to type `waive review <key>` and end your turn; the first turn whose last message asks for that isn't blocked, and a second request is. This is block N of 2; after that the gate lets the turn end and tells the owner the doc went unreviewed.
-- **The warning**, for the owner:
+- **The warning**, for the owner, printed by `spec-review-waive.sh` at the next prompt:
   > spec-review gate: `<key>` was handed over without an adversarial review (the gate blocked twice, then let go). Ask Claude for the review, or type `waive review <key>` to accept the doc as it is.
+- **When the log can't be written,** the gate fails open. It says why on stderr, and tells the owner in a `systemMessage` in the same object, one line per key. This is the Stop channel the owner couldn't confirm seeing (below), but it's the only one left.
+  - **A `block` line it can't write:** the key doesn't block. A block the gate can't count would repeat every turn and never reach the release. The owner sees:
+    > spec-review gate: `<key>` was handed over without an adversarial review, and the gate could not write the review log, so it let the turn end instead of blocking. Ask Claude for the review, or type `waive review <key>` to accept the doc as it is.
+  - **A `release` line it can't write:** the waiver hook would find nothing to announce, so the Stop prints the owner's warning itself: the text above, then one sentence. The next turn end tries the release again.
+    > The gate could not write the review log, so it prints this warning at the turn end instead of at your next prompt.
+  - **An `ask` line it can't write:** the turn is still exempt.
 
-Phase 3 confirms in a live session that the owner sees the warning. If the owner doesn't, the release warning goes out instead through `spec-review-waive.sh` at the owner's next prompt, with an `announced` event so it prints once.
+**Why the warning waits for the next prompt.** Phase 3's live check (2026-11-24) printed it from the Stop hook as a `systemMessage`. Claude Code's transcript recorded it as a hook message, but the owner couldn't confirm seeing it on screen. The waiver hook's `systemMessage` (UserPromptSubmit) was confirmed on screen in Phase 2's live check. So the warning goes out through `spec-review-waive.sh` at the owner's next prompt instead, with an `announced` event so it prints once.
 
 ### The waiver (`spec-review-waive.sh`, UserPromptSubmit)
 
 - **The phrase:** a prompt that starts with `waive review`, in any case and after leading spaces, followed by one or more doc paths or keys. Example: `waive review specs/2026-11-20-gexbot-after-close-design.md`.
   - It must start the prompt. A subagent's hand-back starts with `<agent-message`, so a report can't trigger it by quoting the phrase.
-  - Each key in the rest of the prompt gets a `waive` line. A full path works too, with either slash.
+  - **Only the docs listed right after the phrase are waived** (owner, 2026-11-24). Each one gets a `waive` line. A full path works too, with either slash.
+    - The list is keys or paths separated by spaces, line breaks, commas, semicolons, colons, `&` or the word `and`. A drive letter's colon (`F:/…`, `F:\…`) belongs to its path. A key may sit in backticks or quotes.
+    - A key may end with a sentence period. The period ends the list after that key: `waive review specs/a.md. plans/b.md can wait` waives only `specs/a.md`.
+    - The first word that isn't a key or a separator ends the list. A doc named after it isn't waived: `waive review specs/a.md, then look at plans/b.md` waives only `specs/a.md`.
+    - A path with a space in it ends the list at the space. Use its key instead.
   - It is typed on one line. Several keys can share that line.
     - A paste of more than 3 lines or 800 characters arrives wrapped in `<pasted_content …>`, so it doesn't start with the phrase.
     - It then gets the "nothing waived" message, so the miss is visible.
-- **Output:** a `systemMessage` naming what was waived, so a waiver nobody typed would be seen. It also passes `additionalContext` telling Claude the gate won't block on those keys. A phrase with no key gets a `systemMessage` saying nothing was waived.
+- **Output:** a `systemMessage` naming what was waived, so a waiver nobody typed would be seen. It also passes `additionalContext` telling Claude the gate won't block on those keys. A phrase with no key right after it gets a `systemMessage` saying nothing was waived.
+  - A doc the prompt names after the list is named in both, as not waived, with what to type to waive it. That holds when the list is empty too.
+- **Release warnings.** At every prompt that doesn't start with `<` (after the same leading-space strip as the phrase), the hook looks for `release` lines of this session that have no `announced` line for the same session and key.
+  - A prompt that starts with `<` is a harness wrapper: a subagent's hand-back, a task notification, a message from another session. The owner may not be looking at it, so it prints no warning and writes no `announced` line, and the next prompt that doesn't start with `<` prints it. A paste wrapped in `<pasted_content …>` waits one prompt too. (Live, 2026-11-25: the first prompt after the hook went live was a hand-back, and it spent the probe's warning there.)
+  - Each such key gets the owner's warning (the text under "The Stop gate") in `systemMessage`, the same text in `additionalContext` so Claude knows what the owner was just told, and one `announced` line.
+  - A key that the same prompt waives gets its `announced` line and no warning, since the waiver message already names it.
+  - If the `announced` line can't be written, the warning still prints, and prints again at the next prompt. A repeat beats a lost warning.
+  - The warnings join the waiver's own messages in the one JSON object the hook prints, one warning per line.
+  - Fast path: when this session's `release` lines and its `announced` lines are equal in number, nothing is pending, and the lookup ends after one read of the log, with no per-line loop. Each key gets at most one `release` line per session, and each `release` at most one `announced` line, so equal counts mean every warning went out. Every prompt of every session pays this check.
+  - A prompt that starts with `<` is found by an anchored match on the raw input, without cutting out the prompt field, so a 1 MB hand-back costs little.
 - **The phrase anywhere but the start** of a prompt that doesn't begin with `<` (a harness wrapper) gets a `systemMessage`: nothing was waived, the phrase must start the prompt, and here are the prompt's first 60 characters. If the owner's client puts something before the typed text, this shows what.
 - **Keys** are read by a matcher used only by the waiver, which accepts a bare `specs/x.md` as well as a full path. The `start` recorder keeps the strict `docs/superpowers/…` match.
 - **Channels Claude controls:** a scheduled task, a `/loop` iteration and a message from another session all fire `UserPromptSubmit`, possibly with plain text Claude wrote. The guard denies CronCreate, ScheduleWakeup, RemoteTrigger and SendMessage when their input contains `waive review`. SendMessage is covered because agent teams are on (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`).
@@ -213,6 +238,7 @@ Each new hook is a `command` hook on `"$CLAUDE_PROJECT_DIR"/.claude/hooks/<scrip
 
 - **PostToolUse**, matcher `Agent`: `spec-review-record.sh`.
 - **SubagentStop**, matcher `^spec-reviewer$`: `spec-review-record.sh`.
+- **TeammateIdle**, no matcher: `spec-review-record.sh`.
 - **Stop**, no matcher: `spec-review-stop.sh`.
 - **UserPromptSubmit**: `spec-review-waive.sh`.
 - **PreToolUse**, matcher `Bash|PowerShell|CronCreate|ScheduleWakeup|RemoteTrigger|SendMessage`, `onFailure: "continue"`: `spec-review-guard.sh`.
@@ -243,6 +269,8 @@ Each new hook is a `command` hook on `"$CLAUDE_PROJECT_DIR"/.claude/hooks/<scrip
 - **Scope (owner, 2026-11-21: leave both open):** two kinds of redesign are never gated.
   - A later session that redesigns a committed spec with Edits is never gated. Edits make no `write` line, and the pre-commit check sees only added docs.
   - `/clear` starts a new `session_id`, so a doc written before it is no longer gated by Stop.
+- **A release warning can go unseen.** It waits for the session's next prompt that doesn't start with `<`. A `/loop` iteration or a scheduled task with plain text is such a prompt, so the warning prints there, maybe while the owner is away. After `/clear` the session id changes, and a pending warning is never shown. The pre-commit check still blocks the doc's commit.
+- **A hand-edited log can hide or slow a warning.** The fast path compares counts, so a stray `announced` line hides one pending warning. A `release` line with a key that isn't a doc key never gets its `announced` line, so every later prompt of that session pays the full lookup (about 0.2 s at 5,000 lines). Neither can happen without a hand edit: the hooks write `announced` only after a `release`, and `release` only for doc keys.
 
 ## Phases
 
@@ -263,7 +291,7 @@ Each phase is shippable on its own, ends with its tests passing, and touches at 
 3. **Stop gate.**
    - `spec-review-stop.sh` and its settings entry.
    - Tests.
-   - A live check in this session: write a throwaway spec under a name not used before in the session, and let the gate block twice. Confirm the owner sees the release warning; if the owner doesn't, add the fallback announcement to `spec-review-waive.sh`. Then delete the throwaway spec.
+   - A live check in this session: write a throwaway spec under a name not used before in the session, and let the gate block twice. Confirm the owner sees the release warning; if the owner doesn't, add the fallback announcement to `spec-review-waive.sh`. Then delete the throwaway spec. Outcome, 2026-11-24: not confirmed, so the warning moved to the waiver hook ("Why the warning waits for the next prompt").
    - It comes after the waiver, so the owner can always unblock a session.
 4. **Pre-commit check (tracked, in the worktree).**
    - `scripts/_lib/spec-review-log.mjs`: parsing the log and the decision, pure functions.
@@ -298,7 +326,7 @@ This spec and its plan are committed before Phase 5, so the new check never sees
   - `.claude/hooks/spec-review-stop.sh`
   - the gate test
   - `.claude/settings.json`
-  - `spec-review-waive.sh` only if the fallback is needed
+  - `spec-review-waive.sh` (the release warnings; the fallback was needed)
 - **Phase 4:**
   - `scripts/_lib/spec-review-log.mjs`
   - `scripts/_lib/spec-review-log.test.mjs`
@@ -345,9 +373,10 @@ Cases that must exist:
     - reviewed (a `start` after `t0` plus its `done`), including a `done` logged before its `start` (a foreground reviewer);
     - waived;
     - the doc was deleted;
-    - an empty or malformed payload, or a missing log (exit 0).
+    - an empty or malformed payload, or a missing log (exit 0);
+    - released, with or without an `announced` line.
   - **Block:**
-    - written and unreviewed → block 1, then block 2, then release with `systemMessage`, then silent;
+    - written and unreviewed → block 1, then block 2, then release (a `release` line, no output), then silent;
     - started 50 minutes ago, no `done`, not running → block;
     - the running pattern appears only inside `last_assistant_message` → not running, block;
     - reviewed in an earlier session, before this session's first write → block.
@@ -358,17 +387,30 @@ Cases that must exist:
     - the phrase only in a `background_tasks` description or a `session_crons` prompt → block.
   - **Two docs:**
     - one reviewed → the block names only the other;
-    - one at block 1 and one at block 2 → one object with `decision`, `reason` and a `systemMessage` naming the released doc.
+    - one at block 1 and one at block 2 → `decision` and `reason` naming only the first, and a `release` line for the second.
 - **Waiver:**
   - **Records:**
     - the phrase with a key;
     - with a full Windows path;
     - with two keys;
+    - with a list joined by commas and `and`;
     - in upper case.
+  - **Records only the list:**
+    - `waive review specs/a.md, then look at plans/b.md` → `specs/a.md` only, and both messages name `plans/b.md` as not waived.
   - **Records nothing:**
     - the phrase in mid-prompt;
     - an `<agent-message …>` prompt quoting the phrase;
-    - the phrase with no key, which prints "nothing waived".
+    - the phrase with no key, which prints "nothing waived";
+    - the phrase, other words, then a key → "nothing waived", naming that key as not waived.
+  - **Release warnings:**
+    - a `release` line with no `announced` line, and a plain prompt → the warning in `systemMessage` and `additionalContext`, one `announced` line; the next prompt → silent;
+    - another session's `release` → nothing;
+    - two released keys → both warnings, two `announced` lines;
+    - the prompt waives a released key → its `waive` and `announced` lines and the waiver message, no warning;
+    - a released key plus a waiver of another key → both messages in one object;
+    - the `announced` line can't be written → the warning prints, and prints again at the next prompt;
+    - a prompt that starts with `<` (an `<agent-message …>` hand-back) → no warning and no `announced` line; then a plain prompt → the warning and one `announced` line;
+    - a prompt that starts with spaces and then `<` → the same as `<`.
 - **Guard:**
   - **Deny:**
     - Bash `echo x >> .claude/state/spec-reviews.tsv`;
@@ -438,3 +480,5 @@ Cases that must exist:
 No third round: the rule allows two. Nothing is left open.
 
 **Owner change (2026-11-21), after a side agent pointed out that asking for a waiver every turn would keep the gate from ever firing:** "treat every waiver request as a decision". The asking exemption now applies once per doc per session (Stop gate, step 3, and the `ask` event).
+
+**Owner change (2026-11-24), after a side agent pointed out that a waiver prompt waived every doc it named, so mentioning a second doc skipped its review too:** "yeah lets adjust this". Only the docs listed right after the phrase are waived. A doc named after other words isn't, and the messages name it as not waived (The waiver; Testing).
