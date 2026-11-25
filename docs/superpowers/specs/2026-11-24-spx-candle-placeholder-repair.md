@@ -151,10 +151,16 @@ Replace the placeholder SPX and NDX one-minute bars in `index_candles_1m` with c
      3. the date has the full `cashSessionMinutes` of SPX regular bars in `index_candles_1m` **and** of SPY bars in `etf_candles_1m`. The levels query joins both.
 
      Otherwise they keep the old value.
-     - A failed read sets the run status to `partial`.
-     - No prints, or short bars, is a data state: the status is unchanged and the date is listed in metadata `dpKept`.
+     - A failed read sets the run status to `partial`, even on a one-date run. So does a failed check of the day (`dpDayComplete`, below): it is a read of the dp signal too.
+       - The cron sets it by hand in its result, over `success` only. It never lifts an `error`.
+       - It is not counted in `errors` or run through `deriveCronStatus`: the row was written, and one date of one would read as `error`, a failed write.
+       - A date whose read failed is listed in metadata `dpReadFailed`, which says why a run is `partial` with `errors: 0`.
+     - No prints, or short bars, is a data state, not a failure: the status is unchanged and the date is listed in metadata `dpKept`. Both lists are in the HTTP response as well as the run metadata, so a `?date=` rebuild shows whether its date is kept. In Axiom they sit inside `meta`, never as top-level keys.
      - This keeps the 18 legacy dates (02-25 → 03-20, no prints; owner decision: leave them) safe from every later rebuild path, `?backfill=true` and the 11-22 blanking run included. It also keeps a future candle hole from blanking good values.
-     - **Signal path.** `engineerPhase2Features` returns `{ dpOverwrite: boolean }`; it is not a `FeatureRow` key, so `computeCompleteness` is unchanged. The cron passes it to `upsertFeatures(features, { overwrite: DP_COLUMNS | [] })`. The upsert writes `EXCLUDED.<col>` for those columns and keeps `COALESCE` for the rest.
+     - **Signal path.**
+       - `engineerPhase2Features` returns `{ dpReadOk: boolean }`: true when `getDarkPoolLevels` resolved with no caught error (no rows is still true). It is not a `FeatureRow` key, so `computeCompleteness` is unchanged.
+       - A separate `dpDayComplete(sql, date)` in `build-features-phase2.ts` makes one query for conditions 2 and 3: a SPY row in `dark_pool_prints`; `cashSessionMinutes(date)` SPX bars with `market_time = 'r'`; and as many SPY bars in `etf_candles_1m` with `09:30 ET ≤ timestamp < close` (`getMarketCloseHourET`, 13:00 on a half day), as that table has no date or `market_time`. A day with no cash session is not complete.
+       - The cron calls it after `engineerPhase2Features`, only when the read worked, then passes `{ overwrite: dpReadOk && complete ? DP_COLUMNS : [] }` to `upsertFeatures(features, …)`. A check that rejects counts as a failed read. The upsert writes `EXCLUDED.<col>` for those columns and keeps `COALESCE` for the rest.
      - Every other column keeps today's rule, including the snapshot-derived ones the 11-22 blanking run owns, so this repair doesn't settle handoff 4.5. Extending the overwrite to other own-table columns is later work.
      - **Accepted side effect, documented here.** 10 of the 14 rebuilt March–April dates are 11-22 no-pick dates: 03-23, 03-26, 03-27, 03-30, 03-31, 04-01, 04-02, 04-06, 04-07 and 04-10. The shipped pick fix (`2a7c29faf`) makes any rebuild of those dates write `feature_completeness = 0` (`api/cron/build-features.ts:497-498`), which takes them out of training. That is the 11-22 design's intent; Phase 4's backup keeps the old rows. The blanking run, when it is built, must read its rows after Phase 4, or its md5 guard will refuse them.
    - **1c.** The Periscope lottery spot lookup (`periscope-lottery-finder.ts:130-132, 508-510`) is bounded to the event's own session date. A hole on a new day then yields no spot (no fire), not a days-old one. Whether to also cap the spot's age within a day is open question 4.

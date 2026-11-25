@@ -15,6 +15,12 @@
  * true when any of its rows says so. A date with rows but none trusted stores
  * no snapshot features and feature_completeness 0, so it does not train.
  *
+ * Every column keeps its stored value over a NULL, except the seven dark-pool
+ * columns (DP_COLUMNS) of a date whose dark-pool read worked and whose day is
+ * complete (dpDayComplete): they take the rebuilt value as it is. A date with
+ * no prints or short bars is listed in `dpKept`; a failed read lists it in
+ * `dpReadFailed` and makes the run `partial`.
+ *
  * Feature engineering is split into focused modules:
  *   build-features-flow.ts   - flow checkpoint NCP/NPP + agreement
  *   build-features-gex.ts    - GEX, Greek exposure, per-strike features
@@ -33,6 +39,7 @@ import {
   deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
+  type CronStatus,
 } from '../_lib/cron-instrumentation.js';
 import {
   getETTime,
@@ -49,13 +56,17 @@ import type { FeatureRow, SnapshotRow } from '../_lib/build-features-types.js';
 import { num } from '../_lib/build-features-types.js';
 import { engineerFlowFeatures } from '../_lib/build-features-flow.js';
 import { engineerGexFeatures } from '../_lib/build-features-gex.js';
-import { engineerPhase2Features } from '../_lib/build-features-phase2.js';
+import {
+  dpDayComplete,
+  engineerPhase2Features,
+} from '../_lib/build-features-phase2.js';
 import { engineerMonitorFeatures } from '../_lib/build-features-monitor.js';
 import {
   engineerNopeFeatures,
   type NopeTickRow,
 } from '../_lib/build-features-nope.js';
 import {
+  DP_COLUMNS,
   upsertFeatures,
   computeCompleteness,
 } from '../_lib/build-features-upsert.js';
@@ -416,10 +427,51 @@ function snapshotFeatures(s: SnapshotRow | undefined): FeatureRow {
 
 // Build features for a single date
 
+/**
+ * What the write does with a date's dark-pool columns (`dp_*`):
+ * - `overwrite`: the dark-pool read worked and the day is complete
+ *   (`dpDayComplete`), so the columns take the rebuilt value as it is, NULL
+ *   included;
+ * - `keep`: the read worked but the day has no prints or short bars. A data
+ *   state, not a failure: the columns keep their stored value (the COALESCE
+ *   every column has), and the date is listed in `dpKept`;
+ * - `read-failed`: the dark-pool read, or the check of the day, failed. The
+ *   columns keep their stored value too, and the run is `partial`.
+ */
+type DarkPoolWrite = 'overwrite' | 'keep' | 'read-failed';
+
+/**
+ * The dp columns' fate for `dateStr`. Nothing here throws: a rejected check of
+ * the day is a failed read of the dp signal, like a failed dark-pool read.
+ */
+async function darkPoolWrite(
+  sql: ReturnType<typeof getDb>,
+  dateStr: string,
+  dpReadOk: boolean,
+): Promise<DarkPoolWrite> {
+  if (!dpReadOk) return 'read-failed';
+  try {
+    const complete = await withDbRetry(
+      () => dpDayComplete(sql, dateStr),
+      2,
+      10_000,
+    );
+    return complete ? 'overwrite' : 'keep';
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.warn(
+      { err, date: dateStr },
+      'build-features: dark-pool completeness check failed, dp columns kept',
+    );
+    return 'read-failed';
+  }
+}
+
 /** A date's features, and whether it was built with no trusted snapshot row. */
 interface BuiltDate {
   features: FeatureRow;
   noPick: NoPickDate | null;
+  dp: DarkPoolWrite;
 }
 
 async function buildFeaturesForDate(dateStr: string): Promise<BuiltDate> {
@@ -504,7 +556,8 @@ async function buildFeaturesForDate(dateStr: string): Promise<BuiltDate> {
   await engineerGexFeatures(sql, dateStr, features);
 
   // 6-9. Phase 2: prev day, realized vol, events, max pain, dark pool, options
-  await engineerPhase2Features(sql, dateStr, features);
+  const { dpReadOk } = await engineerPhase2Features(sql, dateStr, features);
+  const dp = await darkPoolWrite(sql, dateStr, dpReadOk);
 
   // 10. Monitor features: IV dynamics + flow ratio dynamics
   await engineerMonitorFeatures(sql, dateStr, features);
@@ -528,7 +581,7 @@ async function buildFeaturesForDate(dateStr: string): Promise<BuiltDate> {
   features.feature_completeness =
     noPick == null ? computeCompleteness(features) : 0;
 
-  return { features, noPick };
+  return { features, noPick, dp };
 }
 
 // Wrapped main cron.
@@ -640,16 +693,25 @@ const wrappedCron = withCronInstrumentation(
     // not here. A labels write that fails after the features row was written
     // leaves the date here and also counts in `errors`.
     const noPickDates: NoPickDate[] = [];
+    // Dates written with their dp columns kept for a data state (no prints,
+    // short bars), and dates written with them kept because a read failed. As
+    // with noPickDates, a date whose features write failed is in neither.
+    const dpKeptDates: string[] = [];
+    const dpReadFailedDates: string[] = [];
 
     for (const dateStr of dates) {
       try {
-        const { features, noPick } = await buildFeaturesForDate(dateStr);
-        await upsertFeatures(features);
+        const { features, noPick, dp } = await buildFeaturesForDate(dateStr);
+        await upsertFeatures(features, {
+          overwrite: dp === 'overwrite' ? DP_COLUMNS : [],
+        });
         featuresBuilt++;
         latestCompleteness = features.feature_completeness as
           | number
           | undefined;
         if (noPick != null) noPickDates.push(noPick);
+        if (dp === 'keep') dpKeptDates.push(dateStr);
+        if (dp === 'read-failed') dpReadFailedDates.push(dateStr);
 
         const labels = await extractLabelsForDate(dateStr);
         if (labels) {
@@ -675,15 +737,26 @@ const wrappedCron = withCronInstrumentation(
         labelsExtracted,
         errors,
         noPickDates: noPickDates.length,
+        dpKept: dpKeptDates.length,
+        dpReadFailed: dpReadFailedDates.length,
       },
       'build-features: completed',
     );
 
+    // Every date failing is 'error' (red Sentry monitor), not 'partial'; no
+    // dates to process is 'success'. A no-pick date is a data state, not a
+    // failure, so it never moves the status. A dark-pool read that failed
+    // does: the row was written, so it is not an `errors` count (one date of
+    // one would read as a failed write, and `error`), and it is set here, by
+    // hand, to lower a success to 'partial' and never to lift an 'error'.
+    const derived = deriveCronStatus(errors, dates.length);
+    const status: CronStatus =
+      derived === 'success' && dpReadFailedDates.length > 0
+        ? 'partial'
+        : derived;
+
     return {
-      // Every date failing is 'error' (red Sentry monitor), not 'partial';
-      // no dates to process is 'success'. A no-pick date is a data state, not
-      // a failure, so it never moves the status.
-      status: deriveCronStatus(errors, dates.length),
+      status,
       metadata: {
         dates: dates.length,
         featuresBuilt,
@@ -693,6 +766,13 @@ const wrappedCron = withCronInstrumentation(
         // Explains a completeness of 0. Not an Axiom top-level key
         // (api/_lib/axiom-fields.ts), so it is reported inside `meta`.
         noPickDates: noPickDates.length,
+        // The dates whose dp columns were not overwritten because the day has
+        // no prints or short bars. In the response too, so a `?date=` rebuild
+        // says whether its date is here. Inside `meta` in Axiom like the rest.
+        dpKept: dpKeptDates,
+        // The dates whose dark-pool read, or check of the day, failed; why the
+        // status is 'partial' with no errors.
+        dpReadFailed: dpReadFailedDates,
       },
     };
   },

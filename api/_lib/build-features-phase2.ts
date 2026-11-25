@@ -22,8 +22,13 @@ import { fetchMaxPain } from './max-pain.js';
 import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
-import { priorTradingDay } from '../../src/data/marketHours.js';
-import { getETToday } from '../../src/utils/timezone.js';
+import {
+  CASH_OPEN_MIN_ET,
+  cashSessionMinutes,
+  getMarketCloseHourET,
+  priorTradingDay,
+} from '../../src/data/marketHours.js';
+import { etWallClockToUtcIso, getETToday } from '../../src/utils/timezone.js';
 
 /** UW's rolling history window, in trading days. */
 const UW_WINDOW_TRADING_DAYS = 30;
@@ -93,9 +98,19 @@ export function isWithinUWWindow(
 
 type Sql = NeonQueryFunction<false, false>;
 
+/** What rounds a value to the 4 decimals (the scale) of a NUMERIC(8,4): 10^4. */
+const NUMERIC_8_4_SCALE_FACTOR = 10 ** 4;
+
+/**
+ * The first |value| a NUMERIC(8,4) cannot hold: its 8 digits less the 4
+ * decimals leave 4 integer digits, so the limit is 10^(8 - 4) = 10,000.
+ */
+const NUMERIC_8_4_LIMIT = 10 ** (8 - 4);
+
 /**
  * Round a ratio to the 4 decimals of a NUMERIC(8,4) column, or return null
- * when the rounded value has more than 4 integer digits (|value| >= 10000).
+ * when the rounded value has more than 4 integer digits (|value| >= 10000) or
+ * is not a number (NaN, or an infinity).
  *
  * Postgres rounds to the column's scale first and then checks the range, so
  * this does the same: 9999.99996 rounds to 10000 and is out of range. An
@@ -103,14 +118,20 @@ type Sql = NeonQueryFunction<false, false>;
  * (dp_support_resistance_ratio was 35,853 on 2026-03-26 and that date's
  * features never rebuilt).
  *
- * This only prevents the overflow. A null here does not clear a value already
- * stored: the upsert keeps the existing value over a null
- * (COALESCE(EXCLUDED.col, existing) in build-features-upsert.ts), and for
- * oic_oi_change_pcr it still does.
+ * This only prevents the overflow. A null here does not always clear the
+ * stored value, because the upsert keeps the existing value over a null
+ * (COALESCE(EXCLUDED.col, existing) in build-features-upsert.ts):
+ * - oic_oi_change_pcr always keeps its old value over a null;
+ * - dp_support_resistance_ratio keeps it too, except on a complete day whose
+ *   dark-pool read succeeded: there the cron overwrites the dp columns as they
+ *   are, so the null replaces the stored value (dpDayComplete, below).
  */
 function roundToNumeric84(value: number): number | null {
-  const rounded = Math.round(value * 1e4) / 1e4;
-  return Math.abs(rounded) >= 1e4 ? null : rounded;
+  const rounded =
+    Math.round(value * NUMERIC_8_4_SCALE_FACTOR) / NUMERIC_8_4_SCALE_FACTOR;
+  return !Number.isFinite(rounded) || Math.abs(rounded) >= NUMERIC_8_4_LIMIT
+    ? null
+    : rounded;
 }
 
 /**
@@ -371,6 +392,11 @@ export async function addMaxPainFeatures(
  * the uw-stream daemon's dark_pool_prints. Errors are logged but never
  * propagated.
  *
+ * Returns whether the read went through: false when an error was caught (the
+ * dp_* features are then left as they were, which says nothing about the day),
+ * true otherwise, a read with no rows included. The cron overwrites the stored
+ * dp_* columns only after a true.
+ *
  * The `sql` parameter is preserved for signature compatibility with
  * the caller's transaction context, but unused — the helper opens its
  * own connection via getDb(). Acceptable because feature extraction
@@ -381,7 +407,7 @@ export async function addDarkPoolFeatures(
   _sql: Sql,
   dateStr: string,
   features: FeatureRow,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const result = await getDarkPoolLevels({ date: dateStr, symbol: 'SPX' });
     const levels = result.levels;
@@ -420,10 +446,77 @@ export async function addDarkPoolFeatures(
           ? Math.round((topLevel.totalPremium / totalPremium) * 10000) / 10000
           : null;
     }
+    return true;
   } catch (error_) {
-    logger.warn({ err: error_ }, 'Dark pool feature extraction failed');
+    logger.warn(
+      { err: error_, date: dateStr },
+      'Dark pool feature extraction failed',
+    );
     Sentry.captureException(error_);
+    return false;
   }
+}
+
+/**
+ * Whether `dateStr` has all the data the dark-pool levels read stands on, so a
+ * rebuild may overwrite its stored dp_* columns, NULLs included. All three:
+ * 1. at least one `dark_pool_prints` row with `symbol = 'SPY'` (the levels
+ *    query reads SPY and scales it to SPX);
+ * 2. `cashSessionMinutes(dateStr)` SPX bars with `market_time = 'r'` in
+ *    `index_candles_1m`;
+ * 3. `cashSessionMinutes(dateStr)` SPY bars in `etf_candles_1m` from 09:30 ET
+ *    up to the close (13:00 ET on a half day). That table has no date or
+ *    market_time column, so the window is the two instants.
+ * The levels query joins both candle tables on each print's minute, so a
+ * minute missing from either one drops that minute's prints from the levels.
+ * A rebuild over such a day, or over one with no prints (the legacy dates),
+ * would write thinner levels than the stored ones, NULLs included, so the
+ * stored ones stay.
+ *
+ * A day with no cash session (a weekend, a holiday, no date) is not complete.
+ * One query; a rejection propagates, for the caller to treat as a failed dp
+ * read.
+ */
+export async function dpDayComplete(
+  sql: Sql,
+  dateStr: string,
+): Promise<boolean> {
+  const expectedBars = cashSessionMinutes(dateStr);
+  const closeHour = getMarketCloseHourET(dateStr);
+  const openIso = etWallClockToUtcIso(dateStr, CASH_OPEN_MIN_ET);
+  const closeIso =
+    closeHour == null ? null : etWallClockToUtcIso(dateStr, closeHour * 60);
+  if (expectedBars === 0 || openIso == null || closeIso == null) return false;
+
+  const rows = (await sql`
+    SELECT
+      EXISTS (
+        SELECT 1 FROM dark_pool_prints
+        WHERE symbol = 'SPY' AND date = ${dateStr}::date
+      ) AS has_prints,
+      (
+        SELECT COUNT(*) FROM index_candles_1m
+        WHERE symbol = 'SPX' AND date = ${dateStr}::date AND market_time = 'r'
+      )::int AS spx_bars,
+      (
+        SELECT COUNT(*) FROM etf_candles_1m
+        WHERE ticker = 'SPY'
+          AND timestamp >= ${openIso}::timestamptz
+          AND timestamp < ${closeIso}::timestamptz
+      )::int AS spy_bars
+  `) as Array<{
+    has_prints: boolean;
+    spx_bars: number | string;
+    spy_bars: number | string;
+  }>;
+
+  const row = rows[0];
+  return (
+    row != null &&
+    row.has_prints === true &&
+    Number(row.spx_bars) >= expectedBars &&
+    Number(row.spy_bars) >= expectedBars
+  );
 }
 
 /**
@@ -888,6 +981,16 @@ export async function addVolSurfaceFeatures(
 
 // ── Orchestrator ────────────────────────────────────────────────
 
+/** What `engineerPhase2Features` returns besides the features it fills in. */
+export interface Phase2Result {
+  /**
+   * True when the dark-pool read resolved with no caught error (no rows is
+   * still true). It sits here and not in `features` because a FeatureRow key
+   * would count in `computeCompleteness`.
+   */
+  dpReadOk: boolean;
+}
+
 /**
  * Engineer Phase 2 features by sequencing the per-phase helpers above.
  * Order matters: realized_vol must precede rv/iv ratio; spx_open must be
@@ -901,7 +1004,7 @@ export async function engineerPhase2Features(
   sql: Sql,
   dateStr: string,
   features: FeatureRow,
-): Promise<void> {
+): Promise<Phase2Result> {
   await addPrevDayFeatures(sql, dateStr, features);
   await addRealizedVolFeatures(sql, dateStr, features);
   addRealizedIvRatioFeatures(features);
@@ -909,10 +1012,11 @@ export async function engineerPhase2Features(
   await addVvixPercentileFeatures(sql, dateStr, features);
   await addEventFeatures(sql, dateStr, features);
   await addMaxPainFeatures(dateStr, features);
-  await addDarkPoolFeatures(sql, dateStr, features);
+  const dpReadOk = await addDarkPoolFeatures(sql, dateStr, features);
   await addOptionsVolumeFeatures(dateStr, features);
   await addOiChangeFeatures(sql, dateStr, features);
   await addVolSurfaceFeatures(sql, dateStr, features);
+  return { dpReadOk };
 }
 
 // ── Internals ───────────────────────────────────────────────────

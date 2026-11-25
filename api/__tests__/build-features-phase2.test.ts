@@ -1,6 +1,18 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeAll,
+  beforeEach,
+  afterAll,
+  afterEach,
+} from 'vitest';
+import { PGlite } from '@electric-sql/pglite';
+
+import { applyMigration, neonOverPglite } from './pglite-migrations';
 
 // ── Mocks ─────────────────────────────────────────────────
 
@@ -36,8 +48,10 @@ import {
   addOiChangeFeatures,
   addOptionsVolumeFeatures,
   optionsVolumeFeaturesFromRow,
+  dpDayComplete,
 } from '../_lib/build-features-phase2.js';
 import { priorTradingDay } from '../../src/data/marketHours.js';
+import { computeCompleteness } from '../_lib/build-features-upsert.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
 import { UwHttpError } from '../_lib/uw-fetch.js';
 import logger from '../_lib/logger.js';
@@ -979,7 +993,7 @@ describe('engineerPhase2Features', () => {
       // Should not throw
       await expect(
         engineerPhase2Features(mockSql as never, DATE_STR, features),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ dpReadOk: true });
 
       // Fallback preserved: feature stays a genuine NaN (undefined), not 0.
       expect(features.max_pain_0dte).toBeUndefined();
@@ -1179,16 +1193,91 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // nextEventRow
       mockSql.mockRejectedValueOnce(new Error('DB error')); // dpRows fails
 
-      // Should not throw
+      // Should not throw, and says the read failed.
       await expect(
         engineerPhase2Features(mockSql as never, DATE_STR, features),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ dpReadOk: false });
 
       // Fallback preserved: feature left undefined.
       expect(features.dp_total_premium).toBeUndefined();
       // Failure surfaced to Sentry.
       expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
         expect.any(Error),
+      );
+    });
+
+    // The overwrite signal: dpReadOk is true when the read resolved, whatever
+    // it returned. No prints is a data state (dpDayComplete reads it), not a
+    // failed read.
+    it('reports dpReadOk true when the read returns levels', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      for (let i = 0; i < 4; i++) mockSql.mockResolvedValueOnce([]);
+      mockSql.mockResolvedValueOnce([makeDpRow()]); // dpRows
+
+      await expect(
+        engineerPhase2Features(mockSql as never, DATE_STR, features),
+      ).resolves.toEqual({ dpReadOk: true });
+      expect(features.dp_cluster_count).toBe(1);
+    });
+
+    it('reports dpReadOk true when the read returns no rows', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      for (let i = 0; i < 4; i++) mockSql.mockResolvedValueOnce([]);
+      mockSql.mockResolvedValueOnce([]); // dpRows, empty
+
+      await expect(
+        engineerPhase2Features(mockSql as never, DATE_STR, features),
+      ).resolves.toEqual({ dpReadOk: true });
+      expect(features.dp_cluster_count).toBeUndefined();
+    });
+
+    it('reports dpReadOk false when the read rejects, and still captures the error', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      const failure = new Error('connection lost');
+      for (let i = 0; i < 4; i++) mockSql.mockResolvedValueOnce([]);
+      mockSql.mockRejectedValueOnce(failure); // dpRows fails
+
+      await expect(
+        engineerPhase2Features(mockSql as never, DATE_STR, features),
+      ).resolves.toEqual({ dpReadOk: false });
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(failure);
+    });
+
+    it('completeness is unchanged by the signal', async () => {
+      // The signal comes back beside the features, never inside them: a key
+      // in `features` would count in computeCompleteness. The three reads
+      // below give dpReadOk true, true and false, and the same completeness
+      // (the dp_* keys are nullable, so they do not count either way).
+      const runWith = async (dpRead: unknown[] | Error) => {
+        mockSql.mockReset();
+        mockSql.mockResolvedValue([]);
+        for (let i = 0; i < 4; i++) mockSql.mockResolvedValueOnce([]);
+        if (dpRead instanceof Error) mockSql.mockRejectedValueOnce(dpRead);
+        else mockSql.mockResolvedValueOnce(dpRead);
+        const features = makeFeatures({ vix: 18.5, spx_open: 5800 });
+        const result = await engineerPhase2Features(
+          mockSql as never,
+          DATE_STR,
+          features,
+        );
+        return { features, result };
+      };
+
+      const withLevels = await runWith([makeDpRow()]);
+      const empty = await runWith([]);
+      const failed = await runWith(new Error('connection lost'));
+
+      expect(withLevels.result.dpReadOk).toBe(true);
+      expect(empty.result.dpReadOk).toBe(true);
+      expect(failed.result.dpReadOk).toBe(false);
+      for (const { features } of [withLevels, empty, failed]) {
+        expect(features).not.toHaveProperty('dpReadOk');
+      }
+      expect(computeCompleteness(withLevels.features)).toBe(
+        computeCompleteness(empty.features),
+      );
+      expect(computeCompleteness(failed.features)).toBe(
+        computeCompleteness(empty.features),
       );
     });
   });
@@ -1380,7 +1469,7 @@ describe('engineerPhase2Features', () => {
 
       await expect(
         engineerPhase2Features(mockSql as never, DATE_STR, features),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ dpReadOk: true });
 
       // Fallback preserved: feature left undefined, in both groups.
       expect(features.opt_call_volume).toBeUndefined();
@@ -1673,7 +1762,7 @@ describe('engineerPhase2Features', () => {
 
       await expect(
         engineerPhase2Features(mockSql as never, DATE_STR, features),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ dpReadOk: true });
 
       // Fallback preserved: feature left undefined.
       expect(features.oic_net_oi_change).toBeUndefined();
@@ -1909,7 +1998,7 @@ describe('engineerPhase2Features', () => {
 
       await expect(
         engineerPhase2Features(mockSql as never, DATE_STR, features),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ dpReadOk: true });
 
       // Fallback preserved: features left undefined.
       expect(features.iv_ts_spread).toBeUndefined();
@@ -3343,6 +3432,26 @@ describe('NUMERIC(8,4) ratio overflow guard', () => {
     // 2026-11-05: a legitimate dark-pool ratio of this size.
     { ratio: 1471, numerator: 1_471, denominator: 1, expected: 1471 },
     { ratio: 0.5, numerator: 1, denominator: 2, expected: 0.5 },
+    // Not numbers. Infinity over Infinity is NaN, which no comparison against
+    // the limit rejects; the guard has to say it is not finite.
+    {
+      ratio: Number.NaN,
+      numerator: Number.POSITIVE_INFINITY,
+      denominator: Number.POSITIVE_INFINITY,
+      expected: null,
+    },
+    {
+      ratio: Number.POSITIVE_INFINITY,
+      numerator: Number.POSITIVE_INFINITY,
+      denominator: 1,
+      expected: null,
+    },
+    {
+      ratio: Number.NEGATIVE_INFINITY,
+      numerator: Number.NEGATIVE_INFINITY,
+      denominator: 1,
+      expected: null,
+    },
   ];
 
   beforeEach(() => {
@@ -3424,6 +3533,285 @@ describe('NUMERIC(8,4) ratio overflow guard', () => {
         expect(features.oic_call_oi_change).toBe(denominator);
         expect(features.oic_put_oi_change).toBe(numerator);
       },
+    );
+  });
+});
+
+// ── dpDayComplete against Postgres ──────────────────────────
+//
+// The mocked tests above can only hand dpDayComplete's answer on; what makes
+// it true or false is its SQL: three conditions in one statement, over three
+// tables built here from the real migrations. Every instant is written out in
+// UTC, so a wrong ET offset (EDT against EST) or a wrong close (a half day)
+// shows as a wrong count.
+
+describe('dpDayComplete (real SQL, pglite)', () => {
+  let pg: PGlite;
+
+  // #52 creates spx_candles_1m, #54 adds the column #112's compat view reads,
+  // and #112 renames it to index_candles_1m and adds `symbol`. #94 is
+  // etf_candles_1m and #116 is dark_pool_prints.
+  const MIGRATIONS = [52, 54, 112, 94, 116];
+
+  beforeAll(async () => {
+    pg = await PGlite.create();
+    for (const id of MIGRATIONS) await applyMigration(pg, id);
+  }, 60_000);
+
+  afterAll(async () => {
+    await pg.close();
+  });
+
+  beforeEach(async () => {
+    await pg.query(
+      'TRUNCATE index_candles_1m, etf_candles_1m, dark_pool_prints RESTART IDENTITY',
+    );
+  });
+
+  /** A cash session: its date, its 09:30 ET open as a UTC instant, its bars. */
+  interface Day {
+    date: string;
+    open: string;
+    /** One-minute bars in the regular session: 390, or 210 on a half day. */
+    bars: number;
+  }
+
+  // 09:30 EDT = 13:30Z; 09:30 EST = 14:30Z.
+  const EDT_DAY: Day = {
+    date: '2026-04-21',
+    open: '2026-04-21T13:30:00Z',
+    bars: 390,
+  };
+  const EST_DAY: Day = {
+    date: '2026-01-15',
+    open: '2026-01-15T14:30:00Z',
+    bars: 390,
+  };
+  // The day after Thanksgiving closes at 13:00 ET = 18:00Z.
+  const HALF_DAY: Day = {
+    date: '2026-11-27',
+    open: '2026-11-27T14:30:00Z',
+    bars: 210,
+  };
+
+  /** `count` one-minute index bars from `startIso`, on `date`. */
+  async function indexBars(
+    symbol: string,
+    date: string,
+    startIso: string,
+    count: number,
+    marketTime = 'r',
+  ): Promise<void> {
+    await pg.query(
+      `INSERT INTO index_candles_1m
+         (symbol, date, timestamp, open, high, low, close, volume, market_time)
+       SELECT $1, $2::date, $3::timestamptz + n * INTERVAL '1 minute',
+              5000, 5000, 5000, 5000, 1, $5
+       FROM generate_series(0, $4::int - 1) AS n`,
+      [symbol, date, startIso, count, marketTime],
+    );
+  }
+
+  /** `count` one-minute ETF bars from `startIso`. */
+  async function etfBars(
+    ticker: string,
+    startIso: string,
+    count: number,
+  ): Promise<void> {
+    await pg.query(
+      `INSERT INTO etf_candles_1m
+         (ticker, timestamp, open, high, low, close, volume)
+       SELECT $1, $2::timestamptz + n * INTERVAL '1 minute',
+              580, 580, 580, 580, 1
+       FROM generate_series(0, $3::int - 1) AS n`,
+      [ticker, startIso, count],
+    );
+  }
+
+  async function print(symbol: string, date: string): Promise<void> {
+    await pg.query(
+      `INSERT INTO dark_pool_prints
+         (date, symbol, executed_at, price, size, premium)
+       VALUES ($1::date, $2, $3::timestamptz, 580, 100, 58000)`,
+      [date, symbol, `${date}T15:00:00Z`],
+    );
+  }
+
+  /** A day with every condition met: a SPY print and its full bars. */
+  async function seedComplete(day: Day): Promise<void> {
+    await print('SPY', day.date);
+    await indexBars('SPX', day.date, day.open, day.bars);
+    await etfBars('SPY', day.open, day.bars);
+  }
+
+  const ask = (date: string) =>
+    dpDayComplete(neonOverPglite(pg) as never, date);
+
+  it('is true on a full day with prints', async () => {
+    await seedComplete(EDT_DAY);
+
+    await expect(ask(EDT_DAY.date)).resolves.toBe(true);
+  });
+
+  it('is true on a winter day, whose 09:30 ET open is 14:30Z', async () => {
+    await seedComplete(EST_DAY);
+
+    await expect(ask(EST_DAY.date)).resolves.toBe(true);
+  });
+
+  it('needs only the 210 bars of a half day', async () => {
+    await seedComplete(HALF_DAY);
+
+    await expect(ask(HALF_DAY.date)).resolves.toBe(true);
+  });
+
+  it('keeps dp when the date has no prints', async () => {
+    // The 18 legacy dates have features and no dark_pool_prints rows.
+    await indexBars('SPX', EDT_DAY.date, EDT_DAY.open, 390);
+    await etfBars('SPY', EDT_DAY.open, 390);
+
+    await expect(ask(EDT_DAY.date)).resolves.toBe(false);
+  });
+
+  it.each([
+    ['only QQQ prints', 'QQQ', EDT_DAY.date],
+    ['only prints of another date', 'SPY', '2026-04-20'],
+  ])('keeps dp when the date has %s', async (_label, symbol, printDate) => {
+    await print(symbol, printDate);
+    await indexBars('SPX', EDT_DAY.date, EDT_DAY.open, 390);
+    await etfBars('SPY', EDT_DAY.open, 390);
+
+    await expect(ask(EDT_DAY.date)).resolves.toBe(false);
+  });
+
+  describe('keeps dp when SPX bars or SPY ETF bars are short', () => {
+    // Each case has a print and every bar of the session but the fault.
+    const cases: Array<[string, (day: Day) => Promise<void>]> = [
+      [
+        'one SPX regular bar is missing',
+        async (day) => {
+          await indexBars('SPX', day.date, day.open, 389);
+          await etfBars('SPY', day.open, 390);
+        },
+      ],
+      [
+        'the SPX bars outside the regular session do not count',
+        async (day) => {
+          await indexBars('SPX', day.date, day.open, 380);
+          // 10 pre-market bars, 'pr', from 08:00 ET.
+          await indexBars('SPX', day.date, '2026-04-21T12:00:00Z', 10, 'pr');
+          await etfBars('SPY', day.open, 390);
+        },
+      ],
+      [
+        'the SPX bars of another date do not count',
+        async (day) => {
+          await indexBars('SPX', '2026-04-20', '2026-04-20T13:30:00Z', 390);
+          await etfBars('SPY', day.open, 390);
+        },
+      ],
+      [
+        'the NDX bars are not SPX bars',
+        async (day) => {
+          await indexBars('NDX', day.date, day.open, 390);
+          await etfBars('SPY', day.open, 390);
+        },
+      ],
+      [
+        'one SPY bar is missing',
+        async (day) => {
+          await indexBars('SPX', day.date, day.open, 390);
+          await etfBars('SPY', day.open, 389);
+        },
+      ],
+      [
+        'the QQQ bars are not SPY bars',
+        async (day) => {
+          await indexBars('SPX', day.date, day.open, 390);
+          await etfBars('QQQ', day.open, 390);
+          await etfBars('SPY', day.open, 100);
+        },
+      ],
+      [
+        'a SPY bar before 09:30 ET does not count',
+        async (day) => {
+          await indexBars('SPX', day.date, day.open, 390);
+          // 389 bars from 09:31 ET, and one at 09:29.
+          await etfBars('SPY', '2026-04-21T13:31:00Z', 389);
+          await etfBars('SPY', '2026-04-21T13:29:00Z', 1);
+        },
+      ],
+      [
+        'a SPY bar at the 16:00 ET close does not count',
+        async (day) => {
+          await indexBars('SPX', day.date, day.open, 390);
+          // 389 bars, 09:30 to 15:58 ET, and the one that opens at 16:00.
+          await etfBars('SPY', day.open, 389);
+          await etfBars('SPY', '2026-04-21T20:00:00Z', 1);
+        },
+      ],
+    ];
+
+    it.each(cases)('%s', async (_label, seed) => {
+      await print('SPY', EDT_DAY.date);
+      await seed(EDT_DAY);
+
+      await expect(ask(EDT_DAY.date)).resolves.toBe(false);
+    });
+
+    it('ends the SPY window at the 13:00 ET close of a half day', async () => {
+      await print('SPY', HALF_DAY.date);
+      await indexBars('SPX', HALF_DAY.date, HALF_DAY.open, 210);
+      // 200 bars inside the session, then 10 after its 13:00 ET (18:00Z) close.
+      await etfBars('SPY', HALF_DAY.open, 200);
+      await etfBars('SPY', '2026-11-27T18:00:00Z', 10);
+
+      await expect(ask(HALF_DAY.date)).resolves.toBe(false);
+    });
+
+    it('starts the SPY window at the 14:30Z open of a winter day', async () => {
+      await print('SPY', EST_DAY.date);
+      await indexBars('SPX', EST_DAY.date, EST_DAY.open, 390);
+      // The same 390 minutes an hour early: 13:30Z, the summer open.
+      await etfBars('SPY', '2026-01-15T13:30:00Z', 390);
+
+      await expect(ask(EST_DAY.date)).resolves.toBe(false);
+    });
+  });
+
+  it.each([
+    ['a Saturday', '2026-04-18'],
+    ['a market holiday (Good Friday)', '2026-04-03'],
+  ])('is false on %s, without a query', async (_label, date) => {
+    // A print is there, and a day with no cash session expects no bars, so
+    // only the date can say no: it must not pass for complete.
+    await print('SPY', date);
+    const sql = vi.fn(neonOverPglite(pg));
+
+    await expect(dpDayComplete(sql as never, date)).resolves.toBe(false);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('is false on a date that is not one, without a query', async () => {
+    const sql = vi.fn(neonOverPglite(pg));
+
+    await expect(dpDayComplete(sql as never, 'garbage')).resolves.toBe(false);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('asks the database once', async () => {
+    await seedComplete(EDT_DAY);
+    const sql = vi.fn(neonOverPglite(pg));
+
+    await expect(dpDayComplete(sql as never, EDT_DAY.date)).resolves.toBe(true);
+    expect(sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a database error through for the caller to count', async () => {
+    const sql = vi.fn(() => Promise.reject(new Error('connection lost')));
+
+    await expect(dpDayComplete(sql as never, EDT_DAY.date)).rejects.toThrow(
+      'connection lost',
     );
   });
 });
