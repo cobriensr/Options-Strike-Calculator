@@ -17,6 +17,7 @@ import { useStrategyInputs } from './hooks/useStrategyInputs';
 import { useClusterMultiplier } from './hooks/useClusterMultiplier';
 import { resolveYesterday } from './utils/yesterday';
 import { currentOpeningRange } from './utils/current-opening-range';
+import { currentYesterday } from './utils/current-yesterday';
 import { useTheme } from './hooks/useTheme';
 import { useTimeInputs } from './hooks/useTimeInputs';
 import { useAutoFill } from './hooks/useAutoFill';
@@ -606,7 +607,10 @@ export default function StrikeCalculator() {
   // resolved value).
   const yesterday = resolveYesterday(
     historySnapshot?.yesterday,
-    market.data.yesterday?.yesterday,
+    // The live feed's day counts only when it is the last trading day before
+    // today's ET date: a held tab, or a body from a day-old edge cache, holds
+    // another day, and every reader below would be a session off.
+    currentYesterday(market.data.yesterday?.yesterday, vix.etToday),
     analysisIsBacktest,
   );
 

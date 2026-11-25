@@ -175,6 +175,16 @@ describe('App date-clock wiring', () => {
     expect(appCode).not.toMatch(/market\.data\.intraday\?\.openingRange/);
   });
 
+  it('judges the live yesterday against the date clock, and nowhere else reads the raw one', () => {
+    // A held or day-old /api/yesterday body names another day. The one call
+    // carries the date clock, and the raw field is read only inside it, so a
+    // wall-clock call or a bypass would change the count.
+    const bodies = callBodies('currentYesterday');
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatch(/\bvix\.etToday\b/);
+    expect(appCode.match(/\bmarket\.data\.yesterday\b/g)).toHaveLength(1);
+  });
+
   it('hands AdvancedSection the date clock, which decides its no-VIX-data hint', () => {
     const props = /<AdvancedSection([\s\S]*?)\/>/.exec(appCode)?.[1];
     expect(props).toMatch(/^\s+selectedDate=\{vix\.selectedDate\}$/m);

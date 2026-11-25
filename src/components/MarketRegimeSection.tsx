@@ -19,6 +19,7 @@ import type { ChainResponse, HistoryCandle } from '../types/api';
 import type { ComputedSignals } from '../hooks/useComputedSignals';
 import { isPastETDate } from '../utils/timezone';
 import { currentOpeningRange } from '../utils/current-opening-range';
+import { currentYesterday } from '../utils/current-yesterday';
 
 interface Props {
   dVix: string;
@@ -107,6 +108,14 @@ export default function MarketRegimeSection({
   // The option chain is today's too. App resolves it the same way, so a
   // chain arriving here on a snapshot or a past date is a stale one.
   const liveChain = liveData ? chain : null;
+  // The live feed's yesterday counts only while it is the last trading day
+  // before today's ET date: a held tab, or a body from a day-old edge cache,
+  // holds another day, and the RV/IV ratio against it would be a session off.
+  const heldYesterday = liveData?.yesterday ?? null;
+  const liveYesterday =
+    currentYesterday(heldYesterday?.yesterday, etToday) == null
+      ? null
+      : heldYesterday;
 
   // What an edit in the opening-range card is tied to, so it resets at the
   // next slot and on the next date. The slot label tells slots apart exactly.
@@ -216,7 +225,7 @@ export default function MarketRegimeSection({
                               asOf: '',
                             }
                           : null
-                        : (liveData?.yesterday ?? null)
+                        : liveYesterday
                     }
                     movers={liveData?.movers ?? null}
                     vixPrevClose={historySnapshot?.vixPrevClose ?? undefined}

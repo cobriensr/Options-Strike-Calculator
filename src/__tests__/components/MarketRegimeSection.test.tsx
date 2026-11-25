@@ -731,6 +731,62 @@ describe('MarketRegimeSection', () => {
       renderWith();
       expect(screen.getByText(RV_IV_CARD)).toBeInTheDocument();
     });
+
+    // The live feed's yesterday is only the right one while it is the last
+    // trading day before today's ET date. A held tab, or a body from a day-old
+    // edge cache, holds an older day, which would give the card a wrong ratio.
+    it.each([
+      [
+        'Thursday, the last completed session',
+        '2026-03-12',
+        '2026-03-11',
+        true,
+      ],
+      [
+        'Thursday, with Tuesday held (a day stale)',
+        '2026-03-12',
+        '2026-03-10',
+        false,
+      ],
+      ['Monday, with Friday held', '2026-03-16', '2026-03-13', true],
+      [
+        'Monday, with Thursday held (a session stale)',
+        '2026-03-16',
+        '2026-03-12',
+        false,
+      ],
+      ['Saturday, with Friday held', '2026-03-14', '2026-03-13', true],
+      ['Saturday, with Thursday held', '2026-03-14', '2026-03-12', false],
+    ])('%s', (_label, etToday, heldDate, shown) => {
+      render(
+        <MarketRegimeSection
+          dVix="18"
+          results={makeResults()}
+          errors={{}}
+          skewPct={0}
+          selectedDate={etToday}
+          etToday={etToday}
+          market={{
+            ...liveMarket,
+            data: {
+              ...liveMarket.data,
+              yesterday: {
+                yesterday: { ...liveYesterday, date: heldDate },
+                twoDaysAgo: null,
+                asOf: '',
+              },
+            },
+          }}
+          marketOpen={false}
+          showFlowRegime={true}
+          cluster={noCluster}
+          signals={defaultSignals}
+          chain={null}
+        />,
+      );
+
+      expect(screen.queryByText(RV_IV_CARD) != null).toBe(shown);
+    });
   });
 
   // The opening-range card and the live feed on a past date. At the 8:30 CT

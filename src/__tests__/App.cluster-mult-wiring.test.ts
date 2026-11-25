@@ -42,9 +42,12 @@ describe('App cluster multiplier wiring', () => {
   });
 
   it('resolves yesterday once: history first, the live feed only for today', () => {
-    // resolveYesterday(snapshot's, live feed's, selected date is past)
+    // resolveYesterday(snapshot's, live feed's current day, selected date is
+    // past). The live feed's day counts only when it is the last trading day
+    // before today's ET date (currentYesterday): a held or day-old body names
+    // another day.
     expect(appCode).toMatch(
-      /const yesterday = resolveYesterday\(\s*historySnapshot\?\.yesterday,\s*market\.data\.yesterday\?\.yesterday,\s*analysisIsBacktest,\s*\);/,
+      /const yesterday = resolveYesterday\(\s*historySnapshot\?\.yesterday,\s*currentYesterday\(\s*market\.data\.yesterday\?\.yesterday,\s*vix\.etToday,?\s*\),\s*analysisIsBacktest,\s*\);/,
     );
   });
 
