@@ -818,7 +818,9 @@ describe('gexbot-queries', () => {
     });
 
     it('still says "expired" for a same-day stamp at the close: the session did end', async () => {
-      // Captured at 16:03 ET with the vendor's final 16:00:00 ET snapshot.
+      // Pins `expired` for a stamp at the close (16:00:00 ET), should one ever
+      // arrive. The vendor's real last stamp is 15:59:59 ET, which stays live
+      // (see the test above); captured here at 16:03 ET.
       mockSql.mockResolvedValueOnce([
         {
           ...capture({ timestamp: Date.parse('2025-07-23T20:00:00Z') / 1000 }),

@@ -51,15 +51,31 @@ cut against `3dc04441`, moved onto `d8971cd` on 2026-11-24) and was applied on
   - **M.** This spec: the half-day check on Friday needs two readings and a
     ratio table, and the sections on missing moves, facts checked and status
     follow the code.
+- 2026-11-25 third round: a code re-review of commit `7c66c395d`. It changed
+  four things in the code and this spec, in the commit on top of it:
+  - **N.** `useGexbotData` refetches on the market's open edge (`marketOpen`
+    false to true) and drops the rows it holds, so no tile shows the last
+    session as live. A tab left open overnight kept yesterday's rows, and
+    nothing read again until the first 30 s tick: on a gap open the
+    expected-move range was centred on yesterday's spot. The hook's read now
+    carries a sequence number, so only the newest call applies its answer.
+  - **O.** A test comment named the vendor's last stamp 16:00:00 ET, against
+    the test above it; it now says what the case pins.
+  - **P.** `isPreOpenStamp` returns false for an invalid `capturedAt`, as
+    `fractionalDte` and `isSessionOver` do, instead of throwing a `RangeError`
+    from `getETDateStr`; its docstring says so.
+  - **Q.** A comment in `api/_lib/cron-helpers.ts` gave the frozen
+    post-close stamp as 16:00:00; production shows 15:59:59 ET.
 - Current state: the full gate (`npm run review`: type-check, lint, Prettier,
   `vite build`, the full test run with coverage) passed and sealed tree
   `992baae5` for commit `a3f1412e5`. The second round ships as its own commit
-  on top, with its own gate run. The original draft also passed on `d8971cd`:
-  type-check, `vite build`, ESLint and Prettier on every changed file, and 14
-  test files (582 tests).
-- Shape of the patch: one phase of 28 files, by the owner's hand-over as one
+  on top, and the third on top of that, each with its own gate run. The
+  original draft also passed on `d8971cd`: type-check, `vite build`, ESLint and
+  Prettier on every changed file, and 14 test files (582 tests).
+- Shape of the patch: one phase of 29 files, by the owner's hand-over as one
   patch. That is an explicit exception to the 5-files-per-phase rule. The
-  second round touches existing files only, so the patch is still 28 files.
+  second round touches existing files only. The third round adds one file to
+  the patch, `api/_lib/cron-helpers.ts` (a comment), so it is 29 files.
 - Still open: the live check against GEXBot's chart on Friday 2026-11-27 (see
   "Half days"), and the owner's call on question 7.
 
@@ -105,6 +121,7 @@ Part 2, expected move:
 - `api/_lib/validation/market-data.ts`: `expected-move` in the view enum
 - `api/gexbot.ts`: the new view
 - `api/__tests__/gexbot-queries.test.ts`, `api/__tests__/gexbot-endpoint.test.ts`
+- `api/_lib/cron-helpers.ts`: a comment on `isGexbotLiveCt` only (fix Q)
 
 Part 3, tiles and the shared clock:
 
@@ -171,6 +188,24 @@ What the code does around that:
   tile closes itself from that gate (fix I): with `marketOpen` false and a row
   present it shows the `expired` display ("SPX ±1σ · —", "session closed")
   whatever the row says. Loading, error and empty states are unchanged.
+- **At the open, the hook reads again and clears stale rows (fix N).** On the
+  rising edge of `marketOpen` (false to true), for every GEXBot view except
+  `sibling-confirm`, `useGexbotData` drops its state, so the tiles read
+  loading, and fetches at once. `usePolling` never calls its function on a
+  gate flip and the mount read runs once, so a tab left open overnight would
+  otherwise show yesterday's rows as live for up to 30 s, with the range
+  centred on yesterday's spot after a gap open. A hook that mounts open has no
+  edge and sends no extra read. A flip that lands while the mount read is
+  still out (page load, once auth and quotes arrive) joins that request
+  through the hook's in-flight dedupe: one request, not two.
+  `sibling-confirm` answers for a past fire time and keeps its own retry gate.
+- **Closed with no row is not "session closed".** The tile's closed display
+  applies only when a row is present. A tab opened after hours or on a
+  weekend gets no row (no capture inside the 5-minute freshness cutoff, or a
+  pre-open stamp), so it reads "awaiting first GEXBot tick", while a tab left
+  open across the close holds its last live row and reads "session closed".
+  The tile has only `marketOpen` to go by and cannot tell pre-market from
+  after-hours with it, so this is intended.
 - **A pre-open stamp is not "closed".** A vendor stamp before 09:30 ET on
   `captured_at`'s ET date (`isPreOpenStamp`, fix K) is no fresh data: the read
   returns no row and the tile shows "awaiting first GEXBot tick". Two cases

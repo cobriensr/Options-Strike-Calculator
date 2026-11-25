@@ -2,6 +2,7 @@
 
 import '@testing-library/jest-dom';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import { useGexbotData } from '../hooks/useGexbotData';
@@ -14,6 +15,27 @@ vi.mock('../hooks/useMarketData.fetchers', () => ({
   fetchJson: (...args: unknown[]) => mockFetchJson(...args),
 }));
 
+// Resolvers of the reads a test left open. The hook's in-flight map is module
+// state: a read still pending after a failed test would hang every later test
+// on the same URL, so afterEach settles them.
+const openReads: Array<(v: unknown) => void> = [];
+
+/** A read the test settles by hand. */
+function deferred() {
+  let resolve!: (v: unknown) => void;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  openReads.push(resolve);
+  return { promise, resolve };
+}
+
+// Let a late promise settle and any state update it triggers flush.
+const settle = () =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
 describe('useGexbotData', () => {
   beforeEach(() => {
     mockFetchJson.mockReset();
@@ -21,6 +43,9 @@ describe('useGexbotData', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    for (const resolve of openReads.splice(0)) {
+      resolve({ data: { rows: [] } });
+    }
   });
 
   // ── Tests that rely on real timers + waitFor ──────────────
@@ -382,6 +407,27 @@ describe('useGexbotData', () => {
         expect(result.current.error).toBe('Unavailable (HTTP 503)');
       });
 
+      it('counts one failure when two overlapping reads share one request', async () => {
+        // StrictMode runs the mount effect twice; both calls join one deduped
+        // request, so its answer reaches the hook twice. Only the newest call
+        // may apply it, or the first failure counts as two and the row gets a
+        // retry fewer.
+        vi.useFakeTimers();
+        mockFetchJson.mockResolvedValue({ error: 'Unavailable', status: 503 });
+        const { result } = renderHook(() => useGexbotData(SIBLING, true), {
+          wrapper: StrictMode,
+        });
+        await advance(0);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+        for (let retry = 1; retry <= 5; retry += 1) {
+          await advance(30_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(1 + retry);
+        }
+        await advance(60_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(6);
+        expect(result.current.error).toBe('Unavailable (HTTP 503)');
+      });
+
       it('counts a mix of transient failures and ends on a permanent one', async () => {
         vi.useFakeTimers();
         mockFetchJson
@@ -539,20 +585,6 @@ describe('useGexbotData', () => {
         true,
       );
 
-    // Let a late promise settle and any state update it triggers flush.
-    const settle = () =>
-      act(async () => {
-        await new Promise((r) => setTimeout(r, 20));
-      });
-
-    function deferred() {
-      let resolve!: (v: unknown) => void;
-      const promise = new Promise((r) => {
-        resolve = r;
-      });
-      return { promise, resolve };
-    }
-
     it('ignores a late response for the superseded fire time', async () => {
       const oldReq = deferred();
       const newReq = deferred();
@@ -621,6 +653,201 @@ describe('useGexbotData', () => {
 
       newReq.resolve({ data: { rows: [] } });
       await waitFor(() => expect(result.current.loading).toBe(false));
+    });
+  });
+
+  // ── The market's open edge ────────────────────────────────
+  //
+  // A tab left open overnight holds yesterday's last rows. usePolling never
+  // calls fn on a gate flip, so without a read at the flip those rows would
+  // render as live until the first 30 s tick. No timer is advanced below: a
+  // read that needs one is the bug.
+
+  describe('when the market opens (marketOpen goes false to true)', () => {
+    const PRIOR = { ticker: 'SPX', capturedAt: '2026-11-24T20:59:59Z' };
+    const FRESH = { ticker: 'SPX', capturedAt: '2026-11-25T14:30:05Z' };
+    const useView = ({
+      view,
+      marketOpen,
+    }: {
+      view:
+        | 'snapshots-latest'
+        | 'velocity'
+        | 'convexity-trend'
+        | 'expected-move';
+      marketOpen: boolean;
+    }) => useGexbotData({ view }, marketOpen);
+
+    it.each([
+      'snapshots-latest',
+      'velocity',
+      'convexity-trend',
+      'expected-move',
+    ] as const)(
+      'drops the prior session rows and reads %s at once',
+      async (view) => {
+        mockFetchJson.mockResolvedValueOnce({ data: { rows: [PRIOR] } });
+        const { result, rerender } = renderHook(useView, {
+          initialProps: { view, marketOpen: false },
+        });
+        await waitFor(() => expect(result.current.loading).toBe(false));
+        expect(result.current.rows).toEqual([PRIOR]);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+
+        const fresh = deferred();
+        mockFetchJson.mockReturnValueOnce(fresh.promise);
+        rerender({ view, marketOpen: true });
+
+        // The read went out on the flip itself, not on a later tick.
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(mockFetchJson).toHaveBeenLastCalledWith(
+          `/api/gexbot?view=${view}`,
+        );
+        // Between the flip and the answer nothing of yesterday is returned.
+        expect(result.current.loading).toBe(true);
+        expect(result.current.rows).toEqual([]);
+        expect(result.current.freshestAt).toBeNull();
+
+        fresh.resolve({ data: { rows: [FRESH] } });
+        await waitFor(() => expect(result.current.loading).toBe(false));
+        expect(result.current.rows).toEqual([FRESH]);
+        expect(result.current.freshestAt).toBe(FRESH.capturedAt);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('drops a held error too and shows loading until the new read lands', async () => {
+      mockFetchJson.mockResolvedValueOnce({
+        error: 'Unavailable',
+        status: 503,
+      });
+      const { result, rerender } = renderHook(useView, {
+        initialProps: { view: 'expected-move' as const, marketOpen: false },
+      });
+      await waitFor(() =>
+        expect(result.current.error).toBe('Unavailable (HTTP 503)'),
+      );
+
+      const fresh = deferred();
+      mockFetchJson.mockReturnValueOnce(fresh.promise);
+      rerender({ view: 'expected-move', marketOpen: true });
+      expect(result.current.loading).toBe(true);
+      expect(result.current.error).toBeNull();
+
+      fresh.resolve({ data: { rows: [FRESH] } });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.error).toBeNull();
+      expect(result.current.rows).toEqual([FRESH]);
+    });
+
+    it('joins a read that is still in flight: one request, answered once', async () => {
+      // Page load: marketOpen starts false and flips once auth and quotes
+      // land, often while the mount read is still out.
+      const mount = deferred();
+      mockFetchJson.mockReturnValueOnce(mount.promise);
+      const { result, rerender } = renderHook(useView, {
+        initialProps: { view: 'expected-move' as const, marketOpen: false },
+      });
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+
+      rerender({ view: 'expected-move', marketOpen: true });
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      expect(result.current.loading).toBe(true);
+
+      mount.resolve({ data: { rows: [FRESH] } });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.rows).toEqual([FRESH]);
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads again on every later opening, not only the first', async () => {
+      mockFetchJson.mockResolvedValue({ data: { rows: [FRESH] } });
+      const { result, rerender } = renderHook(useView, {
+        initialProps: { view: 'expected-move' as const, marketOpen: false },
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+
+      rerender({ view: 'expected-move', marketOpen: true });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(mockFetchJson).toHaveBeenCalledTimes(2);
+
+      rerender({ view: 'expected-move', marketOpen: false });
+      expect(mockFetchJson).toHaveBeenCalledTimes(2);
+      rerender({ view: 'expected-move', marketOpen: true });
+      await waitFor(() => expect(mockFetchJson).toHaveBeenCalledTimes(3));
+    });
+
+    it('reads at the next opening of a tab that mounted open and saw the close', async () => {
+      // Overnight: loaded in the session, closed at 16:00, open again at 09:30.
+      mockFetchJson.mockResolvedValue({ data: { rows: [FRESH] } });
+      const { result, rerender } = renderHook(useView, {
+        initialProps: { view: 'expected-move' as const, marketOpen: true },
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      rerender({ view: 'expected-move', marketOpen: false });
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+
+      const fresh = deferred();
+      mockFetchJson.mockReturnValueOnce(fresh.promise);
+      rerender({ view: 'expected-move', marketOpen: true });
+      expect(mockFetchJson).toHaveBeenCalledTimes(2);
+      expect(result.current.loading).toBe(true);
+      expect(result.current.rows).toEqual([]);
+
+      fresh.resolve({ data: { rows: [FRESH] } });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+    });
+
+    it('fires nothing when it mounts open, and nothing on a later render while open', async () => {
+      mockFetchJson.mockResolvedValue({ data: { rows: [FRESH] } });
+      const { result, rerender } = renderHook(useView, {
+        initialProps: { view: 'expected-move' as const, marketOpen: true },
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      rerender({ view: 'expected-move', marketOpen: true });
+      await settle();
+      // The mount read, and no second one for starting open.
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      expect(result.current.rows).toEqual([FRESH]);
+    });
+
+    it('fires nothing at the close and keeps the last rows', async () => {
+      mockFetchJson.mockResolvedValue({ data: { rows: [FRESH] } });
+      const { result, rerender } = renderHook(useView, {
+        initialProps: { view: 'expected-move' as const, marketOpen: true },
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      rerender({ view: 'expected-move', marketOpen: false });
+      await settle();
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      expect(result.current.loading).toBe(false);
+      expect(result.current.rows).toEqual([FRESH]);
+    });
+
+    it('leaves sibling-confirm alone: its gate is its own retry rule', async () => {
+      const sibling = {
+        view: 'sibling-confirm' as const,
+        ticker: 'AAPL',
+        side: 'call' as const,
+        at: '2026-10-29T14:00:10.000Z',
+      };
+      const rows = [{ ticker: 'QQQ', verdict: 'agree' }];
+      mockFetchJson.mockResolvedValue({ data: { rows } });
+      const { result, rerender } = renderHook(
+        ({ marketOpen }: { marketOpen: boolean }) =>
+          useGexbotData(sibling, marketOpen),
+        { initialProps: { marketOpen: false } },
+      );
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      rerender({ marketOpen: true });
+      await settle();
+      // A past fire's answer is final: no clear, no second read.
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      expect(result.current.loading).toBe(false);
+      expect(result.current.rows).toEqual(rows);
     });
   });
 });

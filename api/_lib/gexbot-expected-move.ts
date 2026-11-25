@@ -172,10 +172,13 @@ export function isSessionOver(asOf: Date): boolean {
  *     above 6.5 h / 24).
  * The ET date is the capture's, not the UTC date, so a 21:00 ET stamp on a
  * capture that is already past midnight UTC still counts as that evening's.
- * The open is the same 09:30 ET on a half day. False when the open cannot be
- * built (an unparseable date).
+ * The open is the same 09:30 ET on a half day. False for an invalid
+ * `capturedAt`, which has no ET date to take the open from, the way
+ * `fractionalDte` and `isSessionOver` treat an invalid date; an invalid
+ * `vendorAt` compares false on its own.
  */
 export function isPreOpenStamp(vendorAt: Date, capturedAt: Date): boolean {
+  if (Number.isNaN(capturedAt.getTime())) return false;
   const openMs = etWallClockMs(getETDateStr(capturedAt), CASH_OPEN_MIN_ET);
   return openMs != null && vendorAt.getTime() < openMs;
 }

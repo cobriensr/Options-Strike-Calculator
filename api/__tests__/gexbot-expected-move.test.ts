@@ -251,6 +251,15 @@ describe('isPreOpenStamp', () => {
       false,
     );
   });
+
+  it('is false, not a throw, for an invalid capture date or an invalid stamp', () => {
+    // An invalid capture has no ET date to take the open from. The same
+    // answer as fractionalDte and isSessionOver give for an invalid date.
+    expect(
+      isPreOpenStamp(new Date('2025-07-23T12:00:00Z'), new Date(Number.NaN)),
+    ).toBe(false);
+    expect(isPreOpenStamp(new Date(Number.NaN), captured)).toBe(false);
+  });
 });
 
 describe('computeExpectedMove', () => {

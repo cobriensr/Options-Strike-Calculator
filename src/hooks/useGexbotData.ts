@@ -12,8 +12,11 @@
  *
  * Polling gate: `marketOpen` (passed in) — 30s tick happens only
  * during regular hours. Out-of-hours, returns the last-known data
- * indefinitely (no automatic stale-clearing). `sibling-confirm` ignores
- * `marketOpen`: its error retry runs at any hour.
+ * indefinitely. The one clearing is the market's open edge (`marketOpen`
+ * false to true): the held rows are then the last session's, so the hook drops
+ * them (tiles read loading) and reads at once rather than at the first tick.
+ * `sibling-confirm` ignores `marketOpen`: its error retry runs at any hour,
+ * and it has no open edge.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -251,9 +254,9 @@ interface FetchFailure {
   status: number;
   /**
    * Retries already made after the first failed read of this URL: 0 for that
-   * first failure, one more for each failed retry. Dev StrictMode runs the
-   * mount effect twice; both calls share one deduped request, so its first
-   * failure is counted twice and a dev row gets one retry fewer.
+   * first failure, one more for each failed retry. Calls that share one
+   * deduped request (dev StrictMode runs the mount effect twice) count its
+   * failure once: only the newest call applies the answer.
    */
   retries: number;
 }
@@ -271,10 +274,14 @@ export function useGexbotData<V extends GexbotView['view']>(
   marketOpen: boolean,
 ): UseGexbotDataResult<V> {
   const [state, setState] = useState<FetchState<V> | null>(null);
-  // The newest URL this hook asked for. A response for any other URL is
-  // from a superseded request (a Lottery re-fire changes `at`) and must not
-  // overwrite the newer one.
-  const latestUrl = useRef<string | null>(null);
+  // Number of the newest read this hook asked for. A result for an older one
+  // is superseded and must not overwrite the newer: another URL (a Lottery
+  // re-fire changes `at`), or an earlier call for this URL that shares its
+  // request with the newer call (`fetchDeduped`) and would apply the same
+  // answer twice.
+  const latestRead = useRef(0);
+  // marketOpen as of the last effect run, to catch the false to true edge.
+  const wasMarketOpen = useRef(marketOpen);
 
   // Depend on primitives — callers may pass a fresh `spec` object each
   // render. Pulling primitives out keeps the fetcher reference stable
@@ -292,11 +299,12 @@ export function useGexbotData<V extends GexbotView['view']>(
       : buildUrl({ view } as GexbotView);
 
   const fetchNow = useCallback(async () => {
-    latestUrl.current = url;
+    latestRead.current += 1;
+    const thisRead = latestRead.current;
     const result = (await fetchDeduped(url)) as
       | { data: { rows?: ViewPayload[V] } }
       | { error: string; status: number };
-    if (latestUrl.current !== url) return;
+    if (latestRead.current !== thisRead) return;
     if ('error' in result) {
       const message = `${result.error} (HTTP ${result.status})`;
       // Keep the last good rows for this URL; a different URL has none.
@@ -331,6 +339,23 @@ export function useGexbotData<V extends GexbotView['view']>(
     setState((prev) => (prev?.url === url ? prev : null));
     void fetchNow();
   }, [fetchNow, url]);
+
+  // The market opens (false to true): what the hook holds is the last session's
+  // rows, or a failure from a closed hour, and usePolling does not call fn on
+  // a gate flip, so the first tick would be 30 s away. Drop the state so the
+  // tiles read loading instead of showing those rows as live, and read now.
+  // Mounting open is no edge: the mount effect already read. When the flip
+  // lands while the mount read is still out (page load, once auth and quotes
+  // arrive), `fetchDeduped` joins that request, so no second one goes out.
+  // `sibling-confirm` answers for a past fire time, not for the session, and
+  // keeps its own retry gate.
+  useEffect(() => {
+    const opened = marketOpen && !wasMarketOpen.current;
+    wasMarketOpen.current = marketOpen;
+    if (!opened || view === 'sibling-confirm') return;
+    setState(null);
+    void fetchNow();
+  }, [marketOpen, view, fetchNow]);
 
   // State from a previous URL answers a different question (another fire
   // time): show it as not loaded yet, not as this URL's rows.
