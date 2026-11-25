@@ -185,10 +185,11 @@ jobs:
               - 'api/_lib/lottery-inversion-bonus.ts'
               - 'api/lottery-finder.ts'
               # nightly/tests/test_interval_ba_drift.py reads the live Interval B/A
-              # rule out of these three uw-stream files, so a uw-stream-only change
+              # rule out of these four uw-stream files, so a uw-stream-only change
               # to one must run this job (uw-stream/** alone starts only uw_stream).
               - 'uw-stream/src/config.py'
               - 'uw-stream/src/handlers/interval_ba.py'
+              - 'uw-stream/src/handlers/option_trades.py'
               - 'uw-stream/src/handlers/recent_fires.py'
               - '.dockerignore'
               - '.github/workflows/ci.yml'

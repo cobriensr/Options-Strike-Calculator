@@ -794,6 +794,30 @@ def test_replay_day_raises_on_a_tape_without_a_needed_column(tmp_path, con):
         replay_day(con, target, DAY)
 
 
+def test_replay_day_raises_when_the_tape_has_no_rows_for_the_day(tmp_path, layout, con):
+    # A wrong day, an empty tape or a foreign one must not read as a quiet day: a caller that
+    # replaces the day's replay rows with the result would delete them.
+    good = _write_tape(tmp_path, [_tick(_at("14:31:00"), SPY_C, "25.00", 100)], layout=layout)
+    empty = _write_tape(tmp_path, [], layout=layout)
+    foreign = _write_tape(
+        tmp_path,
+        [
+            _tick(_at("14:31:00"), _chain("SPX", "C", 6700), "25.00", 100, label="SPX"),
+            _tick(_at("14:31:00"), _chain("SPY", "C", 670, DAY + timedelta(days=1)), "25.00", 100),
+        ],
+        layout=layout,
+    )
+    next_day = DAY + timedelta(days=1)
+
+    with pytest.raises(ValueError, match=f"no 0DTE SPXW/SPY/QQQ rows for {next_day}: wrong day"):
+        replay_day(con, good, next_day)
+    with pytest.raises(ValueError, match=f"no 0DTE SPXW/SPY/QQQ rows for {DAY}: wrong day"):
+        replay_day(con, empty, DAY)
+    with pytest.raises(ValueError, match="broken tape"):
+        replay_day(con, foreign, DAY)
+    assert len(replay_day(con, good, DAY).alerts) == 1
+
+
 # --- The insert ---------------------------------------------------------------------------------
 
 

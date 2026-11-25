@@ -238,12 +238,14 @@ filled AS (
     WHERE f.root = 'SPXW' AND f.spot IS NULL
     GROUP BY f.chain, f.bucket
 )
--- One row even on a day with no fires, so the mismatch count always comes back.
+-- One row even on a day with no fires, so the kept and mismatch counts always come back.
 SELECT
-    m.mislabeled, f.chain, f.root, f.bucket, f.us, f.seq, f.ask, f.tot,
+    m.kept, m.mislabeled, f.chain, f.root, f.bucket, f.us, f.seq, f.ask, f.tot,
     coalesce(f.spot, filled.spot) AS spot,
     top.prem_c, top.size, top.us, top.is_sweep, top.is_floor
-FROM (SELECT count(*) FILTER (WHERE mislabeled) AS mislabeled FROM ticks) m
+FROM (
+    SELECT count(*) AS kept, count(*) FILTER (WHERE mislabeled) AS mislabeled FROM ticks
+) m
 LEFT JOIN fires f ON true
 LEFT JOIN top ON top.chain = f.chain AND top.bucket = f.bucket
 LEFT JOIN filled ON filled.chain = f.chain AND filled.bucket = f.bucket
@@ -325,7 +327,11 @@ def _confluence(fires: Sequence[tuple[datetime, str, str]]) -> list[tuple[str, .
 def replay_day(con: duckdb.DuckDBPyConnection, tape: str, day: date) -> Replay:
     """Every alert today's detector fires on `day`'s 0DTE SPXW, SPY and QQQ contracts.
 
-    Raises what DuckDB raises for a tape it cannot read or that lacks a column.
+    Raises what DuckDB raises for a tape it cannot read or that lacks a column, and ValueError
+    when the tape holds no kept row for `day`. Every session has millions of 0DTE prints on the
+    three, and a quiet day still has kept rows with no fire, so zero kept rows means the wrong
+    day or a broken tape. Returning an empty Replay then would read as a day with no alerts, and
+    a caller that replaces a day's replay rows would delete them.
     """
     rows = con.execute(
         _REPLAY_SQL,
@@ -342,9 +348,12 @@ def replay_day(con: duckdb.DuckDBPyConnection, tape: str, day: date) -> Replay:
             "share_den": _SHARE_DEN,
         },
     ).fetchall()
-    mislabeled = int(rows[0][0])
+    kept, mislabeled = int(rows[0][0]), int(rows[0][1])
+    if kept == 0:
+        raise ValueError(f"{tape}: no 0DTE SPXW/SPY/QQQ rows for {day}: wrong day or broken tape")
     alerts: list[TapeAlert] = []
     for (
+        _,
         _,
         chain,
         root,
