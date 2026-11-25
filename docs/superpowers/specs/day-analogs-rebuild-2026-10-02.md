@@ -11,11 +11,11 @@ retired as a runtime dependency.
 
 ## Status
 
-| Item                                  | State                                                     |
-| ------------------------------------- | --------------------------------------------------------- |
-| P0 parity (archive vs `futures_bars`) | Done in this branch. Results are in "Phase 0 results".    |
-| Window-independent correctness fixes  | Done in this branch (`fix(analogs): …`).                  |
-| P1 – P3                               | Not started. Window confirmed 2026-11-20; P1a is next.    |
+| Item                                  | State                                                                |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| P0 parity (archive vs `futures_bars`) | Done in this branch. Results are in "Phase 0 results".               |
+| Window-independent correctness fixes  | Done in this branch (`fix(analogs): …`).                             |
+| P1 – P3                               | P1a built (`day_analog_windows`, `day-analog-builder.ts`); P1b next. |
 
 ## Findings (verified read-only, 2026-10-02)
 
@@ -203,6 +203,8 @@ It is read-only and runs in about 15 s.
 P1 is split to respect the five-files-per-phase rule.
 
 - **P1a — builder and schema.**
+  - The build follows decisions 1–12 of
+    `docs/superpowers/plans/2026-11-24-day-analogs-p1a.md`.
   - A new `api/_lib/day-analog-builder.ts` reads `futures_bars` ES for a CT
     date.
   - It returns the cash-window vectors for N ∈ {15, 30, 60} and a v2

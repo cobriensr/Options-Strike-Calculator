@@ -666,7 +666,8 @@ to degrade.
 ## Out of scope (later phases)
 
 - P1b: the analyze fetchers (the largest window that came back ok; no
-  block before 08:45 CT), `embed-yesterday` writing v2 rows (labels, VIX
-  bucket, embedding), the vector indexes, the ES − SPX basis check.
+  block before 08:46:15 CT, the first ready time), `embed-yesterday`
+  writing v2 rows (labels, VIX bucket, embedding), the vector indexes, the
+  ES − SPX basis check.
 - P2: the history backfill (the archive up to 2026-04-17,
   `futures_bars` after), the re-embed, the calibration, the v1 drop.
