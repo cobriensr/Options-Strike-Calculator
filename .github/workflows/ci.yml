@@ -531,8 +531,9 @@ jobs:
       # The tests above run in the dev environment, a superset of the runtime
       # requirements (moto alone pulls in requests, werkzeug and cryptography), so a
       # shared script that gains an import the image lacks still passes them. This
-      # imports the steps, including the refit step, the research store and the
-      # research files, inside the built image, which has only requirements.txt.
+      # imports the steps, including the refit step, the Interval B/A step and its
+      # replay module, the research store and the research files, inside the built
+      # image, which has only requirements.txt.
       # weights_store and lottery_scoring come first: the enrich and report scripts
       # put ml/src on sys.path when they load, so after them a PYTHONPATH without
       # /app/ml/src would still pass. As in nightly/tests/test_image_layout.py, only
@@ -548,7 +549,8 @@ jobs:
         run: >-
           docker run --rm --network none --entrypoint python nightly-ci
           -c "import weights_store, lottery_scoring, pipeline, outcome_check,
-          enrich_step, refit_step, research_store, research_derive,
+          enrich_step, refit_step, interval_ba_step, interval_ba_replay,
+          research_store, research_derive,
           research_reports, research_db_steps, backfill_lottery_scores,
           _eod_flow, _report_weights, exit_policy_search, flow_inversion_timing,
           feature_audit, daily_tracker, mine_outcome_patterns,

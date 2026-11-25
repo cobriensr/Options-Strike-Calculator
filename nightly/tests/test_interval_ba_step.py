@@ -14,20 +14,25 @@ monotonic clock `StepContext.seconds_left` reads, so a test spends run time by m
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import warnings
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, call, create_autospec
+from unittest.mock import MagicMock, call, create_autospec, patch
 
 import duckdb
 import psycopg2
 import pytest
 import sentry_sdk
 from _tape_reader import FETCH_DEADLINE_SECONDS, TapeReader, TapeReadError
+from sentry_sdk.envelope import Envelope
+from sentry_sdk.transport import Transport
 
 import interval_ba_step
 import resources
@@ -48,7 +53,7 @@ from interval_ba_replay import (
     heal_day,
     read_covering_settings,
 )
-from monitoring import report_step
+from monitoring import init_sentry, report_step
 from pipeline import STEPS
 from steps import StepContext, StepOutcome, run_steps
 from tape_job import DayOutcome
@@ -86,8 +91,9 @@ COUNT_NAMES = {
     "root_label_mismatch",
     "health_alerts",
 }
-# The DayPlan counts a health message carries in its extras.
-HEALTH_EXTRAS = (
+# The DayPlan counts a health message carries, in its `interval_ba_day` context.
+HEALTH_CONTEXT = "interval_ba_day"
+HEALTH_COUNTS = (
     "tape_alerts",
     "live_rows",
     "live_missed",
@@ -879,7 +885,7 @@ def test_one_health_message_per_day_by_precedence(
         HEALTH_TITLE.format(phrase),
         level="error",
         tags={"service": "nightly", "step": STEP_NAME, "day": iso},
-        extras={name: getattr(plan, name) for name in HEALTH_EXTRAS},
+        contexts={HEALTH_CONTEXT: {name: getattr(plan, name) for name in HEALTH_COUNTS}},
         fingerprint=["interval-ba-live-health", phrase, iso],
     )
     assert result.counts["health_alerts"] == 1
@@ -920,6 +926,65 @@ def test_health_thresholds(
     else:
         assert capture_message.call_args.args == (HEALTH_TITLE.format(phrase),)
         assert capture_message.call_args.kwargs["fingerprint"][1] == phrase
+
+
+class _MemoryTransport(Transport):
+    """Keeps each envelope item's wire bytes instead of sending them (as test_monitoring's)."""
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        super().__init__(options)
+        self.payloads: list[bytes] = []
+
+    def capture_envelope(self, envelope: Envelope) -> None:
+        self.payloads.extend(item.get_bytes() for item in envelope.items)
+
+
+@pytest.fixture
+def sdk_transport() -> Iterator[_MemoryTransport]:
+    """A real Client built from init_sentry's own options (its before_send scrubber included),
+    bound to an isolation scope, sending nowhere. `default_integrations=False` keeps the SDK
+    from patching httpx, http.client and threading for the rest of the session. The global
+    `service` tag is stubbed out, so an event that carries it set the tag itself."""
+    with (
+        patch.object(sentry_sdk, "init", autospec=True) as init,
+        patch.object(sentry_sdk, "set_tag", autospec=True),
+    ):
+        init_sentry("https://public@sentry.invalid/1")
+    options = {**init.call_args.kwargs, "default_integrations": False}
+    with warnings.catch_warnings():
+        # 2.73 deprecates send_default_pii (still honored); older 2.x in the pin don't.
+        warnings.filterwarnings("ignore", "The send_default_pii option", DeprecationWarning)
+        client = sentry_sdk.Client(transport=_MemoryTransport, **options)
+    transport = client.transport
+    assert isinstance(transport, _MemoryTransport)
+    with sentry_sdk.isolation_scope() as scope:
+        scope.set_client(client)
+        yield transport
+    client.close()
+
+
+def test_every_health_count_reaches_sentry(sdk_transport: _MemoryTransport) -> None:
+    # The SDK trims `extra` to its first 10 keys (MAX_DATABAG_BREADTH), so 13 counts there
+    # lose 3 on the wire while a mocked capture_message still sees all of them. Every count is
+    # distinct and non-zero, so a dropped or swapped one shows.
+    counts = dict(zip(HEALTH_COUNTS, range(101, 101 + len(HEALTH_COUNTS)), strict=True))
+    counts["tape_alerts"] = 140  # live missed 103 of them: "live missed alerts"
+    plan = _plan(WORK[4], **counts)
+    iso = WORK[4].isoformat()
+
+    assert interval_ba_step._report_health(WORK[4], plan) is True
+    sentry_sdk.get_client().flush(timeout=5)
+
+    (event,) = [e for e in map(json.loads, sdk_transport.payloads) if "level" in e]
+    assert event["contexts"][HEALTH_CONTEXT] == {
+        name: getattr(plan, name) for name in HEALTH_COUNTS
+    }
+    assert event["message"] == HEALTH_TITLE.format("live missed alerts")
+    assert event["level"] == "error"
+    assert event["tags"] == {"service": "nightly", "step": STEP_NAME, "day": iso}
+    assert event["fingerprint"] == ["interval-ba-live-health", "live missed alerts", iso]
+    assert event["server_name"] == "nightly"
+    assert not set(HEALTH_COUNTS) & set(event.get("extra", {}))  # not split across the two
 
 
 def _run_registered(settings: Settings, clock: Clock, run_seconds: float) -> StepOutcome:
@@ -968,7 +1033,7 @@ def test_health_message_sent_even_when_days_left_or_a_day_failed(
         "live missed alerts",
         WORK[4].isoformat(),
     ]
-    assert health.kwargs["extras"]["live_missed"] == 12
+    assert health.kwargs["contexts"][HEALTH_CONTEXT]["live_missed"] == 12
     # ...and the step's own report is a separate message.
     step_reports = [
         c for c in capture_message.call_args_list if c not in _health_calls(capture_message)

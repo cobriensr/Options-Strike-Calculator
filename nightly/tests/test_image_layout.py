@@ -226,19 +226,21 @@ def _image_pythonpath(root: Path) -> str:
 # load, so a module from there that is imported later resolves without the Dockerfile's
 # PYTHONPATH entry.
 # weights_store and lottery_scoring import from ml/src at load and must work first.
-# The steps follow: lazy_step defers refit_step, so a missing file would go unseen until
-# 07:15. The research reports come next: a missing file or dependency there fails a
-# report step at 07:15, not the boot. The three research step modules close the list:
-# pipeline registers them lazily (lazy_step and lazy_group_step import nothing at load), so
-# a missing file or dependency would go unseen until a run here too. The venv has no scipy,
-# scikit-learn or SQLAlchemy, so the closing loop holds where they are installed too: the
-# reports import lottery_weights and lottery_scoring, and a module-level import of one of
-# the three would make the image need a package it does not install.
+# The steps follow: lazy_step defers refit_step and interval_ba_step (with the replay module it
+# loads), so a missing file would go unseen until 07:15. The research reports come next: a
+# missing file or dependency there fails a report step at 07:15, not the boot. The three
+# research step modules close the list: pipeline registers them lazily (lazy_step and
+# lazy_group_step import nothing at load), so a missing file or dependency would go unseen
+# until a run here too. The venv has no scipy, scikit-learn or SQLAlchemy, so the closing loop
+# holds where they are installed too: the reports import lottery_weights and lottery_scoring,
+# and a module-level import of one of the three would make the image need a package it does
+# not install.
 IMAGE_IMPORT_CHECK = "\n".join(
     [
         "import sys",
         "import weights_store, lottery_scoring",
         "import pipeline, outcome_check, enrich_step, refit_step",
+        "import interval_ba_step, interval_ba_replay",
         "import enrich_lottery_outcomes, enrich_silent_boom_outcomes, _tape_reader",
         "import backfill_lottery_scores",
         "import _eod_flow, _report_weights, exit_policy_search, flow_inversion_timing",

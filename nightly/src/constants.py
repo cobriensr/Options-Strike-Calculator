@@ -85,6 +85,8 @@ INTERVAL_BA_MAX_DAY_FAILURES = 3
 # 2026-11-25, so a quarter is 2,000,000,000 bytes, below 2000MiB (2,097,152,000 bytes). DuckDB
 # reads GB as 10**9 bytes. Re-derive this when the service's memory limit changes.
 INTERVAL_BA_DUCKDB_MEMORY = "2GB"
+# DuckDB's threads for one day (spec 6.6): keeps the replay's scans from taking every vCPU the
+# service has.
 INTERVAL_BA_DUCKDB_THREADS = 2
 # The refit step's name, in the step table, its logs and its Sentry notices (tag `step`).
 REFIT_STEP_NAME = "lottery-refit"

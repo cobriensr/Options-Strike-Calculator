@@ -100,7 +100,7 @@ _COUNT_NAMES = (
     *_DAY_COUNT_NAMES,
     "health_alerts",
 )
-# A day's DayPlan counts: in its health message's extras and its log line.
+# A day's DayPlan counts: in its health message's `interval_ba_day` context and its log line.
 _PLAN_COUNT_NAMES = (
     "tape_alerts",
     "live_rows",
@@ -277,8 +277,10 @@ def _report_health(day: date, plan: DayPlan) -> bool:
     """Send at most one Sentry message for `day`'s live health; whether one was sent.
 
     The fingerprint names the day, as report_outcome does for a re-land, so each day opens its
-    own issue, which the nightly new-issue rule (events tagged service=nightly) mails. The extras
-    are the day's counts only.
+    own issue, which the nightly new-issue rule (events tagged service=nightly) mails. The day's
+    counts, and nothing else, go in the `interval_ba_day` context, not in extras: the SDK trims
+    `extra` to its first 10 keys (MAX_DATABAG_BREADTH), which would drop 3 of the 13, and it does
+    not trim a context.
     """
     phrase = _health_phrase(plan)
     if phrase is None:
@@ -288,7 +290,7 @@ def _report_health(day: date, plan: DayPlan) -> bool:
         f"nightly interval-ba live health: {phrase}",
         level="error",
         tags={"service": "nightly", "step": _STEP, "day": iso},
-        extras={name: getattr(plan, name) for name in _PLAN_COUNT_NAMES},
+        contexts={"interval_ba_day": {name: getattr(plan, name) for name in _PLAN_COUNT_NAMES}},
         fingerprint=["interval-ba-live-health", phrase, iso],
     )
     return True
