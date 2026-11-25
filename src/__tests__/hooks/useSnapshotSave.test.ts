@@ -1038,14 +1038,18 @@ describe('useSnapshotSave — the cluster multipliers a row carries', () => {
     expect(body().clusterCallMult).toBeNull();
   });
 
-  it('leaves the tilts as the signals have them when the meta says nothing about the multiplier', () => {
+  // An absent multiplier is a missing one everywhere else: the mark, the
+  // server and `?? null` on save. The tilts do not outlive it either.
+  it('saves no tilts when the meta has no multiplier at all, as for a null one', () => {
     renderHook(() =>
       useSnapshotSave(makeResults(), tilted, { ...baseMeta }, true),
     );
 
+    // The multiplier is left out of the JSON (undefined drops) and the server
+    // stores it as null.
     expect(body()).not.toHaveProperty('clusterMult');
-    expect(body().clusterPutMult).toBe(1.3);
-    expect(body().clusterCallMult).toBe(1.1);
+    expect(body().clusterPutMult).toBeNull();
+    expect(body().clusterCallMult).toBeNull();
   });
 });
 
@@ -1225,24 +1229,45 @@ describe('useSnapshotSave — a marked row is posted again when its mark clears'
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('does not post it again from an answer that lands after the page unmounted', async () => {
-    // Unmount aborts the POST and releases its key; a late answer arms nothing
-    // that can post.
-    let answer: (res: Response) => void = () => {};
-    fetchSpy.mockImplementationOnce(
+  // A marked POST that fails is not an answered one: nothing arms. The key is
+  // released by the existing retry, so the next change posts it, with whatever
+  // the inputs are by then. If a failure armed the key, the re-post rule would
+  // post it a third time once the retry's own 200 landed.
+  it.each([
+    [
+      'a 503 response',
       () =>
-        new Promise<Response>((resolve) => {
-          answer = resolve;
-        }),
-    );
-    const { unmount } = renderSave(gap);
-    await settle();
-    unmount();
-    answer(new Response(JSON.stringify({ id: 'a', saved: true })));
-    await settle();
+        fetchSpy.mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: 'down' }), { status: 503 }),
+        ),
+    ],
+    [
+      'a rejected fetch (TypeError)',
+      () => fetchSpy.mockRejectedValueOnce(new TypeError('Failed to fetch')),
+    ],
+  ])(
+    'posts a key whose marked POST failed with %s once more only, through the retry',
+    async (_label, failFirstPost) => {
+      failFirstPost();
+      const { rerender } = renderSave(gap);
+      await settle();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(body(0).clusterMult).toBeNull();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-  });
+      rerender(arrived);
+      await settle();
+      for (let i = 0; i < 3; i++) {
+        rerender({ ...arrived });
+        await settle();
+      }
+
+      // The retry's POST carries the fields, and nothing posts it a third time.
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(body(1)).toMatchObject({ clusterMult: 1.2, rvAnnualized: 0.12 });
+      // The failure was reported once.
+      expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 // ============================================================

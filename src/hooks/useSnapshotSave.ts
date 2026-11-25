@@ -138,10 +138,10 @@ export interface SnapshotMeta {
   vix?: number;
   skewPct?: number;
   /**
-   * The cluster multiplier the row stores. Null when the app had no inputs for
-   * it (no current yesterday): the row then stores no multiplier and no tilts,
-   * rather than the working value 1. Absent leaves the row as the signals have
-   * it.
+   * The cluster multiplier the row stores. Null (or absent, which the server
+   * stores as null) when the app had no inputs for it (no current yesterday):
+   * the row then stores no multiplier and no tilts, rather than the working
+   * value 1.
    */
   clusterMult?: number | null;
 }
@@ -353,7 +353,9 @@ export function useSnapshotSave(
   // and re-runs the effect, which must then post that key again.
   const inFlightRef = useRef<Map<AbortController, string>>(new Map());
   // Keys whose marked POST was answered 200: each is posted once more when the
-  // mark clears. Dropped as it is posted, so it holds waiting keys only.
+  // mark clears, and dropped as it is posted. A key whose slot moved on before
+  // its mark cleared stays until the session ends, bounded by the session's
+  // keys like savedRef, and posts if it becomes the entry time again.
   const armedRef = useRef<Set<string>>(new Set());
   // Re-runs the effect below when a marked POST is answered: the mark can have
   // cleared while the POST was in flight, and no dependency change need follow.
@@ -512,9 +514,9 @@ export function useSnapshotSave(
       vixTermShape: signals.vixTermShape,
       // The tilts come from the same working multiplier, so a row with no
       // multiplier has no tilts either: a flat 1 here would pass for data.
-      clusterPutMult: meta.clusterMult === null ? null : signals.clusterPutMult,
+      clusterPutMult: meta.clusterMult == null ? null : signals.clusterPutMult,
       clusterCallMult:
-        meta.clusterMult === null ? null : signals.clusterCallMult,
+        meta.clusterMult == null ? null : signals.clusterCallMult,
       rvIvRatio: signals.rvIvRatio,
       rvIvLabel: signals.rvIvLabel,
       rvAnnualized: signals.rvAnnualized,
