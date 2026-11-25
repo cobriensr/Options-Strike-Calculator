@@ -134,6 +134,7 @@ function trustedColumns(
     spx_high: '5710',
     is_backtest: false,
     flag_reliable: true,
+    missing_yesterday: false,
     saved_day_offset: 0,
     saved_minutes_ct: Number.isNaN(slot) ? 600 : slot,
     ...overrides,
@@ -817,6 +818,28 @@ describe('build-features handler', () => {
     return res;
   }
 
+  it('skips a nearer row saved without yesterday’s fields and reads the next trusted one', async () => {
+    // The 10:00 row was saved while the app had no current yesterday: its
+    // multiplier would be a fake 1.0 in the day's features. The 10:05 row has
+    // them, and is within the hour.
+    mockSnapshotRows([
+      snapshotRow('10:00 AM CT', {
+        vix: '15.85',
+        spx_open: '7571.72',
+        missing_yesterday: true,
+      }),
+      snapshotRow('10:05 AM CT', { vix: '15.90', spx_open: '7571.72' }),
+    ]);
+
+    await buildDate('2026-11-25');
+
+    expect(featureUpsertValue('vix')).toBe(15.9);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining(NO_TRUSTED_ROW),
+    );
+  });
+
   it('skips a nearer stale-tab row and reads the earlier trusted one (2026-07-15)', async () => {
     // Row 4795 is a live 9:50 save; row 4869 says 10:00 but was saved the next
     // day at 10:01, a tab left open on the old date.
@@ -1001,6 +1024,23 @@ describe('build-features handler', () => {
       expect(featureUpsertValue('feature_completeness')).toBe(0);
       expect(logger.warn).toHaveBeenCalledWith(
         expect.objectContaining({ rejected: { 'no-price-range': 1 } }),
+        expect.stringContaining(NO_TRUSTED_ROW),
+      );
+    });
+
+    it('has no 10:00 view when every row in the window was saved without yesterday’s fields, and says why', async () => {
+      mockSnapshotRows([
+        snapshotRow('9:55 AM CT', { ...FILLED, missing_yesterday: true }),
+        snapshotRow('10:00 AM CT', { ...FILLED, missing_yesterday: true }),
+      ]);
+
+      await buildDate('2026-11-25');
+
+      expect(featureUpsertValue('vix')).toBeNull();
+      expect(featureUpsertValue('cluster_mult')).toBeNull();
+      expect(featureUpsertValue('feature_completeness')).toBe(0);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ rejected: { 'missing-yesterday': 2 } }),
         expect.stringContaining(NO_TRUSTED_ROW),
       );
     });
@@ -2729,6 +2769,44 @@ describe('featureSnapshotRejection', () => {
       '10:00 AM CT',
       { saved_minutes_ct: SLOT + 11, spx: null },
       'saved-late',
+    ],
+
+    // Test 9: a row saved, from the cutoff on, with no multiplier or no RV
+    // (`missing_yesterday`, computed in SQL by SNAPSHOT_TRUST_COLUMNS_SQL).
+    [
+      'a row saved without yesterday’s fields fails missing-yesterday',
+      '10:00 AM CT',
+      { missing_yesterday: true },
+      'missing-yesterday',
+    ],
+    [
+      'a row with them passes',
+      '10:00 AM CT',
+      { missing_yesterday: false },
+      null,
+    ],
+    [
+      'a reliable backtest row saved without them fails too',
+      '10:00 AM CT',
+      {
+        is_backtest: true,
+        flag_reliable: true,
+        saved_minutes_ct: 1238,
+        missing_yesterday: true,
+      },
+      'missing-yesterday',
+    ],
+    [
+      'it is judged last: a row with no price range is no-price-range first',
+      '10:00 AM CT',
+      { missing_yesterday: true, spx: null },
+      'no-price-range',
+    ],
+    [
+      'it is judged last: a stale tab is stale-tab first',
+      '10:00 AM CT',
+      { missing_yesterday: true, saved_day_offset: 1, saved_minutes_ct: SLOT },
+      'stale-tab',
     ],
 
     // Reliable backtest rows skip tests 3-5 and keep 6, 7 and 8.

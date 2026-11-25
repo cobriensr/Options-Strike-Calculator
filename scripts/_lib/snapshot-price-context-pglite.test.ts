@@ -203,6 +203,10 @@ beforeAll(async () => {
       prev_close    DECIMAL(10,2),
       overnight_gap DECIMAL(6,2),
       is_backtest   BOOLEAN DEFAULT FALSE,
+      -- The two fields the app leaves empty while it has no current
+      -- yesterday; a seed row has both unless it says otherwise.
+      cluster_mult  DECIMAL(6,3),
+      rv_annualized DECIMAL(8,4),
       -- No default: every seed names its first-save time, so no test reads
       -- the wall clock.
       created_at    TIMESTAMPTZ NOT NULL,
@@ -253,6 +257,10 @@ interface SeedOpts {
   /** The first save, as an exact instant: `2026-10-28T05:00:00Z`. */
   createdAt?: string;
   backtest?: boolean;
+  /** The stored cluster multiplier; 1.05 by default, null stores none. */
+  clusterMult?: string | null;
+  /** The stored RV; 0.12 by default, null stores none. */
+  rvAnnualized?: string | null;
 }
 
 type Seed = [
@@ -277,9 +285,10 @@ async function seed(rows: readonly Seed[]): Promise<void> {
     await db.query(
       `INSERT INTO market_snapshots
          (date, entry_time, spx, spx_open, spx_high, spx_low, prev_close,
-          overnight_gap, is_backtest, created_at)
+          overnight_gap, is_backtest, cluster_mult, rv_annualized, created_at)
        VALUES ($1::date, $2, $3::numeric, $4::numeric, $5::numeric,
                $6::numeric, $7::numeric, $8::numeric, $9::boolean,
+               $12::numeric, $13::numeric,
                COALESCE($10::timestamptz,
                         $11::timestamp AT TIME ZONE 'America/Chicago'))`,
       [
@@ -294,6 +303,8 @@ async function seed(rows: readonly Seed[]): Promise<void> {
         opts.backtest ?? false,
         opts.createdAt ?? null,
         savedAtCt,
+        opts.clusterMult === undefined ? '1.050' : opts.clusterMult,
+        opts.rvAnnualized === undefined ? '0.1200' : opts.rvAnnualized,
       ],
     );
   }
@@ -576,6 +587,7 @@ describe('a dry run', () => {
       spx: '7400.00',
       is_backtest: false,
       flag_reliable: true,
+      missing_yesterday: false,
       saved_day_offset: 0,
       saved_minutes_ct: 515, // 8:35 AM CT, saved at its own slot
     });
@@ -616,6 +628,56 @@ describe('a dry run', () => {
     expect(day?.rows.find((r) => r.id === 9)).toMatchObject({
       saved_day_offset: 1,
       saved_minutes_ct: 601,
+    });
+    expect(day?.pickChange).toBeNull();
+  });
+
+  // The pick report follows the rule build-features applies: a replayed row
+  // first saved after MISSING_YESTERDAY_CUTOFF with no multiplier is not the
+  // date's 10:00 view, even once the plan fills in its range. Without the rule
+  // the pick would move from row 8 to the nearer row 9.
+  it('does not let the plan rescue a row saved without yesterday’s fields, read through the real trust SQL', async () => {
+    await seed([
+      // 8: a trusted live save.
+      [
+        '2026-11-04',
+        '9:05 AM CT',
+        '7400.00',
+        '7410.00',
+        '7390.00',
+        '7500.00',
+        '-1.33',
+      ],
+      // 9: a replay of the 10:00 slot, first saved on 11-25 after the cutoff,
+      // with no multiplier: the app had no current yesterday.
+      [
+        '2026-11-04',
+        '10:00 AM CT',
+        null,
+        null,
+        null,
+        null,
+        null,
+        {
+          spx: '7490.00',
+          backtest: true,
+          savedAtCt: '2026-11-25 14:00',
+          clusterMult: null,
+        },
+      ],
+    ]);
+
+    const result = await dry();
+
+    const day = result.dates.find((d) => d.date === '2026-11-04');
+    expect(day?.results.find((r) => r.id === 9)).toMatchObject({
+      kind: 'update',
+      fill: 'all',
+    });
+    expect(day?.rows.find((r) => r.id === 9)).toMatchObject({
+      is_backtest: true,
+      flag_reliable: true,
+      missing_yesterday: true,
     });
     expect(day?.pickChange).toBeNull();
   });
@@ -909,6 +971,7 @@ describe('SNAPSHOT_TRUST_COLUMNS_SQL', () => {
   interface Trust {
     is_backtest: boolean | null;
     flag_reliable: boolean;
+    missing_yesterday: boolean;
     saved_day_offset: number;
     saved_minutes_ct: number;
   }
@@ -969,6 +1032,87 @@ describe('SNAPSHOT_TRUST_COLUMNS_SQL', () => {
     });
 
     expect(trust).toMatchObject({ is_backtest: true, flag_reliable: reliable });
+  });
+
+  // `missing_yesterday`: first saved at or after MISSING_YESTERDAY_CUTOFF,
+  // 2026-11-25 00:00 CT (06:00Z, CST), with no multiplier or no RV. Rows saved
+  // before it keep the empty values history already has: about one row a date
+  // with no multiplier (the pre-market row) and about 1,300 from January to
+  // August with no RV, which this rule must not blank.
+  it.each<[string, string, SeedOpts, boolean]>([
+    [
+      'a second before the cutoff, with no multiplier',
+      '05:59:59',
+      { clusterMult: null },
+      false,
+    ],
+    [
+      'at the cutoff, with no multiplier',
+      '06:00:00',
+      { clusterMult: null },
+      true,
+    ],
+    ['at the cutoff, with no RV', '06:00:00', { rvAnnualized: null }, true],
+    [
+      'at the cutoff, with neither',
+      '06:00:00',
+      { clusterMult: null, rvAnnualized: null },
+      true,
+    ],
+    ['at the cutoff, with both present', '06:00:00', {}, false],
+  ])(
+    'the missing-yesterday cutoff: %s',
+    async (_label, time, fields, missing) => {
+      const trust = await trustOf('2026-11-25', {
+        createdAt: `2026-11-25T${time}Z`,
+        ...fields,
+      });
+
+      expect(trust.missing_yesterday).toBe(missing);
+    },
+  );
+
+  it.each([
+    ['no multiplier', { clusterMult: null }],
+    ['no RV', { rvAnnualized: null }],
+    ['neither', { clusterMult: null, rvAnnualized: null }],
+  ])(
+    'leaves a row saved before the cutoff with %s trusted, as it is today',
+    async (_label, fields) => {
+      // March: the months of no-RV rows, and the pre-market-style empties.
+      const trust = await trustOf('2026-03-10', {
+        createdAt: '2026-03-10T16:00:00Z',
+        ...fields,
+      });
+
+      expect(trust.missing_yesterday).toBe(false);
+    },
+  );
+
+  it('reads the cutoff on the Chicago clock whatever the session time zone is', async () => {
+    await seed([
+      [
+        '2026-11-25',
+        '10:00 AM CT',
+        null,
+        null,
+        null,
+        null,
+        null,
+        { createdAt: '2026-11-25T06:00:00Z', clusterMult: null },
+      ],
+    ]);
+    await db.query("SET TIME ZONE 'Asia/Tokyo'");
+    try {
+      const { rows } = await db.query<Trust>(
+        `SELECT ${SNAPSHOT_TRUST_COLUMNS_SQL}
+           FROM market_snapshots WHERE date = '2026-11-25'`,
+      );
+
+      expect(rows[0]?.missing_yesterday).toBe(true);
+    } finally {
+      await db.query('RESET TIME ZONE');
+    }
   });
 
   it.each([

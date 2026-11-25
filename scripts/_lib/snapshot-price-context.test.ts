@@ -130,6 +130,7 @@ const row = (
     overnight_gap: null,
     is_backtest: false,
     flag_reliable: true,
+    missing_yesterday: false,
     saved_day_offset: 0,
     // A label with no clock time has no slot to be on time for.
     saved_minutes_ct: Number.isNaN(slot) ? 600 : slot,
