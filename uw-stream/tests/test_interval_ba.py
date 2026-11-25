@@ -29,7 +29,7 @@ from handlers.interval_ba import (
     SPXWIntervalBAHandler,
     SPYIntervalBAHandler,
     _ct_date_from_utc,
-    _has_tag,
+    _has_flag,
     _occ_root,
 )
 
@@ -83,12 +83,16 @@ def _payload(
     price: str | None = None,
     size: int | None = None,
     tags: list[str] | None = None,
+    report_flags: list[str] | None = None,
     underlying_symbol: str | None = None,
 ) -> dict:
     """Build a mutated copy of the base SPXW payload.
 
     Each call gets a fresh UUID so ``ws_trade_id`` uniqueness holds when
     multiple payloads flow through the same handler.
+
+    ``tags`` carries the side (``ask_side`` ...) and direction; the sweep
+    and floor markers live in ``report_flags`` instead.
     """
     p = copy.deepcopy(base)
     p["id"] = str(uuid4())
@@ -102,6 +106,8 @@ def _payload(
         p["size"] = size
     if tags is not None:
         p["tags"] = tags
+    if report_flags is not None:
+        p["report_flags"] = report_flags
     if underlying_symbol is not None:
         p["underlying_symbol"] = underlying_symbol
     return p
@@ -129,6 +135,7 @@ class TestAlertEmission:
             executed_at_ms=_BUCKET_ANCHOR_MS + 83_000,  # 12:06:23
             price="4.60",
             size=888,  # → $408,480 premium
+            report_flags=["intermarket_sweep"],
         )
         p2 = _payload(
             base_payload,
@@ -768,7 +775,8 @@ class TestAlertRowShape:
                 executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
                 price="4.60",
                 size=888,
-                tags=["ask_side", "bullish", "sweep", "floor"],
+                tags=["ask_side", "bullish"],
+                report_flags=["intermarket_sweep", "futures_floor"],
             ),
         )
         handler._transform(
@@ -778,12 +786,102 @@ class TestAlertRowShape:
                 price="4.60",
                 size=796,
                 tags=["ask_side", "bullish"],
+                report_flags=[],
             ),
         )
         assert len(handler._pending_alerts) == 1
         alert = handler._pending_alerts[0]
         assert alert[_AI["top_trade_is_sweep"]] is True
         assert alert[_AI["top_trade_is_floor"]] is True
+
+    def test_sweep_comes_from_report_flags_not_tags(self, handler, base_payload):
+        """UW sends the sweep marker in report_flags; tags carry none."""
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+                tags=["ask_side", "bullish"],
+                report_flags=["intermarket_sweep"],
+            ),
+        )
+        assert len(handler._pending_alerts) == 1
+        alert = handler._pending_alerts[0]
+        assert alert[_AI["top_trade_is_sweep"]] is True
+        assert alert[_AI["top_trade_is_floor"]] is False
+
+    def test_sweep_tag_alone_is_not_a_sweep(self, handler, base_payload):
+        """A `sweep` entry in tags, with empty report_flags, is not a sweep."""
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+                tags=["ask_side", "bullish", "sweep", "floor"],
+                report_flags=[],
+            ),
+        )
+        assert len(handler._pending_alerts) == 1
+        alert = handler._pending_alerts[0]
+        assert alert[_AI["top_trade_is_sweep"]] is False
+        assert alert[_AI["top_trade_is_floor"]] is False
+
+    def test_two_value_report_flags_set_both(self, handler, base_payload):
+        """One print can carry both markers: the list holds two values."""
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+                tags=["ask_side", "bullish"],
+                report_flags=["intermarket_sweep", "futures_floor"],
+            ),
+        )
+        assert len(handler._pending_alerts) == 1
+        alert = handler._pending_alerts[0]
+        assert alert[_AI["top_trade_is_sweep"]] is True
+        assert alert[_AI["top_trade_is_floor"]] is True
+
+    def test_floor_alone_in_report_flags_is_a_floor_not_a_sweep(self, handler, base_payload):
+        """Membership per flag: futures_floor sets floor and leaves sweep off."""
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+                tags=["ask_side", "bullish"],
+                report_flags=["futures_floor"],
+            ),
+        )
+        assert len(handler._pending_alerts) == 1
+        alert = handler._pending_alerts[0]
+        assert alert[_AI["top_trade_is_sweep"]] is False
+        assert alert[_AI["top_trade_is_floor"]] is True
+
+    @pytest.mark.parametrize("bad", ["intermarket_sweep", None, 7, {"intermarket_sweep": 1}])
+    def test_malformed_report_flags_set_neither_flag(self, handler, base_payload, bad):
+        """A report_flags that is not a list (string, null, ...) sets no flag.
+
+        A bare string would pass a substring test, which is why membership
+        is only ever read from a real list.
+        """
+        payload = _payload(
+            base_payload,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+            price="4.60",
+            size=888,
+            tags=["ask_side", "bullish"],
+        )
+        payload["report_flags"] = bad
+        handler._transform(payload)
+        assert len(handler._pending_alerts) == 1
+        alert = handler._pending_alerts[0]
+        assert alert[_AI["top_trade_is_sweep"]] is False
+        assert alert[_AI["top_trade_is_floor"]] is False
 
     def test_underlying_price_carried_from_tick(self, handler, base_payload):
         handler._transform(
@@ -1173,7 +1271,7 @@ class TestPushConfluenceOnlyGate:
                 executed_at_ms=_BUCKET_ANCHOR_MS + 50_000,
                 price="2.50",
                 size=1200,
-                tags=["ask_side", "bullish", "sweep"],
+                tags=["ask_side", "bullish"],
             ),
         )
         assert len(spy_handler._pending_alerts) == 1
@@ -1266,7 +1364,7 @@ class TestPushConfluenceOnlyGate:
 
 
 # ----------------------------------------------------------------------
-# Helpers — _ct_date_from_utc, _has_tag
+# Helpers — _ct_date_from_utc, _has_flag
 # ----------------------------------------------------------------------
 
 
@@ -1287,18 +1385,20 @@ class TestHelpers:
         assert _ct_date_from_utc(ts) == date(2026, 5, 12)
 
     @pytest.mark.parametrize(
-        "tags,name,expected",
+        "flags,name,expected",
         [
-            (["ask_side", "sweep"], "sweep", True),
-            (["ask_side"], "sweep", False),
-            ([], "sweep", False),
-            (None, "sweep", False),
-            ("not_a_list", "sweep", False),
-            (["floor", "ask_side"], "floor", True),
+            (None, "intermarket_sweep", False),
+            ("x", "intermarket_sweep", False),
+            ("intermarket_sweep", "intermarket_sweep", False),  # str, not a list
+            ([], "intermarket_sweep", False),
+            (["a"], "intermarket_sweep", False),
+            (["intermarket_sweep"], "intermarket_sweep", True),
+            (["intermarket_sweep", "futures_floor"], "futures_floor", True),
+            (["futures_floor"], "intermarket_sweep", False),
         ],
     )
-    def test_has_tag(self, tags, name, expected):
-        assert _has_tag(tags, name) is expected
+    def test_has_flag(self, flags, name, expected):
+        assert _has_flag(flags, name) is expected
 
 
 # ----------------------------------------------------------------------
@@ -1617,7 +1717,7 @@ class TestSubclassFiltering:
                 executed_at_ms=_BUCKET_ANCHOR_MS + 80_000,
                 price="2.50",
                 size=1200,  # → $300,000 premium → above floor
-                tags=["ask_side", "bullish", "sweep"],
+                tags=["ask_side", "bullish"],
             ),
         )
         assert len(h._pending_alerts) == 1
@@ -1673,7 +1773,7 @@ def _fire_one_alert(handler, base_payload, *, chain, underlying_symbol):
             executed_at_ms=_BUCKET_ANCHOR_MS + 80_000,
             price="2.50",
             size=1200,  # → $300K premium, above the $250K floor
-            tags=["ask_side", "bullish", "sweep"],
+            tags=["ask_side", "bullish"],
         ),
     )
     assert len(handler._pending_alerts) == 1

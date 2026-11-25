@@ -329,15 +329,18 @@ class IntervalBAHandler(OptionTradesHandler):
         # source of truth and avoids string→Decimal parsing twice per tick.
         price: Decimal = row[_C["price"]]
         size: int = row[_C["size"]]
-        tags = payload.get("tags") if isinstance(payload, dict) else None
+        # UW sends the sweep and floor markers in ``report_flags`` (a list
+        # that can hold two values), not in ``tags``, which carry the side
+        # and direction only.
+        report_flags = payload.get("report_flags") if isinstance(payload, dict) else None
         trade_code = payload.get("trade_code") if isinstance(payload, dict) else None
         tick = _Tick(
             executed_at=executed_at,
             premium=price * Decimal(size) * _MULTIPLIER,
             size=size,
             side=row[_C["side"]],
-            is_sweep=_has_tag(tags, "sweep"),
-            is_floor=_has_tag(tags, "floor"),
+            is_sweep=_has_flag(report_flags, "intermarket_sweep"),
+            is_floor=_has_flag(report_flags, "futures_floor"),
             is_multi_leg=_is_multi_leg_code(trade_code),
         )
         bucket.append(tick)
@@ -692,9 +695,14 @@ def _ct_date_from_utc(ts: datetime) -> date:
     return ts.astimezone(_CT).date()
 
 
-def _has_tag(tags: Any, name: str) -> bool:
-    """True iff ``name`` is a string entry in the ``tags`` list."""
-    return isinstance(tags, list) and name in tags
+def _has_flag(flags: Any, name: str) -> bool:
+    """True iff ``flags`` is a list that contains ``name``.
+
+    Membership, never equality: ``report_flags`` can hold two values (for
+    example ``["intermarket_sweep", "futures_floor"]``). A bare string is
+    not a list, so it never matches by substring.
+    """
+    return isinstance(flags, list) and name in flags
 
 
 # ----------------------------------------------------------------------

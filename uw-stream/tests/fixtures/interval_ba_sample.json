@@ -11,5 +11,6 @@
   "open_interest": 12000,
   "canceled": false,
   "exchange": "C",
-  "tags": ["ask_side", "bullish", "sweep"]
+  "tags": ["ask_side", "bullish"],
+  "report_flags": ["intermarket_sweep"]
 }
