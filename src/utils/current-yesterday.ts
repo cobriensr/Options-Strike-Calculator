@@ -1,3 +1,5 @@
+import { priorTradingDay } from '../data/marketHours.js';
+
 /**
  * Which held "yesterday" is the right session.
  *
@@ -20,9 +22,6 @@
  *
  * @param etToday Today's ET date, YYYY-MM-DD, from the app's date clock.
  */
-
-import { priorTradingDay } from '../data/marketHours.js';
-
 export function currentYesterday<T extends { readonly date: string }>(
   yesterday: T | null | undefined,
   etToday: string,

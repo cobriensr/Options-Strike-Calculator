@@ -12,6 +12,8 @@
  * Each is cut to the time left until midnight ET, and the stale-while-
  * revalidate window (3600s) to what is left after that: from the next ET
  * midnight the body names the wrong session, so it must not be served.
+ * A body whose `yesterday.date` is not the last trading day before today is
+ * not cached at all, so the client's next poll asks Schwab again.
  *
  * Response:
  * {
@@ -30,6 +32,7 @@ import {
 } from './_lib/api-helpers.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getETDateStr, etWallClockToUtcIso } from '../src/utils/timezone.js';
+import { priorTradingDay } from '../src/data/marketHours.js';
 
 // ============================================================
 // TYPES
@@ -88,29 +91,27 @@ function toDaySummary(candle: SchwabDailyCandle): DaySummary {
 }
 
 /**
- * Get today's date in ET timezone as YYYY-MM-DD.
- */
-function todayET(): string {
-  return getETDateStr(new Date());
-}
-
-/** The calendar date after `date` (YYYY-MM-DD). */
-function nextDate(date: string): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
-/**
- * Whole seconds from `now` to the next 00:00 ET. Exact on a DST day, whose
- * midnight to midnight is 23 or 25 hours, because it asks for the instant of
- * the next ET midnight instead of counting 24 hours off the wall clock. 0 when
- * that instant can't be worked out, so the caller caches nothing.
+ * Whole seconds from `now` to the next 00:00 ET. It asks for the instant of
+ * the next ET midnight, so it is right on the 23- and 25-hour DST days that a
+ * "24 h minus the wall clock" count gets wrong (that is also why it does not
+ * reuse `msUntilNextETMidnight`, which counts that way and adds a second of
+ * slack, which lands past midnight).
+ *
+ * The time of day is 24:00 on today's date, not 00:00 on tomorrow's.
+ * `etWallClockToUtcIso` reads the zone's offset at noon of the date it is
+ * given, and Sunday's noon is already on the new offset on the Saturday before
+ * a DST change, while Sunday's midnight is still on the old one. Today's noon
+ * is on the offset in force at the next midnight, because a DST change falls
+ * at 2 AM, never at midnight. `Date.UTC` rolls hour 24 or more into the next
+ * day.
+ *
+ * 0 when the instant can't be worked out, so the caller caches nothing.
  */
 function secondsUntilNextETMidnight(now: Date): number {
-  const iso = etWallClockToUtcIso(nextDate(getETDateStr(now)), 0);
+  const iso = etWallClockToUtcIso(getETDateStr(now), 24 * 60);
   if (iso == null) return 0;
-  return Math.max(0, Math.floor((Date.parse(iso) - now.getTime()) / 1000));
+  const seconds = Math.floor((Date.parse(iso) - now.getTime()) / 1000);
+  return Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
 }
 
 // ============================================================
@@ -158,7 +159,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Filter out today's candle if market is still open
       // (Schwab may include a partial today candle)
-      const today = todayET();
+      const now = new Date();
+      const today = getETDateStr(now);
       const completed = candles.filter(
         (c) => msToDateStr(c.datetime) !== today,
       );
@@ -182,10 +184,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // is the usual lifetime or the time left until midnight, whichever is
       // less, and the stale-while-revalidate window is cut so the two together
       // cannot cross it.
-      const toMidnight = secondsUntilNextETMidnight(new Date());
-      const edgeSec = Math.min(marketOpen ? 3600 : 86400, toMidnight);
-      const swr = Math.min(3600, toMidnight - edgeSec);
-      setCacheHeaders(res, edgeSec, swr);
+      //
+      // And only a body for the right day is cached at all. The client asks
+      // with the same ?d=<ET date> until midnight, so a cached body is the
+      // answer to every poll. If Schwab lags (the last daily candle is an
+      // older session) or the holiday calendar has a gap, the body names
+      // another day, and caching it would keep the page's yesterday blank all
+      // day. Uncached, the next poll asks Schwab again.
+      if (yesterday?.date === priorTradingDay(today)) {
+        const toMidnight = secondsUntilNextETMidnight(now);
+        const edgeSec = Math.min(marketOpen ? 3600 : 86400, toMidnight);
+        const swr = Math.min(3600, toMidnight - edgeSec);
+        setCacheHeaders(res, edgeSec, swr);
+      } else {
+        setCacheHeaders(res, 0, 0);
+      }
 
       done({ status: 200 });
       res.status(200).json({
