@@ -55,6 +55,7 @@ export const SPAWN_TEST_FILES = [
   'scripts/_lib/scratch-git.test.mjs',
   'scripts/_lib/session-status.cli.test.mjs',
   'scripts/_lib/spawn-timeout.test.mjs',
+  'scripts/_lib/spec-review-check.cli.test.mjs',
   'scripts/_lib/vercel-build-file-set.test.mjs',
   'scripts/_lib/watch-deploy.cli.test.mjs',
 ];
