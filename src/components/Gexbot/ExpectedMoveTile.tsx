@@ -6,7 +6,8 @@
  * The range is centred on spot and covers the time left to expiry, so it
  * narrows through the session. It is a size, not a direction: the tile is
  * always neutral. When the capture cannot produce a move the tile names the
- * reason instead of showing a number.
+ * reason instead of showing a number. Once `marketOpen` is false the tile
+ * reads "session closed" whatever the last row says.
  *
  * Spec: docs/superpowers/specs/gexbot-expected-move-net-vanna-2026-11-20.md
  */
@@ -55,6 +56,18 @@ interface Shown {
   headline: string;
   detail: string;
 }
+
+/**
+ * What a closed market shows, whatever the last row says. The hook stops
+ * polling when `marketOpen` goes false (16:00 ET, 13:00 ET on a half day) and
+ * the vendor's last stamp of a session is 15:59:59 ET, never 16:00, so the
+ * server's `expired` never reaches an open tab: without this the tile would
+ * freeze on its last live move.
+ */
+const SESSION_CLOSED: Shown = {
+  headline: `${NAME} · —`,
+  detail: UNAVAILABLE_TEXT.expired,
+};
 
 function describeRow(row: ExpectedMoveRow): Shown {
   if (row.unavailable != null) {
@@ -121,7 +134,7 @@ function ExpectedMoveTileInner({ marketOpen }: ExpectedMoveTileProps) {
   }
 
   const tone = toneClasses('unknown');
-  const shown = describeRow(row);
+  const shown = marketOpen ? describeRow(row) : SESSION_CLOSED;
 
   return (
     <div

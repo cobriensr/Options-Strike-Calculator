@@ -21,18 +21,45 @@ cut against `3dc04441`, moved onto `d8971cd` on 2026-11-24) and was applied on
     the close; CharmClock's "By close" and EOD bias clear the same way.
   - **D.** A vendor timestamp from an earlier ET date than the capture is no
     fresh data (the tile's awaiting state), not `expired`. The latest-snapshot
-    read behind the net −vanna tile drops such a row too.
+    read behind the net −vanna tile drops such a row too. Fix K below widened
+    the expected-move rule.
   - **E.** The net −vanna thresholds are strict ("beyond $800 MM", "above
     $1,000 MM"): exactly 800 is quiet, exactly 1,000 is the last-hour tier.
   - **F.** The expected-move hover text credits GEXBot only with the formula
     and the 50/25/25 smoothing; the ATM pick and the call/put mean are ours.
   - **G.** Two code comments claimed all State categories carry the same IV
     values; the vendor documents only the same row layout.
-- Current state: type-check, lint, Prettier, `vite build` and the full test
-  run are the gate for the combined commit (`npm run review`), run on the
-  tree that carries these fixes. The original draft also passed on `d8971cd`:
+- 2026-11-25 second round: a spec re-review and a code review of commit
+  `a3f1412e5`. It changed five things in the code and this spec, in the commit
+  on top of it:
+  - **I.** After the close the expected-move tile reads "session closed"
+    whatever the last row says. `useGexbotData` stops polling when
+    `marketOpen` goes false and the vendor's last stamp of a session is
+    15:59:59 ET, never 16:00, so the server's `expired` never reached an open
+    tab: the tile froze on its last live move (about ±3–5 pts on a normal
+    day, about ±15–20 pts all afternoon on the 2026-11-27 half day).
+  - **J.** A test pins the real final tick: stamp 15:59:59 ET, captured
+    16:00:44 ET, read as live with about one second left.
+  - **K.** A vendor stamp before 09:30 ET on the capture's ET date is no
+    fresh data, which also covers the prior-date replay. A same-day stamp from
+    the vendor's 08:00–08:30 ET premarket roll used to get through and was
+    sized from 08:20 with more time than the session has. The helper is now
+    `isPreOpenStamp`. `getLatestSnapshots` keeps its ET-midnight rule.
+  - **L.** Two comments: the VIX replay lasts the first few minutes after the
+    open, not "a minute", and the 15-minute bound uses
+    `gexbot_snapshots_captured_at_idx`.
+  - **M.** This spec: the half-day check on Friday needs two readings and a
+    ratio table, and the sections on missing moves, facts checked and status
+    follow the code.
+- Current state: the full gate (`npm run review`: type-check, lint, Prettier,
+  `vite build`, the full test run with coverage) passed and sealed tree
+  `992baae5` for commit `a3f1412e5`. The second round ships as its own commit
+  on top, with its own gate run. The original draft also passed on `d8971cd`:
   type-check, `vite build`, ESLint and Prettier on every changed file, and 14
   test files (582 tests).
+- Shape of the patch: one phase of 28 files, by the owner's hand-over as one
+  patch. That is an explicit exception to the 5-files-per-phase rule. The
+  second round touches existing files only, so the patch is still 28 files.
 - Still open: the live check against GEXBot's chart on Friday 2026-11-27 (see
   "Half days"), and the owner's call on question 7.
 
@@ -134,11 +161,26 @@ What the code does around that:
 - **Missing moves.** A capture that cannot produce a move returns one row with
   `expectedMove: null` and a reason (`no_spot`, `no_dte`, `expired`,
   `no_atm_iv`); the tile prints the reason.
-- **A replayed stamp is not "closed".** A vendor stamp on an earlier ET date
-  than `captured_at` is the vendor replaying the last session's final
-  snapshot at the open. That is no fresh data: the read returns no row and the
-  tile shows "awaiting first GEXBot tick". `expired` ("session closed") is
-  kept for a same-day stamp at or after the close.
+- **After the close, the client says "session closed".** The vendor's last
+  stamp of a session is 15:59:59 ET, never 16:00 (production, 2026-11-23 and
+  11-24, captured about 16:00:44). The server's `expired` therefore covers
+  only a stamp at or after the close, which the vendor does not send on a
+  normal day: the final captures read as live, with about one second left.
+  `useGexbotData` also stops polling when `marketOpen` goes false (16:00 ET,
+  13:00 ET on a half day), so an open tab never receives an `expired` row. The
+  tile closes itself from that gate (fix I): with `marketOpen` false and a row
+  present it shows the `expired` display ("SPX ±1σ · —", "session closed")
+  whatever the row says. Loading, error and empty states are unchanged.
+- **A pre-open stamp is not "closed".** A vendor stamp before 09:30 ET on
+  `captured_at`'s ET date (`isPreOpenStamp`, fix K) is no fresh data: the read
+  returns no row and the tile shows "awaiting first GEXBot tick". Two cases
+  fall under it: a stamp on an earlier ET date (the vendor replaying the last
+  session's final snapshot at the open), and a same-day stamp from the
+  vendor's 08:00–08:30 ET premarket roll, which would otherwise be sized from
+  08:20 with more time than the session has. The ET date is the capture's,
+  never the UTC date. The rule is on `getExpectedMove` only:
+  `getLatestSnapshots` keeps its ET-midnight rule. `expired` ("session
+  closed") is kept for a same-day stamp at or after the close.
 - **IV decode.** An IV of 0, negative, non-finite or above 10 is absent. "A
   value above 10 is written as 0" is stated only in the EOD docs; applying it
   to live payloads is our defensive choice.
@@ -147,8 +189,12 @@ What the code does around that:
 
 Owner decision, 2026-11-25. The SIZE of the move counts seconds to 16:00 ET
 on every day, including half days (2026-11-27 closes 13:00 ET). The session
-still ends at the real close: from 13:00 ET a 0DTE read is `expired`
-("session closed").
+still ends at the real close: from 13:00 ET the tile reads "session closed".
+That reading comes from the client's `marketOpen` gate (fix I), not from the
+server: the vendor's last stamp of a session is 15:59:59 ET, and the server's
+`expired` covers only a stamp at or after the close (see "Missing moves" under
+"How the expected move is computed"). On the half day, without the gate, the
+tile would hold about ±15–20 pts all afternoon.
 
 Why 16:00: GEXBot's IV is most likely solved against its own documented
 16:00 ET clock. Using that same time keeps σ·√T equal to the move the option
@@ -156,9 +202,26 @@ prices; counting to 13:00 would pair an IV solved for one clock with a time
 from another.
 
 Check on Friday 2026-11-27: compare the tile with the dashed ±1σ lines on
-GEXBot's SPX Options Profile chart. If ours is about double theirs, GEXBot
-solves its IV against 13:00 and the clock flips (count to the calendar close,
-`fractionalDte` in `api/_lib/gexbot-expected-move.ts`).
+GEXBot's SPX Options Profile chart, at least twice (for example 10:00 and
+12:00 ET), and take ours ÷ theirs each time. If GEXBot's band counts to 13:00
+and ours to 16:00 with the same IV, the ratio at time t is
+√((16:00 − t) ÷ (13:00 − t)):
+
+| t (ET) | 10:00 | 11:00 | 12:00 | 12:30 |
+| ------ | ----- | ----- | ----- | ----- |
+| ratio  | 1.41  | 1.58  | 2.00  | 2.65  |
+
+"About double" is true only at 12:00. Read the readings together:
+
+- Ratio about 1 both times: GEXBot draws on the 16:00 clock. Keep ours.
+- Ratio near the table and rising through the morning: GEXBot draws on 13:00.
+  Flip `fractionalDte` in `api/_lib/gexbot-expected-move.ts` to count to the
+  calendar close.
+- Ratio flat but away from 1: not a clock. Look at open question 1 or 2 (the
+  ATM IV choice).
+
+The check shows the clock GEXBot's band is drawn with. It does not show which
+clock GEXBot solves its IV against.
 
 The net −vanna countdown, and CharmClock's, now count to the calendar close
 (`hoursToClose` in `session-clock.ts`), because they say when a window opens
@@ -183,8 +246,9 @@ The docs give the formula and leave these unstated:
    the math are ticker-agnostic; widening is a query change.
 5. **A check against the vendor.** Compare the first live reading with the
    dashed ±1σ lines on GEXBot's Options Profile chart for SPX. A steady gap
-   points at question 1 or 2; a factor of about two on a half day is the
-   clock (see "Half days").
+   points at question 1 or 2. On a half day, read at least two times and use
+   the ratio table in "Half days": a ratio that rises toward 2.00 by 12:00 ET
+   is the clock; a flat ratio away from 1 is question 1 or 2.
 6. **The session clock on half days.** Settled 2026-11-25: `session-clock.ts`
    counts to the calendar close.
 7. **Which `zvanna` do the $800 / $1,000 MM guidance figures describe?** The
@@ -223,12 +287,24 @@ Vendor pages, read raw from docs.gexbot.com:
   some discretion".
 
 Live capture, the 2026-11-24 13:01 ET SPX `gamma_zero` capture: both IVs on
-all 101 strikes, ATM IV about 0.33, strikes 5 points apart near spot. The
-09:30:11 ET capture that day already carried a fresh vendor timestamp.
+all 101 strikes, ATM IV about 0.33, strikes 5 points apart near spot.
 
-Not checked: whether SPX's orderflow row (the source of `zvanna`) is ever
-replayed at the open. The repo documents it for VIX; the guard added to
-`getLatestSnapshots` treats SPX the same way without needing the answer.
+Production reads, 2026-11-23 to 11-25:
+
+- The vendor's last stamp of a session is 15:59:59 ET, never 16:00 (11-23 and
+  11-24, captured about 16:00:44). The server's `expired` therefore does not
+  fire on a normal day; the tile's `marketOpen` gate closes it (fix I).
+- The VIX replay of the prior close lasts the first few minutes after the
+  open: 09:30–09:32 ET on 2026-11-24, 09:30–09:31 on 11-23.
+- Only VIX rows carry a prior-session `source_timestamp` in the live table
+  (about two sessions of rows, checked 2026-11-25). SPX's orderflow row, the
+  source of `zvanna`, has not been seen replayed. The guard added to
+  `getLatestSnapshots` stays, in case the vendor starts to.
+- The 09:30:11 ET SPX capture on 2026-11-24 carried vendor stamp 09:30:09, so
+  the pre-open guard on `getExpectedMove` (fix K) is defensive: no live stamp
+  from before the open has been seen there.
+- EXPLAIN ANALYZE of the `getLatestSnapshots` read (2026-11-25): an index scan
+  on `gexbot_snapshots_captured_at_idx`, 2.3 ms, 1,232 rows.
 
 ## Wording
 

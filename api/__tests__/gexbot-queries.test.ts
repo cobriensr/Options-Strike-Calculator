@@ -720,7 +720,7 @@ describe('gexbot-queries', () => {
       expect(await getExpectedMove()).toEqual([]);
     });
 
-    it('compares the stamp to the capture by ET date: 23:00 ET the night before is prior-session', async () => {
+    it('compares the stamp to the capture by ET date: 23:00 ET the night before is not fresh', async () => {
       // 03:00Z on the 23rd is 23:00 ET on the 22nd; the capture is 13:31Z.
       mockSql.mockResolvedValueOnce([
         {
@@ -729,6 +729,92 @@ describe('gexbot-queries', () => {
         },
       ]);
       expect(await getExpectedMove()).toEqual([]);
+    });
+
+    // The vendor rolls its day between 08:00 and 08:30 ET, so a stamp from
+    // the premarket carries the roll's IVs, not the session's: sized from
+    // 08:20 ET it would show a dteFraction larger than the session.
+    describe('a vendor stamp from before the 09:30 ET open', () => {
+      // 09:30:05 ET capture on 2025-07-23 (EDT).
+      const CAPTURED_AT_OPEN = new Date('2025-07-23T13:30:05Z');
+      const atOpen = (stamp: string) => ({
+        ...capture({ timestamp: Date.parse(stamp) / 1000 }),
+        captured_at: CAPTURED_AT_OPEN,
+      });
+
+      it('is no fresh data: an 08:20 ET same-day stamp on a 09:30:05 capture', async () => {
+        mockSql.mockResolvedValueOnce([atOpen('2025-07-23T12:20:00Z')]);
+        expect(await getExpectedMove()).toEqual([]);
+      });
+
+      it('is no fresh data one second before the open (09:29:59 ET)', async () => {
+        mockSql.mockResolvedValueOnce([atOpen('2025-07-23T13:29:59Z')]);
+        expect(await getExpectedMove()).toEqual([]);
+      });
+
+      it('is kept from 09:30:00 ET, and sized from that stamp', async () => {
+        mockSql.mockResolvedValueOnce([atOpen('2025-07-23T13:30:00Z')]);
+        const [row] = await getExpectedMove();
+        expect(row!.asOf).toBe('2025-07-23T13:30:00.000Z');
+        expect(row!.unavailable).toBeNull();
+        // 09:30:00 ET to 16:00 ET is 6.5 h.
+        expect(row!.dteFraction).toBeCloseTo(6.5 / 24, 12);
+      });
+
+      it('is no fresh data on the prior ET date too', async () => {
+        mockSql.mockResolvedValueOnce([atOpen('2025-07-22T20:00:00Z')]);
+        expect(await getExpectedMove()).toEqual([]);
+      });
+
+      it('reads the open by the ET date, not the UTC date', async () => {
+        // 2025-07-24T01:00:02Z is 21:00:02 ET on the 23rd. The UTC date has
+        // rolled to the 24th, but the open that bounds the stamp is the
+        // 23rd's 09:30 ET, so a 21:00 ET stamp is kept (and past the close).
+        mockSql.mockResolvedValueOnce([
+          {
+            ...capture({
+              timestamp: Date.parse('2025-07-24T01:00:00Z') / 1000,
+            }),
+            captured_at: new Date('2025-07-24T01:00:02Z'),
+          },
+        ]);
+        const [row] = await getExpectedMove();
+        expect(row!.asOf).toBe('2025-07-24T01:00:00.000Z');
+        expect(row!.unavailable).toBe('expired');
+      });
+
+      it('uses the capture date in winter too (EST, 09:30 ET is 14:30Z)', async () => {
+        // 2025-12-10: 14:29:59Z is 09:29:59 EST, 14:30:00Z is 09:30:00 EST.
+        const winter = (stamp: string) => ({
+          ...capture({ timestamp: Date.parse(stamp) / 1000 }),
+          captured_at: new Date('2025-12-10T14:30:05Z'),
+        });
+        mockSql.mockResolvedValueOnce([winter('2025-12-10T14:29:59Z')]);
+        expect(await getExpectedMove()).toEqual([]);
+        mockSql.mockResolvedValueOnce([winter('2025-12-10T14:30:00Z')]);
+        const [row] = await getExpectedMove();
+        expect(row!.asOf).toBe('2025-12-10T14:30:00.000Z');
+      });
+    });
+
+    it("is live on the vendor's real last stamp of a session: 15:59:59 ET, captured 16:00:44", async () => {
+      // Production shape on 2026-11-23 and 11-24: the vendor never stamps
+      // 16:00:00; its last snapshot is 15:59:59 ET (20:59:59Z in EST), and
+      // the capture lands about 45 s later. The row is live, one second of
+      // time left on the vendor's clock; the tile's own marketOpen gate says
+      // "session closed" (ExpectedMoveTile), not this read.
+      mockSql.mockResolvedValueOnce([
+        {
+          ...capture({ timestamp: 1795553999 }),
+          captured_at: new Date('2026-11-24T21:00:44Z'),
+        },
+      ]);
+      const [row] = await getExpectedMove();
+      expect(row!.asOf).toBe('2026-11-24T20:59:59.000Z');
+      expect(row!.capturedAt).toBe('2026-11-24T21:00:44.000Z');
+      expect(row!.unavailable).toBeNull();
+      expect(row!.dteFraction).toBeCloseTo(1 / 86400, 12);
+      expect(row!.expectedMove).not.toBeNull();
     });
 
     it('still says "expired" for a same-day stamp at the close: the session did end', async () => {

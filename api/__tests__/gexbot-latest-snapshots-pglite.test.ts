@@ -9,9 +9,10 @@
  * is never consulted.
  *
  * The stale-stamp rule is the one the sibling, fire-time and velocity reads
- * already apply: at the 09:30-09:31 ET open the vendor can repeat the prior
- * session's final snapshot, so a fresh `captured_at` carries yesterday's
- * reading. `zvanna` read from it would put yesterday's net −vanna in the tile.
+ * already apply: for the first few minutes after the open (09:30-09:32 ET
+ * observed on 2026-11-24) the vendor can repeat the prior session's final
+ * snapshot, so a fresh `captured_at` carries yesterday's reading. `zvanna`
+ * read from it would put yesterday's net −vanna in the tile.
  */
 
 import {

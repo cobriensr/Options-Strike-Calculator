@@ -26,7 +26,10 @@
  * Spec: docs/superpowers/specs/gexbot-expected-move-net-vanna-2026-11-20.md
  */
 
-import { getMarketCloseHourET } from '../../src/data/marketHours.js';
+import {
+  CASH_OPEN_MIN_ET,
+  getMarketCloseHourET,
+} from '../../src/data/marketHours.js';
 import { etWallClockToUtcIso, getETDateStr } from '../../src/utils/timezone.js';
 import type { DecodedStrikeIv } from './periscope-gexbot.js';
 
@@ -158,13 +161,23 @@ export function isSessionOver(asOf: Date): boolean {
 }
 
 /**
- * True when the vendor's snapshot stamp falls on an earlier ET date than the
- * moment we captured it: the vendor replaying a finished session's last
- * snapshot at the open. Its IVs describe yesterday, so the capture says
- * nothing about the session that is starting.
+ * True when the vendor's snapshot stamp is before the 09:30 ET cash open of
+ * the ET date we captured it on. That covers two cases, and in both the
+ * capture says nothing about the session that is starting:
+ *   - a stamp on an earlier ET date: the vendor replaying a finished
+ *     session's last snapshot at the open;
+ *   - a same-day stamp from before the open: the vendor's 08:00-08:30 ET
+ *     premarket roll. Its IVs are not the session's, and a move sized from
+ *     08:20 would count more time than the session has (a `dteFraction`
+ *     above 6.5 h / 24).
+ * The ET date is the capture's, not the UTC date, so a 21:00 ET stamp on a
+ * capture that is already past midnight UTC still counts as that evening's.
+ * The open is the same 09:30 ET on a half day. False when the open cannot be
+ * built (an unparseable date).
  */
-export function isPriorSessionStamp(vendorAt: Date, capturedAt: Date): boolean {
-  return getETDateStr(vendorAt) < getETDateStr(capturedAt);
+export function isPreOpenStamp(vendorAt: Date, capturedAt: Date): boolean {
+  const openMs = etWallClockMs(getETDateStr(capturedAt), CASH_OPEN_MIN_ET);
+  return openMs != null && vendorAt.getTime() < openMs;
 }
 
 export function computeExpectedMove(input: ExpectedMoveInput): ExpectedMove {

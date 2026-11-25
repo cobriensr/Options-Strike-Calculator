@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 import {
   computeExpectedMove,
   fractionalDte,
-  isPriorSessionStamp,
+  isPreOpenStamp,
   isSessionOver,
   smoothedAtmIv,
 } from '../_lib/gexbot-expected-move.js';
@@ -181,32 +181,65 @@ describe('isSessionOver', () => {
   });
 });
 
-describe('isPriorSessionStamp', () => {
+describe('isPreOpenStamp', () => {
   const captured = new Date('2025-07-23T15:13:14Z'); // 11:13 ET
 
   it('is true when the vendor stamp is on an earlier ET date than the capture', () => {
+    expect(isPreOpenStamp(new Date('2025-07-22T20:00:00Z'), captured)).toBe(
+      true,
+    );
+  });
+
+  it('is true for a same-day stamp from the vendor premarket roll (08:20 ET)', () => {
     expect(
-      isPriorSessionStamp(new Date('2025-07-22T20:00:00Z'), captured),
+      isPreOpenStamp(
+        new Date('2025-07-23T12:20:00Z'),
+        new Date('2025-07-23T13:30:05Z'),
+      ),
     ).toBe(true);
+  });
+
+  it.each([
+    // [label, stamp (UTC), stamp is before the open]
+    ['one second before 09:30 ET (EDT)', '2025-07-23T13:29:59Z', true],
+    ['at 09:30:00 ET (EDT)', '2025-07-23T13:30:00Z', false],
+    ['one second after 09:30 ET (EDT)', '2025-07-23T13:30:01Z', false],
+    ['one second before 09:30 ET (EST)', '2025-12-10T14:29:59Z', true],
+    ['at 09:30:00 ET (EST)', '2025-12-10T14:30:00Z', false],
+  ])('%s', (_label, stamp, before) => {
+    // The capture sits a few seconds after the open on the stamp's own date.
+    const capturedAt = new Date(new Date(stamp).getTime() + 10_000);
+    expect(isPreOpenStamp(new Date(stamp), capturedAt)).toBe(before);
   });
 
   it('compares ET dates, not UTC dates', () => {
     // 03:00Z on the 23rd is 23:00 ET on the 22nd: the same UTC day as the
     // 13:31Z capture, a different ET day.
     expect(
-      isPriorSessionStamp(
+      isPreOpenStamp(
         new Date('2025-07-23T03:00:00Z'),
         new Date('2025-07-23T13:31:00Z'),
       ),
     ).toBe(true);
   });
 
-  it('is false for a stamp on the same ET date, before or after the close', () => {
+  it('takes the open from the capture ET date when the UTC date has rolled', () => {
+    // 21:00 ET on the 23rd is 01:00Z on the 24th: the ET day is the 23rd, so
+    // the bound is the 23rd 09:30 ET and a stamp after it is kept.
     expect(
-      isPriorSessionStamp(new Date('2025-07-23T15:13:12Z'), captured),
+      isPreOpenStamp(
+        new Date('2025-07-24T01:00:00Z'),
+        new Date('2025-07-24T01:00:02Z'),
+      ),
     ).toBe(false);
+  });
+
+  it('is false for a stamp after the open on the same ET date, before or after the close', () => {
+    expect(isPreOpenStamp(new Date('2025-07-23T15:13:12Z'), captured)).toBe(
+      false,
+    );
     expect(
-      isPriorSessionStamp(
+      isPreOpenStamp(
         new Date('2025-07-23T20:00:00Z'),
         new Date('2025-07-23T20:03:00Z'),
       ),
@@ -214,9 +247,9 @@ describe('isPriorSessionStamp', () => {
   });
 
   it('is false for a stamp later than the capture', () => {
-    expect(
-      isPriorSessionStamp(new Date('2025-07-24T15:00:00Z'), captured),
-    ).toBe(false);
+    expect(isPreOpenStamp(new Date('2025-07-24T15:00:00Z'), captured)).toBe(
+      false,
+    );
   });
 });
 

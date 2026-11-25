@@ -11,7 +11,7 @@
  * `getSiblingConfirmation` returns one no-data row per sibling instead (and
  * `[]` only for a ticker with no siblings). `getLatestGexbotSnapshotAt`
  * returns `null` when no row is in its window. `getExpectedMove` returns `[]`
- * when there is no fresh capture (or only a replay of the prior session), and
+ * when there is no fresh capture (or only a stamp from before the open), and
  * one row naming the reason when there is a capture but no move can be
  * computed from it. A DB failure propagates from every helper (after
  * `withDbRetry`); `api/gexbot.ts` turns it into a 500 plus a Sentry capture.
@@ -21,7 +21,7 @@ import { getDb, withDbRetry } from './db.js';
 import { GEXBOT_TICKERS } from './gexbot-client.js';
 import {
   computeExpectedMove,
-  isPriorSessionStamp,
+  isPreOpenStamp,
   type ExpectedMove,
 } from './gexbot-expected-move.js';
 import {
@@ -205,14 +205,17 @@ interface RawSnapshotsRow {
  *
  * - Freshness: `captured_at` within 15 minutes. Fetch crons run 1/min, so
  *   anything older is stale (cron-down, ticker decommissioned, weekend) and
- *   shouldn't appear. Also bounds the DISTINCT ON scan to recent rows in the
- *   (ticker, captured_at DESC) index.
+ *   shouldn't appear. Also bounds the DISTINCT ON scan to recent rows: EXPLAIN
+ *   ANALYZE in production on 2026-11-25 shows an index scan on
+ *   `gexbot_snapshots_captured_at_idx` (2.3 ms, 1,232 rows).
  * - Stale vendor stamp: a row whose `source_timestamp` (Unix seconds)
  *   predates today's ET midnight is the vendor replaying a finished
  *   session's last snapshot (VIX's prior close at the 09:30 open), so its
- *   values describe yesterday however fresh `captured_at` is. It is skipped
- *   and the ticker falls back to an older fresh row, or has none for a
- *   minute. A NULL stamp carries no evidence either way and is kept. The
+ *   values describe yesterday however fresh `captured_at` is. The replay
+ *   lasts the first few minutes after the open (09:30-09:32 ET observed on
+ *   2026-11-24, 09:30-09:31 on 11-23). The row is skipped and the ticker
+ *   falls back to an older fresh row, or has none until the vendor stamps
+ *   today. A NULL stamp carries no evidence either way and is kept. The
  *   same rule the sibling, fire-time and velocity reads apply; here it keeps
  *   yesterday's `zvanna` out of the SPX net −vanna tile at the open.
  *
@@ -555,8 +558,9 @@ interface RawSiblingRow {
  * as context only; it does not enter the verdict.
  *
  * A row also needs a vendor `source_timestamp` (Unix seconds) inside the
- * same window. At the 09:30-09:31 ET open the vendor repeats VIX's prior
- * close, so a fresh `captured_at` can carry the previous session's reading.
+ * same window. For the first few minutes after the 09:30 ET open (09:30-09:32
+ * on 2026-11-24) the vendor repeats VIX's prior close, so a fresh
+ * `captured_at` can carry the previous session's reading.
  * A NULL `source_timestamp` carries no evidence either way and is kept.
  *
  * Returns one row per sibling. A sibling with no snapshot in the window
@@ -762,14 +766,19 @@ function vendorTime(timestamp: unknown): Date | null {
  * time, so the IVs and the time left describe the same moment; a capture
  * with no usable timestamp falls back to `captured_at`.
  *
- * `[]` when no capture is fresh, and also when the vendor's `timestamp`
- * falls on an earlier ET date than `captured_at`: the vendor replaying the
- * last session's final snapshot at the open. Its IVs belong to a session that
- * has ended, but today's has not, so the tile waits ("awaiting") rather than
- * reporting a closed session. One row otherwise: a capture the move cannot
- * be computed from (no spot, no `min_dte`, no ATM IV, past the session close)
- * comes back with `expectedMove: null` and the reason in `unavailable`, so
- * the tile can say why instead of looking empty.
+ * `[]` when no capture is fresh, and also when the vendor's `timestamp` is
+ * before 09:30 ET on `captured_at`'s ET date (`isPreOpenStamp`): the vendor
+ * replaying the last session's final snapshot at the open, or its 08:00-08:30
+ * ET premarket roll. Neither describes the session that is starting, so the
+ * tile waits ("awaiting") rather than reporting a closed session or sizing a
+ * move from 08:20. One row otherwise: a capture the move cannot be computed
+ * from (no spot, no `min_dte`, no ATM IV, a stamp at or after the session
+ * close) comes back with `expectedMove: null` and the reason in
+ * `unavailable`, so the tile can say why instead of looking empty.
+ *
+ * The vendor's last stamp of a session is 15:59:59 ET, never 16:00, so this
+ * read stays live (`unavailable: null`, about one second left) for the final
+ * captures of the day; the tile closes itself from the client's `marketOpen`.
  */
 export async function getExpectedMove(): Promise<ExpectedMoveRow[]> {
   const sql = getDb();
@@ -799,7 +808,7 @@ export async function getExpectedMove(): Promise<ExpectedMoveRow[]> {
       : {};
   const capturedAt = new Date(row.captured_at);
   const vendorAt = vendorTime(payload.timestamp);
-  if (vendorAt != null && isPriorSessionStamp(vendorAt, capturedAt)) return [];
+  if (vendorAt != null && isPreOpenStamp(vendorAt, capturedAt)) return [];
   const asOf = vendorAt ?? capturedAt;
 
   return [

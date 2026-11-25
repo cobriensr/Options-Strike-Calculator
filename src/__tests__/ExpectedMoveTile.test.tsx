@@ -124,6 +124,89 @@ describe('<ExpectedMoveTile>', () => {
     expect(screen.getByTestId('expected-move-range')).toHaveTextContent(text);
   });
 
+  // The hook stops polling when `marketOpen` goes false (16:00 ET, 13:00 ET
+  // on a half day), and the vendor's last stamp of a session is 15:59:59 ET,
+  // so the server's `expired` never reaches an open tab. The tile closes
+  // itself from the client's own gate.
+  describe('when the market is closed', () => {
+    it('replaces a live move with "session closed" when marketOpen goes false', () => {
+      mockRows([makeRow()]);
+      const { rerender } = render(<ExpectedMoveTile marketOpen />);
+      expect(screen.getByTestId('expected-move-value')).toHaveTextContent(
+        '±16.3 pts',
+      );
+
+      rerender(<ExpectedMoveTile marketOpen={false} />);
+
+      expect(screen.getByTestId('expected-move-value')).toHaveTextContent(
+        'SPX ±1σ · —',
+      );
+      expect(screen.getByTestId('expected-move-value')).not.toHaveTextContent(
+        'pts',
+      );
+      expect(screen.getByTestId('expected-move-range')).toHaveTextContent(
+        'session closed',
+      );
+      expect(screen.queryByText(/ATM IV/)).not.toBeInTheDocument();
+    });
+
+    it('shows "session closed" on mount for a live row', () => {
+      mockRows([makeRow()]);
+      render(<ExpectedMoveTile marketOpen={false} />);
+      expect(screen.getByTestId('expected-move-value')).toHaveTextContent(
+        'SPX ±1σ · —',
+      );
+      expect(screen.getByTestId('expected-move-range')).toHaveTextContent(
+        'session closed',
+      );
+    });
+
+    it('overrides whatever reason the row carries', () => {
+      mockRows([makeRow({ ...UNAVAILABLE, unavailable: 'no_atm_iv' })]);
+      render(<ExpectedMoveTile marketOpen={false} />);
+      expect(screen.getByTestId('expected-move-range')).toHaveTextContent(
+        'session closed',
+      );
+    });
+
+    it('still reads awaiting when there is no row at all', () => {
+      mockRows([]);
+      render(<ExpectedMoveTile marketOpen={false} />);
+      expect(screen.getByTestId('expected-move-tile-empty')).toHaveTextContent(
+        'awaiting first GEXBot tick',
+      );
+      expect(screen.queryByText(/session closed/)).not.toBeInTheDocument();
+    });
+
+    it('keeps the loading state as it is', () => {
+      mockUseGexbotData.mockReturnValue({
+        rows: [makeRow()],
+        loading: true,
+        error: null,
+        freshestAt: null,
+      });
+      render(<ExpectedMoveTile marketOpen={false} />);
+      expect(
+        screen.getByTestId('expected-move-tile-loading'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/session closed/)).not.toBeInTheDocument();
+    });
+
+    it('keeps the error state as it is', () => {
+      mockUseGexbotData.mockReturnValue({
+        rows: [makeRow()],
+        loading: false,
+        error: 'Internal error (HTTP 500)',
+        freshestAt: null,
+      });
+      render(<ExpectedMoveTile marketOpen={false} />);
+      expect(screen.getByTestId('expected-move-tile-error')).toHaveTextContent(
+        'Internal error (HTTP 500)',
+      );
+      expect(screen.queryByText(/session closed/)).not.toBeInTheDocument();
+    });
+  });
+
   it('never prints a number for a row that says it is unavailable', () => {
     // A row cannot be both; if one ever is, the reason wins.
     mockRows([makeRow({ unavailable: 'no_atm_iv' })]);
