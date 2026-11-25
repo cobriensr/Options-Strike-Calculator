@@ -136,7 +136,9 @@ current yesterday. Spec: `2026-11-25-missing-yesterday-marking-design.md`.
   - A tab like that left on an old date makes stale-tab rows, and test 6
     catches them.
 - **Rows saved before 10-28 get all nine tests,** whatever their flag (test
-  9 cannot fire on them: it reads only rows from its cutoff on). On
+  9's RV half reads only rows from its cutoff on; its multiplier half reads
+  every row, and before 10-28 only pre-market rows, which test 1 rejects, have
+  no multiplier). On
   those rows the flag is inverted. Also, the 03-26 catch-up rows carry
   `is_backtest = false`, which before 10-28 meant a backtest save, and they
   are still junk.

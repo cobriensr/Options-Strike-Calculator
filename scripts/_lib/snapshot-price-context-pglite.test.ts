@@ -633,9 +633,9 @@ describe('a dry run', () => {
   });
 
   // The pick report follows the rule build-features applies: a replayed row
-  // first saved after MISSING_YESTERDAY_CUTOFF with no multiplier is not the
-  // date's 10:00 view, even once the plan fills in its range. Without the rule
-  // the pick would move from row 8 to the nearer row 9.
+  // with no multiplier is not the date's 10:00 view, even once the plan fills
+  // in its range. Without the rule the pick would move from row 8 to the
+  // nearer row 9.
   it('does not let the plan rescue a row saved without yesterday’s fields, read through the real trust SQL', async () => {
     await seed([
       // 8: a trusted live save.
