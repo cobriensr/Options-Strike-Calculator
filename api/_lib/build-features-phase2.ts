@@ -391,11 +391,45 @@ export async function addDarkPoolFeatures(
 }
 
 /**
+ * How many of the newest rows to ask `/stock/SPX/options-volume` for. The
+ * endpoint has no `date` parameter: it returns trading days newest first (the
+ * live reply for `limit=40` on 2026-11-25 ran back to 2026-10-01), so a date is
+ * found by its row's own `date`. `isWithinUWWindow` lets a date through up to
+ * 44 calendar days back: 45 dates counting today, at most 33 of them trading
+ * days. 40 rows reach the oldest of those, with room to spare, and stay far
+ * under the endpoint's maximum of 500.
+ */
+const OPTIONS_VOLUME_ROWS = 40;
+
+/**
+ * A reply row's own date as `YYYY-MM-DD`, or null when the row is not an
+ * object or its `date` is not a date. The live endpoint sends `"2026-11-25"`;
+ * UW's docs show a full ISO timestamp (`2023-09-08T00:00:00.000Z`), which
+ * names the same trading day, so both are read.
+ */
+function optionsVolumeRowDate(row: unknown): string | null {
+  if (typeof row !== 'object' || row === null || Array.isArray(row)) {
+    return null;
+  }
+  const date = (row as { date?: unknown }).date;
+  if (typeof date !== 'string') return null;
+  return /^(\d{4}-\d{2}-\d{2})(?:T.*)?$/.exec(date)?.[1] ?? null;
+}
+
+/**
  * Options volume + premium + OI features from the UW
  * /stock/SPX/options-volume endpoint. Same UW-window pre-flight as
  * max pain. Output: opt_call_volume / opt_put_volume / opt_*_oi /
  * opt_*_premium / opt_vol_pcr / opt_oi_pcr / opt_premium_ratio /
  * opt_call_vol_vs_avg30 / opt_put_vol_vs_avg30.
+ *
+ * The values come from the reply row whose own `date` is `dateStr`. When the
+ * reply has none (UW has not published the day, it is older than the rows
+ * asked for, or the reply is malformed) nothing is set, never another day's
+ * row: the reply's date and the requested one are logged and Sentry gets a
+ * warning. A feature left unset is not a clean slate downstream: the upsert
+ * keeps the stored value, so a value written earlier stays until it is
+ * repaired.
  */
 export async function addOptionsVolumeFeatures(
   dateStr: string,
@@ -409,13 +443,29 @@ export async function addOptionsVolumeFeatures(
         'Options volume: skipping UW fetch (outside 30-trading-day rolling window)',
       );
     } else if (apiKey) {
-      const ovData = await uwFetch<Record<string, unknown>>(
+      const reply = await uwFetch<unknown>(
         apiKey,
-        `/stock/SPX/options-volume?limit=1&date=${dateStr}`,
+        `/stock/SPX/options-volume?limit=${OPTIONS_VOLUME_ROWS}`,
       );
-      if (ovData.length > 0) {
-        const ov = ovData[0]!;
-
+      // uwFetch hands back whatever `data` held; only an array is a reply.
+      const rows: unknown[] = Array.isArray(reply) ? reply : [];
+      const ov = rows.find((row) => optionsVolumeRowDate(row) === dateStr) as
+        | Record<string, unknown>
+        | undefined;
+      if (ov == null) {
+        const returnedDates = rows.flatMap((row) => {
+          const date = optionsVolumeRowDate(row);
+          return date == null ? [] : [date];
+        });
+        logger.warn(
+          { date: dateStr, returnedDates },
+          'Options volume: UW returned no row for the requested date, so no opt_* features are set',
+        );
+        Sentry.captureMessage('Options volume: no row for the requested date', {
+          level: 'warning',
+          extra: { date: dateStr, returnedDates },
+        });
+      } else {
         const callVol = Number.parseInt(String(ov.call_volume ?? '0'), 10);
         const putVol = Number.parseInt(String(ov.put_volume ?? '0'), 10);
         const callOI = Number.parseInt(

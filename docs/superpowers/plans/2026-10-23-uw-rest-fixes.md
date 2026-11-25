@@ -202,6 +202,9 @@ R1 → R11 → R2 → R3 → R4 → R5 → R6 → R7 → R8 → R9 → R10 → R
 - [ ] The URL has no `date=`.
 - [ ] `npm run review` green; commit.
 
+**As built (2026-11-25).** `addOptionsVolumeFeatures` asks for `limit=40`, takes the row whose own `date` is `dateStr` and sets nothing when there is none. A live probe the same day confirmed the reply: `date` is a plain `YYYY-MM-DD` string (UW's docs show a full ISO timestamp, and both are read), rows run newest first, and `limit=40` returned 40 rows back to 2026-10-01 (the endpoint's maximum is 500). A missing row logs the requested date and the dates UW returned, and sends a Sentry warning (`captureMessage`, not an exception). A reply whose `data` is not an array, or whose rows are not objects with a date, counts as having no row. The parsing tests are as they were: their reply fixture now carries the date.
+- **The stored history is not repaired.** The upsert keeps an old value when a new one is missing (`COALESCE(EXCLUDED, existing)`), so the opt_* values already stored from other days stay, 112 of 159 `training_features` days on 2026-11-25. Repairing them waits on the owner's decision about what these features should mean.
+
 ### Task R6: monitor-flow-ratio stores a real SPX price
 
 **Files:** `api/cron/monitor-flow-ratio.ts` (:62, :72-75, :89-97, :174, :279, :314-323, :360, :372), `api/__tests__/monitor-flow-ratio.test.ts`

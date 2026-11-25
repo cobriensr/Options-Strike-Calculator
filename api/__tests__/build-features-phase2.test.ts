@@ -19,7 +19,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn() },
+  Sentry: { captureException: vi.fn(), captureMessage: vi.fn() },
 }));
 
 import {
@@ -36,6 +36,7 @@ import {
   addOptionsVolumeFeatures,
 } from '../_lib/build-features-phase2.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import type { FeatureRow } from '../_lib/build-features-types.js';
 
@@ -1215,10 +1216,22 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // dpRows
     }
 
+    /**
+     * The endpoint's reply for DATE_STR: a row without its own `date` is
+     * stamped with it, so the parsing tests below, which do not care about
+     * the date, stay as they were. Date selection has its own tests in
+     * 'addOptionsVolumeFeatures (isolated)'.
+     */
     function mockFetchOK(data: unknown) {
+      const rows = Array.isArray(data) ? data : [data];
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ data: Array.isArray(data) ? data : [data] }),
+        json: async () => ({
+          data: rows.map((row: Record<string, unknown>) => ({
+            date: DATE_STR,
+            ...row,
+          })),
+        }),
       } as Response);
     }
 
@@ -1929,6 +1942,7 @@ describe('engineerPhase2Features', () => {
         json: async () => ({
           data: [
             {
+              date: DATE_STR,
               call_volume: '150000',
               put_volume: '200000',
               call_open_interest: '500000',
@@ -2296,5 +2310,226 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
     const features: FeatureRow = {};
     await addOptionsVolumeFeatures(DATE_STR, features);
     expect(features.opt_call_volume).toBeUndefined();
+  });
+
+  /**
+   * UW's options-volume endpoint takes no `date`: it returns the newest
+   * trading days, newest first (a probe on 2026-11-25 gave 2026-11-25,
+   * 2026-11-24, 2026-11-23, ... with `date` as a plain YYYY-MM-DD string).
+   * The feature for a date is the reply's row for that date, or nothing.
+   */
+  describe('picks the reply row for the requested date', () => {
+    /** A row with volumes that differ by day, so a wrong pick shows. */
+    const dayRow = (date: unknown, callVolume: number) => ({
+      date,
+      call_volume: String(callVolume),
+      put_volume: String(callVolume * 2),
+      call_open_interest: '500000',
+      put_open_interest: '600000',
+      call_premium: '1500000',
+      put_premium: '2000000',
+      bullish_premium: '800000',
+      bearish_premium: '1200000',
+      call_volume_ask_side: '80000',
+      put_volume_bid_side: '90000',
+      avg_30_day_call_volume: '120000',
+      avg_30_day_put_volume: '180000',
+    });
+
+    function replyWith(data: unknown) {
+      return vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({ data }),
+      } as Response);
+    }
+
+    /** The opt_* keys a run set, whatever their values. */
+    const optKeys = (features: FeatureRow) =>
+      Object.keys(features).filter((k) => k.startsWith('opt_'));
+
+    const warnedAbout = (date: string) =>
+      vi
+        .mocked(logger.warn)
+        .mock.calls.some(
+          ([fields]) =>
+            (fields as { date?: string } | undefined)?.date === date,
+        );
+
+    beforeEach(() => {
+      process.env.UW_API_KEY = 'test-key';
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('takes the features from the row whose date is the requested one, out of a multi-day reply', async () => {
+      replyWith([
+        dayRow('2026-03-25', 111_000),
+        dayRow('2026-03-24', 222_000),
+        dayRow('2026-03-23', 333_000),
+      ]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(features.opt_call_volume).toBe(222_000);
+      expect(features.opt_put_volume).toBe(444_000);
+      expect(features.opt_vol_pcr).toBe(2);
+      expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
+    });
+
+    it('takes the row by its date, not by its place in the reply', async () => {
+      replyWith([
+        dayRow('2026-03-23', 333_000),
+        dayRow('2026-03-24', 222_000),
+        dayRow('2026-03-25', 111_000),
+      ]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(features.opt_call_volume).toBe(222_000);
+    });
+
+    it('reads a date sent as a full ISO timestamp, the form UW’s docs show', async () => {
+      replyWith([
+        dayRow('2026-03-25T00:00:00.000Z', 111_000),
+        dayRow('2026-03-24T00:00:00.000Z', 222_000),
+      ]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(features.opt_call_volume).toBe(222_000);
+    });
+
+    it('sets nothing, logs the requested and the returned dates, and warns Sentry when the reply has no row for the date', async () => {
+      replyWith([dayRow('2026-03-25', 111_000), dayRow('2026-03-23', 333_000)]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        { date: DATE_STR, returnedDates: ['2026-03-25', '2026-03-23'] },
+        expect.stringContaining('no row for the requested date'),
+      );
+      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+        expect.stringContaining('no row for the requested date'),
+        expect.objectContaining({
+          level: 'warning',
+          extra: {
+            date: DATE_STR,
+            returnedDates: ['2026-03-25', '2026-03-23'],
+          },
+        }),
+      );
+      // A missing row is not an exception: nothing went wrong in the code.
+      expect(vi.mocked(Sentry.captureException)).not.toHaveBeenCalled();
+    });
+
+    it('never uses the newest row for an older date', async () => {
+      // An older date asked while the reply holds only the newest days.
+      replyWith([dayRow('2026-03-25', 111_000), dayRow('2026-03-24', 222_000)]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures('2026-03-20', features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(warnedAbout('2026-03-20')).toBe(true);
+    });
+
+    it('sets nothing and warns on an empty reply', async () => {
+      replyWith([]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(warnedAbout(DATE_STR)).toBe(true);
+      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['a string', 'not a list'],
+      ['an object', dayRow('2026-03-24', 222_000)],
+      ['a number', 7],
+    ])('sets nothing when data is %s, not an array', async (_label, data) => {
+      replyWith(data);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(warnedAbout(DATE_STR)).toBe(true);
+    });
+
+    it.each([
+      ['null rows', [null, null]],
+      ['rows that are not objects', [42, 'x', true, ['2026-03-24']]],
+      ['a date that is not a string', [dayRow(20260324, 222_000)]],
+      ['a date that is a Date-like object', [dayRow({}, 222_000)]],
+      ['a row with no date', [dayRow(undefined, 222_000)]],
+      ['a date with trailing text', [dayRow('2026-03-24x', 222_000)]],
+      ['a date in another form', [dayRow('03/24/2026', 222_000)]],
+      ['a date with trailing whitespace', [dayRow('2026-03-24 ', 222_000)]],
+    ])('sets nothing from %s', async (_label, rows) => {
+      replyWith(rows);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+    });
+
+    it('still reads the right row when malformed rows sit among the good ones', async () => {
+      replyWith([
+        null,
+        dayRow('2026-03-25', 111_000),
+        'x',
+        dayRow('2026-03-24', 222_000),
+        { date: 20260324 },
+      ]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(features.opt_call_volume).toBe(222_000);
+    });
+
+    it('asks for a window of newest rows and sends no date parameter', async () => {
+      const fetchSpy = replyWith([dayRow('2026-03-24', 222_000)]);
+
+      await addOptionsVolumeFeatures(DATE_STR, {});
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const url = String(fetchSpy.mock.calls[0]?.[0]);
+      expect(url).toContain('/stock/SPX/options-volume?limit=40');
+      expect(url).not.toContain('date=');
+    });
+
+    it('surfaces a failed request to Sentry as before, setting nothing', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('UW down'));
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+        expect.any(Error),
+      );
+    });
+
+    it('does not ask UW for a date outside the 30-trading-day window', async () => {
+      const fetchSpy = replyWith([dayRow('2026-01-02', 222_000)]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures('2026-01-02', features);
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(optKeys(features)).toEqual([]);
+    });
   });
 });
