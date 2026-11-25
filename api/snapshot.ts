@@ -59,6 +59,16 @@
  * log and a metric there. A backtest save is not checked. Rule:
  * api/_lib/quote-freshness.ts.
  *
+ * A live row saved without yesterday's fields is kept and reported. While the
+ * app has no current yesterday (Schwab's daily candle late, or its request
+ * failed) it saves a null rvAnnualized and clusterMult. The row is saved as
+ * sent, so the slot keeps a row; build-features does not pick it for the day's
+ * features (featureSnapshotRejection, `missing-yesterday`), and the save is
+ * counted (snapshot.missing_yesterday_fields) and raises a Sentry warning
+ * tagged snapshot_gap, one issue per date. A backtest save is not alerted: the
+ * replay driver checks those. The pre-market row is not written here, and a
+ * live post under that label is refused by the quote check above.
+ *
  * Called automatically by the frontend whenever results are computed.
  */
 
@@ -137,6 +147,36 @@ async function resolveEventFlags(
     });
   }
   return { isEventDay: eventNames.length > 0, eventNames };
+}
+
+/**
+ * Report a live row that was saved with no RV or no cluster multiplier: the
+ * app had no current yesterday. A count for every such save, and a Sentry
+ * warning under one fingerprint per date, so a gap that spans several slots is
+ * one issue (and one email, once the alert rule routes it). A row with both
+ * present is not reported.
+ */
+function reportMissingYesterdayFields(
+  date: string,
+  entryTime: string,
+  rvAnnualized: number | null | undefined,
+  clusterMult: number | null | undefined,
+): void {
+  const rvMissing = rvAnnualized == null;
+  const clusterMissing = clusterMult == null;
+  if (!rvMissing && !clusterMissing) return;
+  const context = { date, entryTime, rvMissing, clusterMissing };
+  logger.warn(
+    context,
+    'Saved a live snapshot without yesterday’s fields (RV or the cluster multiplier)',
+  );
+  metrics.increment('snapshot.missing_yesterday_fields');
+  Sentry.captureMessage('snapshot.missing_yesterday_fields', {
+    level: 'warning',
+    tags: { snapshot_gap: 'missing_yesterday_fields' },
+    fingerprint: ['snapshot-missing-yesterday-fields', date],
+    extra: context,
+  });
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -250,6 +290,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parsed.data.eventNames,
     );
     const id = await saveSnapshot({ ...parsed.data, isEventDay, eventNames });
+
+    // Saved as sent: no refusal, so the slot keeps a row. Reported only once
+    // the row is in (a failed save throws past this), and never for a replay.
+    if (isBacktest !== true) {
+      reportMissingYesterdayFields(
+        date,
+        entryTime,
+        parsed.data.rvAnnualized,
+        parsed.data.clusterMult,
+      );
+    }
 
     metrics.dbSave('market_snapshots', true);
     res.setHeader('Cache-Control', 'no-store');

@@ -327,6 +327,22 @@ describe('snapshotBodySchema', () => {
       expect(result.data).toEqual({ ...BASE, [key]: null });
     });
 
+    // What the app posts while it has no current yesterday: the multiplier,
+    // both tilts and RV all null together, and the body is still valid.
+    it('accepts a null cluster multiplier, both tilts and RV together, keeping the nulls', () => {
+      const gap = {
+        clusterMult: null,
+        clusterPutMult: null,
+        clusterCallMult: null,
+        rvAnnualized: null,
+        rvIvRatio: null,
+        rvIvLabel: null,
+      };
+      const result = snapshotBodySchema.safeParse({ ...BASE, ...gap });
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ ...BASE, ...gap });
+    });
+
     it.each(Object.keys(SEVEN))('accepts %s absent', (key) => {
       const rest = Object.fromEntries(
         Object.entries(SEVEN).filter(([k]) => k !== key),

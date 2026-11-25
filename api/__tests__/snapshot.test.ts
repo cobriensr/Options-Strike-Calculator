@@ -66,6 +66,12 @@ const TOMORROW = '2026-03-11';
 /** The slot now sits in (CT), and a quote that printed 30 s ago for it. */
 const SLOT = '10:00 AM CT';
 const FRESH_QUOTE = Date.parse(NOW) - 30_000;
+/**
+ * The fields a live row carries while the app holds a current yesterday. A row
+ * without them is reported (see "a live row saved without yesterday's fields"),
+ * so the other tests' live bodies carry them.
+ */
+const YESTERDAY_FIELDS = { rvAnnualized: 0.12, clusterMult: 1.05 };
 
 describe('POST /api/snapshot', () => {
   afterEach(() => {
@@ -91,6 +97,13 @@ describe('POST /api/snapshot', () => {
       .mockReset()
       .mockResolvedValue({ events: [], complete: true, fromCache: false });
   });
+
+  /** POST `body` to the handler and return the response. */
+  async function post(body: Record<string, unknown>) {
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'POST', body }), res);
+    return res;
+  }
 
   /** Let the real 400 path run: respondIfInvalid answers a failed parse. */
   function validating() {
@@ -576,8 +589,11 @@ describe('POST /api/snapshot', () => {
             date,
             entryTime: SLOT,
             isBacktest,
-            // Only a live save carries a quote time.
-            ...(isBacktest ? {} : { quotedAt: FRESH_QUOTE }),
+            // Only a live save carries a quote time, and a complete live row
+            // its yesterday-derived fields.
+            ...(isBacktest
+              ? {}
+              : { quotedAt: FRESH_QUOTE, ...YESTERDAY_FIELDS }),
           },
         }),
         res,
@@ -671,6 +687,7 @@ describe('POST /api/snapshot', () => {
             date: TODAY,
             entryTime: SLOT,
             quotedAt: FRESH_QUOTE,
+            ...YESTERDAY_FIELDS,
             ...body,
           },
         }),
@@ -724,6 +741,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: true,
         eventNames: ['CPI'],
       });
@@ -753,6 +771,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: false,
         eventNames: [],
       });
@@ -778,6 +797,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: true,
         eventNames: ['CPI'],
       });
@@ -796,6 +816,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: false,
         eventNames: [],
       });
@@ -814,6 +835,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: true,
         eventNames: ['CPI'],
       });
@@ -829,6 +851,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: false,
         eventNames: [],
       });
@@ -855,6 +878,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: true,
         eventNames: ['CPI', 'FOMC'],
       });
@@ -889,6 +913,7 @@ describe('POST /api/snapshot', () => {
           date: TODAY,
           entryTime: SLOT,
           quotedAt: FRESH_QUOTE,
+          ...YESTERDAY_FIELDS,
           isEventDay: false,
           eventNames: [],
         });
@@ -908,6 +933,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: true,
         eventNames: ['FOMC', 'CPI'],
       });
@@ -963,6 +989,7 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: SLOT,
         quotedAt: FRESH_QUOTE,
+        ...YESTERDAY_FIELDS,
         isEventDay: true,
         eventNames: ['CPI', 'FOMC'],
       });
@@ -1049,15 +1076,10 @@ describe('POST /api/snapshot', () => {
     const NOW_MS = Date.parse(NOW);
     const MIN = 60_000;
 
-    async function post(body: Record<string, unknown>) {
-      const res = mockResponse();
-      await handler(mockRequest({ method: 'POST', body }), res);
-      return res;
-    }
-
     const live = (quotedAt?: unknown, extra: Record<string, unknown> = {}) => ({
       date: TODAY,
       entryTime: SLOT,
+      ...YESTERDAY_FIELDS,
       ...(quotedAt === undefined ? {} : { quotedAt }),
       ...extra,
     });
@@ -1397,6 +1419,221 @@ describe('POST /api/snapshot', () => {
       expect(res._json).toEqual({ id: null, saved: false });
       expect(Sentry.captureException).toHaveBeenCalledTimes(1);
       expect(metrics.increment).not.toHaveBeenCalled();
+    });
+  });
+
+  // The app saves null cluster multipliers and RV while it has no current
+  // yesterday (Schwab's daily candle late, or its request failed). Such a row
+  // is kept, but the day's ML features must not take it, and the owner has to
+  // hear that it was saved. The server judges what arrives, whatever caused it.
+  describe('a live row saved without yesterday’s fields', () => {
+    const MISSING = 'snapshot.missing_yesterday_fields';
+    /** A complete live slot row: the yesterday-derived fields are there. */
+    const complete = {
+      date: TODAY,
+      entryTime: SLOT,
+      quotedAt: FRESH_QUOTE,
+      ...YESTERDAY_FIELDS,
+    };
+
+    /** The title and options of each missing-yesterday alert raised. */
+    const alerts = () =>
+      vi
+        .mocked(Sentry.captureMessage)
+        .mock.calls.filter(([title]) => title === MISSING);
+
+    const missingCounted = () =>
+      vi
+        .mocked(metrics.increment)
+        .mock.calls.filter(([name]) => name === MISSING);
+
+    it('saves a complete row with no alert and no count', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(21);
+
+      const res = await post(complete);
+
+      expect(res._json).toEqual({ id: 21, saved: true });
+      expect(alerts()).toEqual([]);
+      expect(missingCounted()).toEqual([]);
+    });
+
+    it('keeps a row with both fields null: saved as sent, counted, and one warning for the date', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(22);
+      const body = { ...complete, rvAnnualized: null, clusterMult: null };
+
+      const res = await post(body);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ id: 22, saved: true });
+      // Saved as the client sent it: no refusal and nothing filled in.
+      expect(saveSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          date: TODAY,
+          entryTime: SLOT,
+          rvAnnualized: null,
+          clusterMult: null,
+        }),
+      );
+      expect(missingCounted()).toHaveLength(1);
+      expect(alerts()).toEqual([
+        [
+          MISSING,
+          {
+            level: 'warning',
+            tags: { snapshot_gap: 'missing_yesterday_fields' },
+            // One issue per date, however many slots the gap spans.
+            fingerprint: ['snapshot-missing-yesterday-fields', TODAY],
+            extra: {
+              date: TODAY,
+              entryTime: SLOT,
+              rvMissing: true,
+              clusterMissing: true,
+            },
+          },
+        ],
+      ]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          date: TODAY,
+          entryTime: SLOT,
+          rvMissing: true,
+          clusterMissing: true,
+        }),
+        expect.stringContaining('yesterday'),
+      );
+    });
+
+    it.each([
+      ['RV alone', { rvAnnualized: null }, true, false],
+      ['the multiplier alone', { clusterMult: null }, false, true],
+    ])(
+      'alerts when %s is null, and names which',
+      async (_label, patch, rvMissing, clusterMissing) => {
+        vi.mocked(saveSnapshot).mockResolvedValue(23);
+
+        const res = await post({ ...complete, ...patch });
+
+        expect(res._json).toEqual({ id: 23, saved: true });
+        expect(missingCounted()).toHaveLength(1);
+        expect(alerts()).toHaveLength(1);
+        expect(alerts()[0]![1]).toMatchObject({
+          extra: { rvMissing, clusterMissing },
+        });
+      },
+    );
+
+    it('counts fields left out of the body as missing, as null ones are', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(26);
+      const res = await post({
+        date: TODAY,
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
+      });
+
+      expect(res._json).toEqual({ id: 26, saved: true });
+      expect(missingCounted()).toHaveLength(1);
+      expect(alerts()[0]![1]).toMatchObject({
+        extra: { rvMissing: true, clusterMissing: true },
+      });
+    });
+
+    it('alerts for the second slot of the same date under the same fingerprint, so it is one issue', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(24);
+      const gap = { ...complete, rvAnnualized: null, clusterMult: null };
+
+      await post(gap);
+      await post({ ...gap, entryTime: '9:55 AM CT' });
+
+      const raised = alerts();
+      expect(raised).toHaveLength(2);
+      expect(raised[0]![1]).toMatchObject({
+        fingerprint: ['snapshot-missing-yesterday-fields', TODAY],
+      });
+      expect(raised[1]![1]).toMatchObject({
+        fingerprint: ['snapshot-missing-yesterday-fields', TODAY],
+        extra: { entryTime: '9:55 AM CT' },
+      });
+      expect(missingCounted()).toHaveLength(2);
+    });
+
+    it('does not alert on a backtest row with the fields null: the replay driver checks those', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(25);
+
+      const res = await post({
+        ...complete,
+        isBacktest: true,
+        rvAnnualized: null,
+        clusterMult: null,
+      });
+
+      expect(res._json).toEqual({ id: 25, saved: true });
+      expect(alerts()).toEqual([]);
+      expect(missingCounted()).toEqual([]);
+    });
+
+    // The pre-market row is written by /api/pre-market, not here. A live post
+    // under that label is refused by the quote check (no readable slot) before
+    // the missing-fields check, so it can't raise this alert.
+    it('does not alert for a live post labelled pre-market: the label is refused first', async () => {
+      const res = await post({
+        ...complete,
+        entryTime: 'pre-market',
+        rvAnnualized: null,
+        clusterMult: null,
+      });
+
+      expect(res._status).toBe(422);
+      expect(res._json).toEqual({
+        error: 'quote-not-fresh',
+        reason: 'bad-entry-time',
+        saved: false,
+      });
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(alerts()).toEqual([]);
+      expect(missingCounted()).toEqual([]);
+    });
+
+    it('does not alert for a row it refused as a stale quote', async () => {
+      const res = await post({
+        ...complete,
+        quotedAt: Date.parse(NOW) - 11 * 60_000,
+        rvAnnualized: null,
+        clusterMult: null,
+      });
+
+      expect(res._status).toBe(422);
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(alerts()).toEqual([]);
+      expect(missingCounted()).toEqual([]);
+    });
+
+    it('does not alert for a row the database failed to save, which has its own report', async () => {
+      vi.mocked(saveSnapshot).mockRejectedValue(new Error('DB error'));
+
+      const res = await post({
+        ...complete,
+        rvAnnualized: null,
+        clusterMult: null,
+      });
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ id: null, saved: false });
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(alerts()).toEqual([]);
+      expect(missingCounted()).toEqual([]);
+    });
+
+    it('does not alert for a live save skipped for another date', async () => {
+      const res = await post({
+        ...complete,
+        date: YESTERDAY,
+        rvAnnualized: null,
+        clusterMult: null,
+      });
+
+      expect(res._json).toMatchObject({ skipped: 'live-for-other-date' });
+      expect(alerts()).toEqual([]);
+      expect(missingCounted()).toEqual([]);
     });
   });
 });
