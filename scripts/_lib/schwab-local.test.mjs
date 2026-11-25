@@ -81,6 +81,46 @@ describe('schwabCronsBusyRefusal', () => {
       expect(message).toContain('--allow-market-hours');
     }
   });
+
+  // Two scripts print this text and a third (the index candle repair) prints
+  // the variant. It is pinned whole: `offerFlag` must not change a word of it.
+  it('keeps the default refusal text, which offers the flag', () => {
+    atTime('2026-11-06T17:30:00Z');
+    const text =
+      'Refusing to run on a weekday 13:00–22:59 UTC: the Schwab crons are ' +
+      'active, and a token refresh here could race theirs. Run outside that ' +
+      'window, or pass --allow-market-hours (e.g. on a market holiday, when ' +
+      'the crons skip).';
+    expect(schwabCronsBusyRefusal()).toBe(text);
+    expect(schwabCronsBusyRefusal({})).toBe(text);
+    expect(schwabCronsBusyRefusal({ offerFlag: true })).toBe(text);
+  });
+
+  it('names no flag when offerFlag is false (a script that has none)', () => {
+    atTime('2026-11-06T17:30:00Z');
+    const refusal = schwabCronsBusyRefusal({ offerFlag: false });
+    expect(refusal).toBe(
+      'Refusing to run on a weekday 13:00–22:59 UTC: the Schwab crons are ' +
+        'active, and a token refresh here could race theirs. Run outside ' +
+        'that window.',
+    );
+    expect(refusal).not.toContain('--');
+    expect(refusal).not.toContain('allow-market-hours');
+  });
+
+  it.each([
+    ['Friday 12:59 UTC', '2026-11-06T12:59:00Z'],
+    ['Friday 13:00 UTC', '2026-11-06T13:00:00Z'],
+    ['Friday 22:59 UTC', '2026-11-06T22:59:00Z'],
+    ['Friday 23:00 UTC', '2026-11-06T23:00:00Z'],
+    ['Saturday 15:00 UTC', '2026-11-07T15:00:00Z'],
+    ['Monday 13:00 UTC', '2026-11-09T13:00:00Z'],
+  ])('refuses at the same times with offerFlag false: %s', (_label, iso) => {
+    atTime(iso);
+    expect(schwabCronsBusyRefusal({ offerFlag: false }) === null).toBe(
+      schwabCronsBusyRefusal() === null,
+    );
+  });
 });
 
 // ── env ────────────────────────────────────────────────────

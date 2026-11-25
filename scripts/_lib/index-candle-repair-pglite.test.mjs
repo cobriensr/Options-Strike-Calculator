@@ -42,7 +42,13 @@ import {
   applyMigration,
   neonOverPglite,
 } from '../../api/__tests__/pglite-migrations';
-import { DayFailure, formatRunSummary, summarizeRun } from './backfill-cli.mjs';
+import {
+  DayFailure,
+  formatRunSummary,
+  marketHoursRefusal,
+  summarizeRun,
+} from './backfill-cli.mjs';
+import { schwabCronsBusyRefusal } from './schwab-local.mjs';
 
 const mocks = vi.hoisted(() => ({
   fetchUwCandles: vi.fn(),
@@ -1659,27 +1665,35 @@ describe('repairGuardRefusal', () => {
     vi.setSystemTime(new Date(iso));
   }
 
+  // The text, hours included, is the guards' own: the lib keeps no copy of
+  // either, so a change to a window in backfill-cli or schwab-local reaches
+  // the CLI. Each case names the guard the clock falls in.
   it.each([
     // 2026-10-29 is a Thursday, CDT (UTC-5).
     [
       '08:15 CT, as the market window opens',
       '2026-10-29T13:15:00Z',
-      /08:15–15:30 CT/,
+      () => marketHoursRefusal({ allowMarketHours: false, offerFlag: false }),
     ],
-    ['12:00 CT, mid-session', '2026-10-29T17:00:00Z', /08:15–15:30 CT/],
+    [
+      '12:00 CT, mid-session',
+      '2026-10-29T17:00:00Z',
+      () => marketHoursRefusal({ allowMarketHours: false, offerFlag: false }),
+    ],
     [
       '17:00 CT, past the close but inside the Schwab crons window',
       '2026-10-29T22:00:00Z',
-      /13:00–22:59 UTC/,
+      () => schwabCronsBusyRefusal({ offerFlag: false }),
     ],
   ])(
-    'refuses at %s, and names no flag this CLI rejects',
-    (_label, iso, window) => {
+    'refuses at %s with its guard text, and names no flag this CLI rejects',
+    (_label, iso, guardText) => {
       atTime(iso);
 
       const refusal = repairGuardRefusal();
 
-      expect(refusal).toMatch(window);
+      expect(refusal).toBe(guardText());
+      expect(refusal).toEqual(expect.any(String));
       expect(refusal).not.toContain('--');
       expect(refusal).not.toContain('allow-market-hours');
     },

@@ -78,8 +78,12 @@ const BUSY_LAST_UTC_HOUR = 22;
  *
  * Holidays aren't known here. The crons skip a market holiday, so a caller
  * lets its --allow-market-hours flag past this guard for one.
+ *
+ * `offerFlag` (default true) says whether the text tells the reader they may
+ * pass --allow-market-hours. A script with no such flag passes false, so it
+ * never points at a flag it rejects. The default text is unchanged.
  */
-export function schwabCronsBusyRefusal() {
+export function schwabCronsBusyRefusal({ offerFlag = true } = {}) {
   const now = new Date();
   const weekday = now.getUTCDay();
   const hour = now.getUTCHours();
@@ -92,8 +96,10 @@ export function schwabCronsBusyRefusal() {
   return (
     'Refusing to run on a weekday 13:00–22:59 UTC: the Schwab crons are ' +
     'active, and a token refresh here could race theirs. Run outside that ' +
-    'window, or pass --allow-market-hours (e.g. on a market holiday, when ' +
-    'the crons skip).'
+    (offerFlag
+      ? 'window, or pass --allow-market-hours (e.g. on a market holiday, when ' +
+        'the crons skip).'
+      : 'window.')
   );
 }
 

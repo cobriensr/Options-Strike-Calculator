@@ -869,26 +869,17 @@ export async function processRepairDay(
 // ── The guards ─────────────────────────────────────────────
 
 /**
- * What the CLI prints when the Schwab window refuses the run. The window and
- * the hours are schwabCronsBusyRefusal's; its own text offers
- * --allow-market-hours, a flag this CLI rejects, so only its yes or no is used.
- */
-const SCHWAB_WINDOW_REFUSAL =
-  'Refusing to run on a weekday 13:00–22:59 UTC: the Schwab crons are ' +
-  'active, and a token refresh here could race theirs. Run outside that ' +
-  'window.';
-
-/**
- * The refusal to print when the run may not start now, or null: the
- * 08:15–15:30 CT weekday window (UW's concurrency cap) first, then the
- * 13:00–22:59 UTC weekday window (the Schwab crons). Neither text names a
- * flag: this CLI has no --allow-market-hours. `runDays` is given the same
- * choice (`offerFlag: false`) for its mid-run `stopped:` line.
+ * The refusal to print when the run may not start now, or null: the weekday
+ * market-hours window (UW's concurrency cap, backfill-cli's) first, then the
+ * Schwab crons' weekday window (schwab-local's). The windows and the texts are
+ * theirs, with `offerFlag: false`: this CLI has no --allow-market-hours, so
+ * neither text names it. `runDays` is given the same choice for its mid-run
+ * `stopped:` line.
  */
 export function repairGuardRefusal() {
   return (
     marketHoursRefusal({ allowMarketHours: false, offerFlag: false }) ??
-    (schwabCronsBusyRefusal() == null ? null : SCHWAB_WINDOW_REFUSAL)
+    schwabCronsBusyRefusal({ offerFlag: false })
   );
 }
 
