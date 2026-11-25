@@ -44,6 +44,7 @@ import handler, {
 } from '../cron/build-features.js';
 import {
   computeCompleteness,
+  DP_COLUMNS,
   upsertFeatures,
 } from '../_lib/build-features-upsert.js';
 import type { FeatureRow } from '../_lib/build-features-types.js';
@@ -3320,6 +3321,214 @@ describe('upsertFeatures: the options-volume columns', () => {
       // One filled feature and one options-volume key left null: if the key
       // counted, the fraction would be 1 of 2.
       expect(computeCompleteness({ vix: 18, [name]: null })).toBe(1);
+    },
+  );
+});
+
+// ── upsertFeatures overwrite option ─────────────────────────
+// The default statement keeps the stored value whenever the new one is NULL.
+// `overwrite` names the columns a rebuild may replace, NULLs included. Each
+// test reads the statement the way Postgres would: the strings with every
+// bound value written where its placeholder sits.
+
+describe('upsertFeatures overwrite option', () => {
+  const ROW: FeatureRow = {
+    date: '2026-04-07',
+    vix: 18.5,
+    vix1d: null,
+    iv_rank: 42.1,
+    dp_total_premium: 1500000,
+    dp_cluster_count: 3,
+    dp_top_cluster_dist: -12.5,
+    dp_support_premium: 900000,
+    dp_resistance_premium: 600000,
+    dp_support_resistance_ratio: null,
+    // dp_concentration is absent on purpose: a failed or empty dark-pool read
+    // leaves the key unset, and an overwrite must turn that into a NULL too.
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSql.mockResolvedValue([]);
+  });
+
+  /** Run the upsert and return the one statement it sent: [strings, ...values]. */
+  async function sentStatement(
+    opts?: Parameters<typeof upsertFeatures>[1],
+  ): Promise<unknown[]> {
+    await upsertFeatures(ROW, opts);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    return mockSql.mock.calls[0]!;
+  }
+
+  /** Strings and bound values interleaved; NULL where a value is null or unset. */
+  function rendered(call: unknown[]): string {
+    const strings = call[0] as TemplateStringsArray;
+    return strings.reduce((text, part, i) => {
+      const value = call[i];
+      const shown = typeof value === 'string' ? `'${value}'` : String(value);
+      return `${text}${value == null ? 'NULL' : shown}${part}`;
+    });
+  }
+
+  /** The INSERT's column list, in order. */
+  function insertColumns(text: string): string[] {
+    const list = /INSERT INTO training_features\s*\(([^)]*)\)/.exec(text)![1]!;
+    return list.split(',').map((c) => c.trim());
+  }
+
+  /** The conflict SET lines, trimmed, in order. */
+  function setLines(text: string): string[] {
+    const marker = 'DO UPDATE SET';
+    return text
+      .slice(text.indexOf(marker) + marker.length)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '');
+  }
+
+  /** What the SET clause must be: COALESCE for each column but the overwrites. */
+  function expectedSet(text: string, overwrite: readonly string[]): string[] {
+    const columns = insertColumns(text).filter((c) => c !== 'date');
+    return columns.map((c, i) => {
+      const value = overwrite.includes(c)
+        ? `EXCLUDED.${c}`
+        : `COALESCE(EXCLUDED.${c}, training_features.${c})`;
+      return `${c} = ${value}${i < columns.length - 1 ? ',' : ''}`;
+    });
+  }
+
+  it('keeps COALESCE for every column by default', async () => {
+    const text = rendered(await sentStatement());
+
+    expect(setLines(text)).toEqual(expectedSet(text, []));
+    expect(setLines(text).length).toBeGreaterThan(150);
+    expect(text).not.toMatch(/= EXCLUDED\./);
+  });
+
+  it('builds the same statement for an empty or missing overwrite list', async () => {
+    const plain = await sentStatement();
+    vi.clearAllMocks();
+    const empty = await sentStatement({ overwrite: [] });
+    vi.clearAllMocks();
+    const unset = await sentStatement({});
+
+    expect([...(empty[0] as string[])]).toEqual([...(plain[0] as string[])]);
+    expect([...(unset[0] as string[])]).toEqual([...(plain[0] as string[])]);
+    expect(empty.slice(1)).toEqual(plain.slice(1));
+  });
+
+  it('writes EXCLUDED for the overwrite columns only', async () => {
+    const overwrite = ['vix', 'iv_rank', 'dp_concentration'];
+    const text = rendered(await sentStatement({ overwrite }));
+
+    expect(setLines(text)).toEqual(expectedSet(text, overwrite));
+    expect(text).toMatch(/\n\s+vix = EXCLUDED\.vix,\n/);
+    expect(text).toContain(
+      'vix1d = COALESCE(EXCLUDED.vix1d, training_features.vix1d)',
+    );
+    // The last SET line has no comma; an overwrite there must keep it so.
+    const last = setLines(text).at(-1);
+    expect(last).toBe(
+      'nope_am_cum_delta = COALESCE(EXCLUDED.nope_am_cum_delta, training_features.nope_am_cum_delta)',
+    );
+  });
+
+  it('sends the overwrite statement as a template strings array, raw strings included', async () => {
+    // The Neon client takes a strings array only when it has `raw`, as a
+    // template literal's does, and throws otherwise; the mock cannot.
+    const [strings] = await sentStatement({ overwrite: ['vix'] });
+    const { raw } = strings as TemplateStringsArray;
+
+    expect(Array.isArray(raw)).toBe(true);
+    expect([...raw]).toEqual([...(strings as string[])]);
+  });
+
+  it('keeps the comma and the end of the statement when the last column is overwritten', async () => {
+    const text = rendered(
+      await sentStatement({ overwrite: ['nope_am_cum_delta'] }),
+    );
+
+    expect(setLines(text).at(-1)).toBe(
+      'nope_am_cum_delta = EXCLUDED.nope_am_cum_delta',
+    );
+    expect(setLines(text)).toEqual(expectedSet(text, ['nope_am_cum_delta']));
+  });
+
+  it('writes an explicit NULL for an overwritten column', async () => {
+    const call = await sentStatement({
+      overwrite: ['dp_support_resistance_ratio', 'dp_concentration'],
+    });
+    const text = rendered(call);
+    const columns = insertColumns(text);
+    const values = (name: string) => call[columns.indexOf(name) + 1];
+
+    // Null in the row, and the key absent from it: both bind NULL ...
+    expect(values('dp_support_resistance_ratio')).toBeNull();
+    expect(values('dp_concentration')).toBeUndefined();
+    // ... and the SET takes EXCLUDED as is, so that NULL replaces the stored
+    // value. A column left out of the list keeps COALESCE for the same NULL.
+    expect(text).toContain(
+      'dp_support_resistance_ratio = EXCLUDED.dp_support_resistance_ratio',
+    );
+    expect(text).toContain('dp_concentration = EXCLUDED.dp_concentration');
+    expect(values('vix1d')).toBeNull();
+    expect(text).toContain(
+      'vix1d = COALESCE(EXCLUDED.vix1d, training_features.vix1d)',
+    );
+    // The rendered VALUES list shows both as NULL.
+    const valueList = text.slice(
+      text.indexOf(') VALUES (') + ') VALUES ('.length,
+      text.indexOf('ON CONFLICT'),
+    );
+    const shown = valueList.split(',').map((v) => v.trim());
+    expect(shown[columns.indexOf('dp_support_resistance_ratio')]).toBe('NULL');
+    expect(shown[columns.indexOf('dp_concentration')]).toBe('NULL');
+  });
+
+  it('DP_COLUMNS lists the seven dp columns', async () => {
+    // Table order: migration #21 adds dp_total_premium .. dp_resistance_premium
+    // and #29 adds the ratio and concentration.
+    expect(DP_COLUMNS).toEqual([
+      'dp_total_premium',
+      'dp_cluster_count',
+      'dp_top_cluster_dist',
+      'dp_support_premium',
+      'dp_resistance_premium',
+      'dp_support_resistance_ratio',
+      'dp_concentration',
+    ]);
+    expect(Object.isFrozen(DP_COLUMNS)).toBe(true);
+
+    // The statement can overwrite each of them, and nothing else.
+    const text = rendered(await sentStatement({ overwrite: DP_COLUMNS }));
+    expect(setLines(text)).toEqual(expectedSet(text, DP_COLUMNS));
+    expect(
+      setLines(text).filter((l) => l.includes('= EXCLUDED.')),
+    ).toHaveLength(7);
+  });
+
+  it.each([
+    ['a name that is no column', 'not_a_column'],
+    ['the conflict key', 'date'],
+    ['a column of another table', 'created_at'],
+    [
+      'a name that would splice SQL',
+      'vix = 1; DROP TABLE training_features; --',
+    ],
+    ['an empty name', ''],
+  ])(
+    'rejects an overwrite column that is not a feature column: %s',
+    async (_label, name) => {
+      await expect(
+        upsertFeatures(ROW, { overwrite: ['vix', name] }),
+      ).rejects.toThrow(TypeError);
+      await expect(
+        upsertFeatures(ROW, { overwrite: ['vix', name] }),
+      ).rejects.toThrow(JSON.stringify(name));
+
+      // No statement went out, not even for the valid name beside it.
+      expect(mockSql).not.toHaveBeenCalled();
     },
   );
 });

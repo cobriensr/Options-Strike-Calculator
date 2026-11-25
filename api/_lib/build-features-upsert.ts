@@ -13,6 +13,10 @@
  * outside its 30-day rolling window). Those undefineds become NULL in
  * the parameterized statement; without COALESCE, every backfill would
  * clobber a previously-fetched value with NULL.
+ *
+ * The cost of that rule: a rebuild can never clear a stored value. A caller
+ * that knows its read succeeded passes `overwrite` (see `DP_COLUMNS`), and
+ * those columns take the new value as it is, NULL included.
  */
 import { getDb } from './db.js';
 import type { FeatureRow } from './build-features-types.js';
@@ -157,9 +161,85 @@ export function computeCompleteness(features: FeatureRow): number {
 
 // ── Upsert ──────────────────────────────────────────────────────
 
-export async function upsertFeatures(f: FeatureRow): Promise<void> {
-  const sql = getDb();
-  await sql`
+/**
+ * The `dp_*` columns of `training_features` that `upsertFeatures` writes,
+ * in table order: #21 adds dp_total_premium, dp_cluster_count,
+ * dp_top_cluster_dist, dp_support_premium and dp_resistance_premium, then #29
+ * adds dp_support_resistance_ratio and dp_concentration. #21 also adds
+ * dp_buyer_initiated, dp_seller_initiated and dp_net_bias, which nothing
+ * writes (the upsert has no such column), so they are not listed.
+ */
+export const DP_COLUMNS: readonly string[] = Object.freeze([
+  'dp_total_premium',
+  'dp_cluster_count',
+  'dp_top_cluster_dist',
+  'dp_support_premium',
+  'dp_resistance_premium',
+  'dp_support_resistance_ratio',
+  'dp_concentration',
+]);
+
+export interface UpsertFeaturesOptions {
+  /**
+   * Feature columns whose stored value this row replaces, a NULL included.
+   * Every other column keeps its stored value when the new one is NULL.
+   * A name that is not a column of the statement below throws a TypeError.
+   */
+  overwrite?: readonly string[];
+}
+
+/** Hands a tagged template back as data: its strings and its bound values. */
+function capture(strings: TemplateStringsArray, ...values: unknown[]) {
+  return { strings, values };
+}
+
+/**
+ * `strings` with `col = EXCLUDED.col` in place of the COALESCE line of each
+ * column in `overwrite`. The COALESCE lines of the statement are the list of
+ * columns it writes, so a name with no such line is refused, and only a name
+ * found there is ever put into SQL text. Every other part is left as it is.
+ */
+function withOverwrite(
+  strings: TemplateStringsArray,
+  overwrite: readonly string[],
+): TemplateStringsArray {
+  // The SET clause follows the last placeholder, so it is the last string.
+  const keepOld =
+    /^([ \t]+)(\w+) = COALESCE\(EXCLUDED\.\2, training_features\.\2\)/gm;
+  const known = new Set(
+    Array.from(strings.at(-1)!.matchAll(keepOld), (match) => match[2]),
+  );
+  const notColumns = overwrite
+    .filter((column) => !known.has(column))
+    .map((column) => JSON.stringify(column));
+  if (notColumns.length > 0) {
+    throw new TypeError(
+      `upsertFeatures: not a feature column: ${notColumns.join(', ')}`,
+    );
+  }
+
+  const wanted = new Set(overwrite);
+  const swap = (text: string, index: number): string =>
+    index < strings.length - 1
+      ? text
+      : text.replace(keepOld, (line, indent: string, column: string) =>
+          wanted.has(column) ? `${indent}${column} = EXCLUDED.${column}` : line,
+        );
+  // The Neon client takes a strings array only when it has `raw`, as a
+  // template literal's does.
+  return Object.assign(Array.from(strings, swap), {
+    raw: Array.from(strings.raw, swap),
+  });
+}
+
+export async function upsertFeatures(
+  f: FeatureRow,
+  opts?: UpsertFeaturesOptions,
+): Promise<void> {
+  // The statement is one template: `capture` returns it as data so the
+  // overwrite path can change its SET clause. With no overwrite list its
+  // strings go to the client untouched, as when it was the tag itself.
+  const { strings, values } = capture`
     INSERT INTO training_features (
       date, vix, vix1d, vix9d, vvix, vix1d_vix_ratio, vix_vix9d_ratio,
       regime_zone, cluster_mult, dow_mult, dow_label,
@@ -482,4 +562,10 @@ export async function upsertFeatures(f: FeatureRow): Promise<void> {
       nope_am_sign_flips = COALESCE(EXCLUDED.nope_am_sign_flips, training_features.nope_am_sign_flips),
       nope_am_cum_delta = COALESCE(EXCLUDED.nope_am_cum_delta, training_features.nope_am_cum_delta)
   `;
+  const overwrite = opts?.overwrite ?? [];
+  const sql = getDb();
+  await sql(
+    overwrite.length === 0 ? strings : withOverwrite(strings, overwrite),
+    ...values,
+  );
 }
