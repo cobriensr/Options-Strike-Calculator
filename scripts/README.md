@@ -59,7 +59,7 @@ Compute additional features on existing rows. Typically used after a feature-eng
 
 ### Python backfills (`backfill_*.py`, plus some `backfill-*.py`)
 
-Python-side backfills for ML feature columns, e.g. `backfill_takeit.py` (Take-It scores), `backfill_silent_boom_from_fulltape.py`, `backfill_interval_ba_alerts.py`, `backfill_round_trip_score.py`. Run with the ml venv.
+Python-side backfills for ML feature columns, e.g. `backfill_takeit.py` (Take-It scores), `backfill_silent_boom_from_fulltape.py`, `backfill_round_trip_score.py`. Run with the ml venv.
 
 ### Ops (`ops/`)
 

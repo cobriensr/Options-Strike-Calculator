@@ -1,7 +1,7 @@
 """--parquet-dir handling for the scripts that read the Full Tape archive.
 
-reload-ws-option-trades-from-fulltape.py, backfill_interval_ba_alerts.py
-and enrich_silent_boom_outcomes_fulltape.py read
+reload-ws-option-trades-from-fulltape.py and
+enrich_silent_boom_outcomes_fulltape.py read
 `{date}-fulltape.parquet` files. The archive's location is a required
 argument (no home-directory default), and a missing directory or day
 file fails by name before any database work. Run:
@@ -20,7 +20,6 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
-import backfill_interval_ba_alerts as interval_ba  # noqa: E402
 import enrich_silent_boom_outcomes_fulltape as sb_fulltape  # noqa: E402
 
 
@@ -50,7 +49,6 @@ PARSERS = [
         ['--date', '2026-07-23'],
         id='reload-ws-option-trades-from-fulltape',
     ),
-    pytest.param(interval_ba.parse_args, [], id='backfill_interval_ba_alerts'),
     pytest.param(
         sb_fulltape.parse_args, [], id='enrich_silent_boom_outcomes_fulltape'
     ),
@@ -110,57 +108,6 @@ def test_reload_names_a_missing_day_file_before_touching_the_db(
     assert rc == 2
     err = capsys.readouterr().err
     assert f'parquet not found: {tmp_path / "2026-07-23-fulltape.parquet"}' in err
-
-
-# ── backfill_interval_ba_alerts ────────────────────────────────
-
-
-def test_interval_ba_lists_days_from_the_given_dir(tmp_path: Path) -> None:
-    _touch(
-        tmp_path,
-        '2026-07-22-fulltape.parquet',
-        '2026-07-23-fulltape.parquet',
-        '2026-07-24-fulltape.parquet',
-        '2026-07-23-trades.parquet',  # Bot-EOD layout: not a Full Tape day
-        'notes.txt',
-    )
-
-    assert interval_ba.list_parquet_dates(
-        tmp_path, '2026-07-23', None, None
-    ) == [
-        ('2026-07-23', tmp_path / '2026-07-23-fulltape.parquet'),
-        ('2026-07-24', tmp_path / '2026-07-24-fulltape.parquet'),
-    ]
-    assert [
-        d for d, _ in interval_ba.list_parquet_dates(tmp_path, None, None, 2)
-    ] == ['2026-07-22', '2026-07-23']
-
-
-def test_interval_ba_names_the_dir_when_no_day_matches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    empty_env = tmp_path / '.env.local'
-    empty_env.write_text('')
-    monkeypatch.setattr(interval_ba, 'ENV_FILE', empty_env)
-    _touch(tmp_path, '2026-06-15-fulltape.parquet')
-
-    with pytest.raises(SystemExit) as exc:
-        interval_ba.main(
-            [
-                '--parquet-dir',
-                str(tmp_path),
-                '--from-date',
-                '2026-07-22',
-                '--to-date',
-                '2026-09-04',
-                '--dry-run',
-            ]
-        )
-
-    message = str(exc.value.code)
-    assert 'No *-fulltape.parquet files' in message
-    assert str(tmp_path) in message
-    assert '2026-07-22' in message and '2026-09-04' in message
 
 
 # ── enrich_silent_boom_outcomes_fulltape ───────────────────────
