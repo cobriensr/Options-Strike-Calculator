@@ -335,6 +335,17 @@ describe('blockMessage', () => {
     expect(message).toContain(
       `No review or waiver can name ${odd}, ${spaced}:`,
     );
+    expect(message.endsWith('Rename them before the commit.')).toBe(true);
+  });
+
+  it('says "them" for several docs with no key when a doc with a key is listed too', () => {
+    const odd = 'docs/superpowers/specs/sub/a.md';
+    const spaced = 'docs/superpowers/plans/my plan.md';
+
+    const message = blockMessage([SPEC, odd, spaced]);
+
+    expect(message).toContain('"waive review specs/a.md"');
+    expect(message.endsWith('Rename them before the commit.')).toBe(true);
   });
 
   it('keeps the review line for the docs that have a key beside a rename line', () => {

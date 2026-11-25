@@ -151,8 +151,9 @@ function listAndFixes(paths) {
     );
   }
   if (keyless.length > 0) {
+    const pronoun = keyless.length === 1 ? 'it' : 'them';
     lines.push(
-      `No review or waiver can name ${keyless.join(', ')}: a key needs a name of a-z, 0-9, ".", "_" and "-" directly under specs/ or plans/. Rename it before the commit.`,
+      `No review or waiver can name ${keyless.join(', ')}: a key needs a name of a-z, 0-9, ".", "_" and "-" directly under specs/ or plans/. Rename ${pronoun} before the commit.`,
     );
   }
   return lines.join('\n');
