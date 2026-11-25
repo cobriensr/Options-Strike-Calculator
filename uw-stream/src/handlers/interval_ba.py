@@ -35,6 +35,7 @@ the original SPXW-only design.
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -535,10 +536,6 @@ class IntervalBAHandler(OptionTradesHandler):
     # Flush — write raw ticks via super(), then any pending alert rows.
     # ------------------------------------------------------------------
     async def _flush(self, rows: list[tuple]) -> int:
-        # First, and before the alert buffer is detached: a cancel that lands
-        # while this waits then loses no alert rows. It never raises an Exception,
-        # so a settings failure cannot stop the raw-tick or alert writes below.
-        await _record_live_settings_once()
         # Detach the alert buffer up front so a concurrent _observe (which
         # appends to self._pending_alerts) can keep staging fresh fires
         # while this flush is in flight. On the SUCCESS path the buffer
@@ -552,6 +549,12 @@ class IntervalBAHandler(OptionTradesHandler):
             # self._fired already suppresses re-firing for these buckets,
             # so a dropped batch is gone for good. Re-queue in the except.
             inserted = await super()._flush(rows)
+            # After the raw ticks, so a database that is down spends one retry
+            # budget on this flush, not two; before the alert insert, so the
+            # record is there whatever the alert write does. It swallows its own
+            # failures but not a cancel, which lands in the except below like
+            # any other raise: the alert rows go back in the buffer.
+            await _record_live_settings_once()
             if pending and self._enabled:
                 # If THIS insert raises, the same except re-queues the
                 # rows for the next flush. _ALERT_CONFLICT_COLS makes the
@@ -743,11 +746,14 @@ def _has_flag(flags: Any, name: str) -> bool:
 def _live_settings_row(settings: Settings) -> tuple:
     """The ``interval_ba_live_settings`` row for this process, in ``_LIVE_SETTINGS_COLUMNS`` order.
 
-    ``tickers`` is the list a handler really runs for: on in
-    ``interval_ba_tickers`` AND with its ``option_trades:<T>`` channel in the
+    ``tickers`` is the list live really ran for: on in ``interval_ba_tickers``,
+    AND a ticker with an Interval B/A handler class (``_HANDLED_TICKERS``: a name
+    outside it, such as ``AAPL`` in ``INTERVAL_BA_TICKERS_CSV``, has no handler
+    however it is spelled), AND with its ``option_trades:<T>`` channel in the
     subscribed set (``settings.channels``, which ``main`` hands to
-    ``_build_handlers``). A ticker whose channel is not subscribed has no handler,
-    so it is off whatever the list says. ``enabled`` is the master switch alone.
+    ``_build_handlers``): a handler exists only for a subscribed channel, so a
+    ticker whose channel is not subscribed is off whatever the list says.
+    ``enabled`` is the master switch alone.
     Numerics are Decimal (from ``str`` for the floats) so NUMERIC columns get
     exact values, as the handler's own thresholds do.
     """
@@ -755,7 +761,11 @@ def _live_settings_row(settings: Settings) -> tuple:
     return (
         _PROCESS_STARTED_AT,
         bool(settings.interval_ba_enabled),
-        sorted(t for t in settings.interval_ba_tickers if f"option_trades:{t}" in subscribed),
+        sorted(
+            t
+            for t in settings.interval_ba_tickers & _HANDLED_TICKERS
+            if f"option_trades:{t}" in subscribed
+        ),
         Decimal(str(settings.interval_ba_ratio_threshold)),
         Decimal(settings.interval_ba_premium_floor),
         int(settings.interval_ba_window_sec),
@@ -770,10 +780,18 @@ async def _record_live_settings_once() -> None:
 
     Called from every Interval B/A handler's ``_flush``. A failure is reported to
     Sentry once per process and retried quietly on later flushes; it is swallowed
-    (``Exception`` only, so a cancel still propagates) because the settings record
-    must never stop the raw-tick or alert writes. While it keeps failing the nightly
-    job covers the day with the previous process's row, which may hold other
-    settings; the one Sentry event is what flags that gap.
+    because the settings record must never stop the raw-tick or alert writes. While
+    it keeps failing the nightly job covers the day with the previous process's row,
+    which may hold other settings; the one Sentry event is what flags that gap.
+
+    A cancel is not a failure and is never swallowed, whether it arrives as
+    ``CancelledError`` (a ``BaseException``, which ``except Exception`` lets
+    through) or as an ordinary exception: when a cancelled query unwinds, asyncpg
+    raises ``InterfaceError`` because the ROLLBACK cannot run on the dead
+    connection, the case ``db._with_db_retry`` and ``Handler._safe_flush`` guard
+    with ``task.cancelling()``. Swallowed here, the drain-deadline cancel would be
+    eaten, the one Sentry report spent on it, and the flush would go on writing
+    after the drain reported its rows lost.
     """
     global _settings_recorded, _settings_failure_reported
     if _settings_recorded:
@@ -786,6 +804,8 @@ async def _record_live_settings_once() -> None:
             conflict_cols=_LIVE_SETTINGS_CONFLICT_COLS,
         )
     except Exception as exc:
+        if (task := asyncio.current_task()) is not None and task.cancelling():
+            raise
         if not _settings_failure_reported:
             _settings_failure_reported = True
             capture_exception(
@@ -825,3 +845,10 @@ class QQQIntervalBAHandler(IntervalBAHandler):
     """option_trades:QQQ → QQQ raw ticks + interval B/A alerts."""
 
     _TICKER = "QQQ"
+
+
+# The tickers that have a handler class, read off the classes so a new subclass is
+# one more entry here and not a second ticker list to keep in step.
+_HANDLED_TICKERS: frozenset[str] = frozenset(
+    cls._TICKER for cls in (SPYIntervalBAHandler, SPXWIntervalBAHandler, QQQIntervalBAHandler)
+)

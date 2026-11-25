@@ -33,9 +33,10 @@ Twin of the guard in sidecar/conftest.py, ml/conftest.py and
 scripts/conftest.py. tests/test_no_database_guard.py proves each block.
 
 Also holds `service_log_records`, the fixture that captures what the service
-logger emits, shared by the connector and Sentry-setup tests, and the autouse
-fixture that gives every test an empty `memory_stats` gauge registry (every
-handler constructor registers gauges there).
+logger emits, shared by the connector and Sentry-setup tests, and two autouse
+fixtures: one gives every test an empty `memory_stats` gauge registry (every
+handler constructor registers gauges there), the other resets the Interval B/A
+live-settings flags so every test starts as a freshly booted process.
 """
 
 from __future__ import annotations
@@ -216,6 +217,27 @@ def _empty_gauge_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     module = sys.modules.get("memory_stats")
     if module is not None:
         monkeypatch.setattr(module, "_gauges", {})
+
+
+@pytest.fixture(autouse=True)
+def _fresh_interval_ba_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test as a freshly booted process for the live-settings record.
+
+    ``_settings_recorded`` and ``_settings_failure_reported`` in
+    ``handlers.interval_ba`` last for the life of the process, shared by the three
+    Interval B/A handlers. Without a reset, the first test in the session to flush
+    one of them would take the settings write and every later test would not, so a
+    test that counts a fake database's inserts would pass or fail by test order.
+
+    Looked up in ``sys.modules`` for the same reason as ``_empty_gauge_registry``
+    above: a test module that touches a handler has imported it by the time any
+    test runs, and the probe suites in test_no_database_guard.py run under a copy
+    of this file where ``src/`` is not on the path.
+    """
+    module = sys.modules.get("handlers.interval_ba")
+    if module is not None:
+        monkeypatch.setattr(module, "_settings_recorded", False)
+        monkeypatch.setattr(module, "_settings_failure_reported", False)
 
 
 class _AttemptsSinceTestStart:

@@ -9,6 +9,7 @@ side-effects).
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import re
@@ -18,6 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
+import asyncpg
 import pytest
 
 import memory_stats
@@ -48,15 +50,6 @@ def _reset_recent_fires():
     recent_fires._reset_for_tests()
     yield
     recent_fires._reset_for_tests()
-
-
-# The two live-settings flags are module state that lasts for the process, so
-# without a reset the first test to flush would decide whether every later
-# test sees the settings write. Each test starts as a freshly booted process.
-@pytest.fixture(autouse=True)
-def _reset_live_settings_flags(monkeypatch):
-    monkeypatch.setattr(interval_ba_mod, "_settings_recorded", False)
-    monkeypatch.setattr(interval_ba_mod, "_settings_failure_reported", False)
 
 
 # Bucket containing 17:06 UTC (2026-05-12 12:05-12:10 CT). All "same
@@ -1163,7 +1156,8 @@ class TestFlush:
         # SAME module object (both ``import db``), so a single dispatch
         # mock keyed on ``table`` distinguishes the raw-tick write
         # (ws_option_trades) from the alert write (interval_ba_alerts); the
-        # first flush also writes the live-settings row, which is not an alert.
+        # first flush past the raw-tick write also writes the live-settings
+        # row, which is not an alert.
         # The raw-tick insert raises on the FIRST flush, then succeeds —
         # models a transient Neon outage that recovers by the next batch.
         raw_calls = {"n": 0}
@@ -1247,13 +1241,20 @@ class _FakeDb:
     """Stands in for ``db.bulk_insert_ignore_conflict``.
 
     Records every call, and fails the first ``settings_failures`` writes to the
-    live-settings table so a test can model a table that is not there yet or a
-    Neon outage that clears.
+    live-settings table (a table that is not there yet) and the first
+    ``raw_failures`` raw-tick writes (a Neon outage that clears).
     """
 
-    def __init__(self, monkeypatch, *, settings_failures: int = 0) -> None:
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        settings_failures: int = 0,
+        raw_failures: int = 0,
+    ) -> None:
         self.calls: list[dict] = []
         self._settings_failures_left = settings_failures
+        self._raw_failures_left = raw_failures
         # handlers.interval_ba.db and handlers.option_trades.db are one module.
         monkeypatch.setattr("handlers.interval_ba.db.bulk_insert_ignore_conflict", self)
 
@@ -1269,6 +1270,9 @@ class _FakeDb:
         if table == _SETTINGS_TABLE and self._settings_failures_left > 0:
             self._settings_failures_left -= 1
             raise RuntimeError("simulated settings write failure")
+        if table == "ws_option_trades" and self._raw_failures_left > 0:
+            self._raw_failures_left -= 1
+            raise RuntimeError("simulated raw-tick write failure")
         return len(rows)
 
     def to(self, table: str) -> list[dict]:
@@ -1337,8 +1341,25 @@ class TestLiveSettingsRecord:
                 ["QQQ"],
             ),
             ("SPY,SPXW,QQQ", "flow-alerts", []),
+            # Production's shorthand: it expands to the whole Lottery universe,
+            # which holds the three Interval B/A tickers.
+            ("SPY,SPXW,QQQ", "option_trades_lottery", ["QQQ", "SPXW", "SPY"]),
+            # AAPL is on in the list and its channel is subscribed, but no Interval
+            # B/A handler class exists for it, so live never ran it.
+            (
+                "SPY,AAPL",
+                "option_trades:SPY,option_trades:AAPL,flow-alerts",
+                ["SPY"],
+            ),
         ],
-        ids=["channel-missing", "list-narrower", "option-trades-only", "no-channels"],
+        ids=[
+            "channel-missing",
+            "list-narrower",
+            "option-trades-only",
+            "no-channels",
+            "lottery-shorthand",
+            "no-handler-class",
+        ],
     )
     def test_tickers_are_the_sorted_subscribed_enabled_ones(
         self,
@@ -1416,6 +1437,140 @@ class TestLiveSettingsRecord:
         assert len(captured) == 1
         # Every attempt carried the same conflict key.
         assert len({c["rows"][0][0] for c in db_calls.to(_SETTINGS_TABLE)}) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_settings_write_follows_the_raw_tick_write(self, monkeypatch):
+        """A flush whose raw-tick write fails does not also try the settings write.
+
+        With the database down that is one retry budget spent per flush, not two,
+        and the record is written by the first flush that gets past the raw ticks.
+        """
+        _configure_detector(monkeypatch)
+        db_calls = _FakeDb(monkeypatch, raw_failures=1)
+        handler = SPXWIntervalBAHandler()
+
+        with pytest.raises(RuntimeError, match="simulated raw-tick write failure"):
+            await handler._flush([])
+        assert db_calls.to(_SETTINGS_TABLE) == []
+        assert interval_ba_mod._settings_recorded is False
+
+        await handler._flush([])
+        assert len(db_calls.to(_SETTINGS_TABLE)) == 1
+        assert interval_ba_mod._settings_recorded is True
+
+    @pytest.mark.asyncio
+    async def test_two_handlers_that_both_fail_report_once(self, monkeypatch):
+        """The report flag belongs to the process, not to a handler."""
+        _configure_detector(monkeypatch)
+        db_calls = _FakeDb(monkeypatch, settings_failures=2)
+        captured: list[BaseException] = []
+        monkeypatch.setattr(
+            interval_ba_mod,
+            "capture_exception",
+            lambda exc, **kw: captured.append(exc),
+        )
+
+        await SPXWIntervalBAHandler()._flush([])
+        await SPYIntervalBAHandler()._flush([])
+
+        assert len(db_calls.to(_SETTINGS_TABLE)) == 2
+        assert len(captured) == 1
+        assert interval_ba_mod._settings_recorded is False
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_cannot_be_built_is_reported_once_and_the_flush_goes_on(
+        self,
+        monkeypatch,
+    ):
+        """A bug in building the row is a settings failure too, never a flush failure."""
+        _configure_detector(monkeypatch)
+        db_calls = _FakeDb(monkeypatch)
+        captured: list[BaseException] = []
+        monkeypatch.setattr(
+            interval_ba_mod,
+            "capture_exception",
+            lambda exc, **kw: captured.append(exc),
+        )
+
+        def broken_row(_settings):
+            raise ValueError("cannot build the settings row")
+
+        monkeypatch.setattr(interval_ba_mod, "_live_settings_row", broken_row)
+        handler = SPXWIntervalBAHandler()
+
+        await handler._flush([])
+        await handler._flush([])
+
+        assert len(captured) == 1
+        assert isinstance(captured[0], ValueError)
+        assert db_calls.to(_SETTINGS_TABLE) == []
+        assert len(db_calls.to("ws_option_trades")) == 2
+        assert interval_ba_mod._settings_recorded is False
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_that_surfaces_as_an_interface_error_is_not_swallowed(
+        self,
+        monkeypatch,
+        base_payload,
+    ):
+        """The drain deadline cancels a flush; asyncpg can unwind that as InterfaceError.
+
+        That is an ordinary Exception, but it is the cancel, not a failed settings
+        write: swallowing it would let the flush go on to the alert insert and the
+        push after the drain reported its rows lost, and would spend the one Sentry
+        report. It must reach the caller, with nothing written after it and the
+        alert rows put back for the retry.
+        """
+        _configure_detector(monkeypatch)
+        calls: list[str] = []
+        in_settings_write = asyncio.Event()
+
+        async def cancelled_in_settings_write(*, table, columns, rows, conflict_cols):
+            calls.append(table)
+            if table == _SETTINGS_TABLE:
+                in_settings_write.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    raise asyncpg.InterfaceError("connection is closed") from None
+            return len(rows)
+
+        monkeypatch.setattr(
+            "handlers.interval_ba.db.bulk_insert_ignore_conflict",
+            cancelled_in_settings_write,
+        )
+        captured: list[BaseException] = []
+        monkeypatch.setattr(
+            interval_ba_mod,
+            "capture_exception",
+            lambda exc, **kw: captured.append(exc),
+        )
+        handler = SPXWIntervalBAHandler()
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+            ),
+        )
+        staged = list(handler._pending_alerts)
+        assert len(staged) == 1
+
+        flush = asyncio.create_task(handler._flush([]))
+        # Bounded: a flush that never reaches the settings write fails here instead
+        # of hanging the run.
+        await asyncio.wait_for(in_settings_write.wait(), timeout=2)
+        flush.cancel()
+        with pytest.raises(asyncpg.InterfaceError):
+            await flush
+
+        # Raw ticks go first; nothing after the settings write ran (no alert insert).
+        assert calls == ["ws_option_trades", _SETTINGS_TABLE]
+        assert captured == []
+        assert interval_ba_mod._settings_recorded is False
+        assert interval_ba_mod._settings_failure_reported is False
+        assert handler._pending_alerts == staged
 
 
 # ----------------------------------------------------------------------
