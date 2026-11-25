@@ -74,8 +74,10 @@ const DOC_PATH = /docs\/superpowers\/(specs|plans)\/([a-z0-9._-]+)/g;
  * needed before `docs/`, so a Windows path, an MSYS path and a repo-relative
  * path all key alike. (The hooks also rewrite a leading MSYS `/x/` as `x:/`, to
  * compare project folders. A key has no drive in it, so it makes no difference
- * here.) A name outside [a-z0-9._-], a subfolder, `a.mdx` and `a.md.bak` have
- * no key.
+ * here.) A name outside [a-z0-9._-], `a.mdx` and `a.md.bak` have no key. A
+ * subfolder is read as the hooks read it: the first name after specs/ or
+ * plans/ is the key's name, so `specs/x.md/y.md` keys as `specs/x.md`, while
+ * `specs/sub/a.md` has none, since `sub` doesn't end in `.md`.
  *
  * @param {string} p
  * @returns {string | null}
@@ -126,7 +128,10 @@ export function unreviewed(paths, events) {
 
 /**
  * The paths as an indented list, then what to do about them. One waiver phrase
- * names every key: the owner's hook reads the list after "waive review".
+ * names every key: the owner's hook reads the list after "waive review". The
+ * review and waiver line is for the docs that have a key. A doc with none can
+ * have neither, so it gets only the rename line, and when no doc has a key that
+ * is the only fix.
  *
  * @param {string[]} paths
  * @returns {string}
@@ -139,14 +144,12 @@ function listAndFixes(paths) {
     if (key === null) keyless.push(p);
     else keys.push(key);
   }
-  const waiver =
-    keys.length > 0
-      ? `, or ask the owner to type "waive review ${keys.join(' ')}" at the start of a prompt`
-      : '';
-  const lines = [
-    ...paths.map((p) => `  ${p}`),
-    `Run the spec-reviewer on each (CLAUDE.md, Plan First)${waiver}. Then commit again.`,
-  ];
+  const lines = paths.map((p) => `  ${p}`);
+  if (keys.length > 0) {
+    lines.push(
+      `Run the spec-reviewer on each (CLAUDE.md, Plan First), or ask the owner to type "waive review ${keys.join(' ')}" at the start of a prompt. Then commit again.`,
+    );
+  }
   if (keyless.length > 0) {
     lines.push(
       `No review or waiver can name ${keyless.join(', ')}: a key needs a name of a-z, 0-9, ".", "_" and "-" directly under specs/ or plans/. Rename it before the commit.`,

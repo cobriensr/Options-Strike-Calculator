@@ -158,6 +158,11 @@ describe('docKey', () => {
       'docs/superpowers/specs/a.bak, docs/superpowers/plans/b.md',
       'plans/b.md',
     ],
+    [
+      'a folder named like a doc, as its own key, as the hooks do',
+      'docs/superpowers/specs/x.md/y.md',
+      'specs/x.md',
+    ],
   ])('keys %s', (_label, input, key) => {
     expect(docKey(input)).toBe(key);
   });
@@ -306,16 +311,41 @@ describe('blockMessage', () => {
     expect(message.endsWith('Rename it before the commit.')).toBe(true);
   });
 
-  it('offers no waiver phrase when no doc has a key', () => {
+  it('gives the rename as the only fix when no doc has a key', () => {
     const odd = 'docs/superpowers/specs/sub/a.md';
 
     const message = blockMessage([odd]);
 
+    // No review can be recorded for these, so running the reviewer or asking
+    // for a waiver would send Claude down a path that cannot end.
     expect(message).not.toContain('waive review');
+    expect(message).not.toContain('Run the spec-reviewer');
+    expect(message).toContain(`\n  ${odd}\n`);
+    expect(message.endsWith('Rename it before the commit.')).toBe(true);
+    expect(message.split('\n')).toHaveLength(3);
+  });
+
+  it('names every doc with no key in the one rename line', () => {
+    const odd = 'docs/superpowers/specs/sub/a.md';
+    const spaced = 'docs/superpowers/plans/my plan.md';
+
+    const message = blockMessage([odd, spaced]);
+
+    expect(message).not.toContain('Run the spec-reviewer');
     expect(message).toContain(
-      'Run the spec-reviewer on each (CLAUDE.md, Plan First). Then commit again.',
+      `No review or waiver can name ${odd}, ${spaced}:`,
     );
-    expect(message).toContain(`No review or waiver can name ${odd}:`);
+  });
+
+  it('keeps the review line for the docs that have a key beside a rename line', () => {
+    const odd = 'docs/superpowers/specs/sub/a.md';
+
+    const lines = blockMessage([SPEC, odd]).split('\n');
+
+    expect(lines.at(-2)).toBe(
+      'Run the spec-reviewer on each (CLAUDE.md, Plan First), or ask the owner to type "waive review specs/a.md" at the start of a prompt. Then commit again.',
+    );
+    expect(lines.at(-1)).toContain(`No review or waiver can name ${odd}:`);
   });
 
   it('adds no rename note when every doc has a key', () => {
@@ -334,6 +364,18 @@ describe('missingLogMessage', () => {
         'Run the spec-reviewer on each (CLAUDE.md, Plan First), or ask the owner to type "waive review specs/a.md" at the start of a prompt. Then commit again.',
       ].join('\n'),
     );
+  });
+
+  it('gives the same fix lines as blockMessage when no doc has a key', () => {
+    const logPath = path.join('repo', '.claude', 'state', 'spec-reviews.tsv');
+    const odd = 'docs/superpowers/specs/sub/a.md';
+    const tail = (message) => message.split('\n').slice(1).join('\n');
+
+    const message = missingLogMessage(logPath, [odd]);
+
+    expect(message.split('\n')[0]).toContain('There is no review log at');
+    expect(tail(message)).toBe(tail(blockMessage([odd])));
+    expect(message).not.toContain('Run the spec-reviewer');
   });
 });
 
