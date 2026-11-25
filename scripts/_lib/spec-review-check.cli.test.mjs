@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  DRIFTED,
   claudeCommit,
   git,
   headSubject,
@@ -250,6 +251,25 @@ describe('spec-review-check', () => {
       expect(headSubject(repo)).toBe('base');
     });
 
+    it('blocks, rather than passes, when git cannot list the added docs', () => {
+      // The two pathspec settings contradict each other, so only a git call
+      // that has a pathspec dies: the hook's listing, not the review gate's own
+      // diff, so an empty listing would let the spec step go quiet.
+      writeLog(repo, [entry('start', 'a1', 'specs/a.md')]);
+      stage(repo, SPEC);
+      review(repo);
+
+      const result = run(repo, 'git', ['commit', '-q', '-m', 'claude'], {
+        CLAUDECODE: '1',
+        GIT_GLOB_PATHSPECS: '1',
+        GIT_NOGLOB_PATHSPECS: '1',
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('pathspec settings are incompatible');
+      expect(headSubject(repo)).toBe('base');
+    });
+
     it('blocks a commit that adds a plan with no review on record', () => {
       writeLog(repo, REVIEWED);
       stage(repo, PLAN);
@@ -302,6 +322,24 @@ describe('spec-review-check', () => {
       expect(result.stderr).toContain(`\n  ${odd}\n`);
       expect(result.stderr).toContain(`No review or waiver can name ${odd}:`);
     });
+
+    it.each(['specs', 'plans'])(
+      'checks a doc under %s/ whose name is in upper case, as the hooks key it',
+      (folder) => {
+        // docKey and the bash hooks lower-case the path, so X.MD is x.md.
+        const upper = `docs/superpowers/${folder}/X.MD`;
+        writeLog(repo, REVIEWED);
+        stage(repo, upper);
+        review(repo);
+
+        const result = claudeCommit(repo);
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(BLOCKED);
+        expect(result.stderr).toContain(`\n  ${upper}\n`);
+        expect(headSubject(repo)).toBe('base');
+      },
+    );
 
     it('hands the check a glob character in a doc name as it is', () => {
       // a1.md has a review. The shell would read a[1].md as a pattern, and
@@ -430,6 +468,26 @@ describe('spec-review-check', () => {
         expect(during.stderr).not.toContain('spec-review gate');
         expect(during.status).toBe(0);
       });
+    });
+
+    it('still runs the review gate while a marker is in the git dir', () => {
+      // A hook that left the whole commit gate for a marker would pass the
+      // marker tests above, since they seal the tree. Here a staged file
+      // drifts after the seal, and the gate has to say so.
+      writeLog(repo, REVIEWED);
+      stage(repo, PLAN);
+      review(repo);
+      stage(repo, 'a.txt', 'changed after the review\n');
+      writeFileSync(
+        path.join(adminDir(repo), 'MERGE_HEAD'),
+        `${git(repo, 'rev-parse', 'HEAD')}\n`,
+      );
+
+      const result = claudeHook(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`${DRIFTED}\n  a.txt\n`);
+      expect(result.stderr).not.toContain('spec-review gate');
     });
 
     it('reads the markers in the git dir of a linked worktree, not .git', () => {

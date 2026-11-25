@@ -11,14 +11,18 @@
 # Enable once per clone: git config core.hooksPath .githooks
 [ "$CLAUDECODE" = "1" ] || exit 0
 
-GIT_DIR=$(git rev-parse --git-dir) || exit 1
+# Lower case on purpose: git exports GIT_DIR to a hook in a linked worktree,
+# and a shell variable of that name would reach every git call below.
+gitdir=$(git rev-parse --git-dir) || exit 1
 replaying=
 for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
-  if [ -e "$GIT_DIR/$marker" ]; then replaying=1; fi
+  if [ -e "$gitdir/$marker" ]; then replaying=1; fi
 done
 if [ -z "$replaying" ]; then
-  # --no-renames: a doc moved in from elsewhere counts as added.
-  ADDED=$(git diff --cached --no-renames --name-only --diff-filter=A -- 'docs/superpowers/specs/*.md' 'docs/superpowers/plans/*.md') || exit 1
+  # --no-renames: git would report a doc renamed inside specs/ or plans/ as a
+  # rename, not an addition. A move in from outside them is an addition anyway.
+  # :(icase): the review hooks lower-case a path, so docs/.../X.MD is a doc too.
+  ADDED=$(git diff --cached --no-renames --name-only --diff-filter=A -- ':(icase)docs/superpowers/specs/*.md' ':(icase)docs/superpowers/plans/*.md') || exit 1
   if [ -n "$ADDED" ]; then
     # One path per line: split on newlines only, so a name with a space stays
     # whole, and not on a glob character.
