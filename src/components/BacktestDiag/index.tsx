@@ -25,6 +25,17 @@ interface Props {
   onDismiss: () => void;
 }
 
+/**
+ * The opening range as a diagnostic reads it. Null only at the open, before
+ * the first bar has ended; a range before 10:00 ET covers only the bars ended
+ * so far, and is marked partial.
+ */
+function openingRangeText(range: HistorySnapshot['openingRange']): string {
+  if (!range) return 'none yet';
+  const partial = range.complete ? '' : ', partial';
+  return `${range.low.toFixed(0)}–${range.high.toFixed(0)} (${range.rangePts.toFixed(1)} pts${partial})`;
+}
+
 export default function BacktestDiag({
   snapshot,
   history,
@@ -70,12 +81,7 @@ export default function BacktestDiag({
           ).toFixed(2) + '%'
         : '—',
     ],
-    [
-      'Open Range',
-      snapshot.openingRange
-        ? `${snapshot.openingRange.low.toFixed(0)}–${snapshot.openingRange.high.toFixed(0)} (${snapshot.openingRange.rangePts.toFixed(1)} pts)`
-        : 'incomplete',
-    ],
+    ['Open Range', openingRangeText(snapshot.openingRange)],
     [
       'Yesterday',
       snapshot.yesterday

@@ -220,15 +220,51 @@ describe('BacktestDiag', () => {
     expect(screen.getByText('5785\u20135810 (25.0 pts)')).toBeInTheDocument();
   });
 
-  it('shows "incomplete" when opening range is null', () => {
+  // Under the as-of rule the opening range is null only at the open, before the
+  // first 9:30 ET bar has ended (candle index -1), and partial (`complete:
+  // false`) until 10:00 ET. The two read differently.
+  it('says "none yet" at the open, where no bar has ended and there is no opening range', () => {
     render(
       <BacktestDiag
-        snapshot={makeSnapshot({ openingRange: null })}
+        snapshot={makeSnapshot({ openingRange: null, candleIndex: -1 })}
         history={makeHistory()}
         {...timeProps}
       />,
     );
-    expect(screen.getByText('incomplete')).toBeInTheDocument();
+    expect(rowValue('Open Range')).toBe('none yet');
+    expect(screen.queryByText('incomplete')).not.toBeInTheDocument();
+    // Candle 0 of 78: no bar has ended.
+    expect(screen.getByText(/candle 0\/78/)).toBeInTheDocument();
+  });
+
+  it('marks a partial opening range, before 10:00 ET, as partial', () => {
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot({
+          openingRange: {
+            high: 5810,
+            low: 5785,
+            rangePts: 25.0,
+            complete: false,
+          },
+          candleIndex: 3,
+        })}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+    expect(rowValue('Open Range')).toBe('5785–5810 (25.0 pts, partial)');
+  });
+
+  it('shows a complete opening range with no mark', () => {
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+    expect(rowValue('Open Range')).toBe('5785–5810 (25.0 pts)');
   });
 
   it('displays yesterday data when present', () => {
