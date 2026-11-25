@@ -368,7 +368,11 @@ describe('useHistoryData: getStateAtTime', () => {
     expect(result.current.getStateAtTime(10, 0)).toBeNull();
   });
 
-  it('returns snapshot at exact candle time', async () => {
+  // The as-of rule (spec G2): a bar that starts at ET minute s has ended at
+  // slot T when s + 5 <= T, and a snapshot at T takes only bars that have.
+  // Schwab labels a candle by its start, so the bar that starts at T is still
+  // running at T and the one that started at T - 5 is the last one that ended.
+  it('returns the close of the bar that started 5 minutes before a 5-minute mark', async () => {
     mockHistoryFetch(mockHistory);
 
     const { result } = renderHook(() => useHistoryData('2024-03-04'));
@@ -377,16 +381,17 @@ describe('useHistoryData: getStateAtTime', () => {
       expect(result.current.hasHistory).toBe(true);
     });
 
-    // 10:00 AM ET = candle index 6
+    // 10:00 AM ET: the 9:55 bar (index 5) ended at 10:00; the 10:00 bar
+    // (index 6, close 5138) is still running.
     const snapshot = result.current.getStateAtTime(10, 0);
     expect(snapshot).not.toBeNull();
-    expect(snapshot!.spot).toBe(5138); // close of 10:00 candle
-    expect(snapshot!.spy).toBeCloseTo(513.8, 1); // spot / 10
-    expect(snapshot!.candleIndex).toBe(6);
+    expect(snapshot!.spot).toBe(5132); // close of the 9:55 bar
+    expect(snapshot!.spy).toBeCloseTo(513.2, 1); // spot / 10
+    expect(snapshot!.candleIndex).toBe(5);
     expect(snapshot!.totalCandles).toBe(13);
   });
 
-  it('returns previous candle for non-boundary time', async () => {
+  it('returns the last bar ended by a time between marks', async () => {
     mockHistoryFetch(mockHistory);
 
     const { result } = renderHook(() => useHistoryData('2024-03-04'));
@@ -395,13 +400,17 @@ describe('useHistoryData: getStateAtTime', () => {
       expect(result.current.hasHistory).toBe(true);
     });
 
-    // 10:03 AM ET is between 10:00 and 10:05 candles — should get 10:00
+    // 10:03 AM ET is inside the 10:00 bar, which has not ended, so the last
+    // bar that has is the 9:55 one.
     const snapshot = result.current.getStateAtTime(10, 3);
     expect(snapshot).not.toBeNull();
-    expect(snapshot!.candleIndex).toBe(6); // 10:00 candle
+    expect(snapshot!.candleIndex).toBe(5); // 9:55 bar
+    expect(snapshot!.spot).toBe(5132);
   });
 
-  it('returns first candle for pre-market time', async () => {
+  // Deliberate change from the old look-ahead lookup, which answered a time
+  // before the open with the first bar: a pre-open time has no as-of data.
+  it('returns null before the open', async () => {
     mockHistoryFetch(mockHistory);
 
     const { result } = renderHook(() => useHistoryData('2024-03-04'));
@@ -410,13 +419,12 @@ describe('useHistoryData: getStateAtTime', () => {
       expect(result.current.hasHistory).toBe(true);
     });
 
-    // 8:00 AM ET is before market open
-    const snapshot = result.current.getStateAtTime(8, 0);
-    expect(snapshot).not.toBeNull();
-    expect(snapshot!.candleIndex).toBe(0); // First candle
+    expect(result.current.getStateAtTime(8, 0)).toBeNull();
+    expect(result.current.getStateAtTime(9, 29)).toBeNull();
+    expect(result.current.getStateAtTime(9, 30)).not.toBeNull();
   });
 
-  it('computes running OHLC correctly', async () => {
+  it('at the open takes the first bar’s open for everything, and has no entry bar yet', async () => {
     mockHistoryFetch(mockHistory);
 
     const { result } = renderHook(() => useHistoryData('2024-03-04'));
@@ -425,23 +433,40 @@ describe('useHistoryData: getStateAtTime', () => {
       expect(result.current.hasHistory).toBe(true);
     });
 
-    // At 10:30 (last candle, index 12)
+    // 9:30 AM ET: no bar has ended.
+    const snapshot = result.current.getStateAtTime(9, 30)!;
+    expect(snapshot.spot).toBe(5100);
+    expect(snapshot.candleIndex).toBe(-1);
+    expect(snapshot.candle.datetime).toBe(spxCandles[0]!.datetime);
+  });
+
+  it('computes running OHLC over the bars ended by the slot', async () => {
+    mockHistoryFetch(mockHistory);
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    // 10:30 AM ET: bars 0..11 have ended, and the 10:30 bar (index 12) has
+    // not, so its high 5162 and close 5160 are not known yet.
     const snapshot = result.current.getStateAtTime(10, 30);
     expect(snapshot).not.toBeNull();
 
     const ohlc = snapshot!.runningOHLC;
     expect(ohlc.open).toBe(5100); // First candle's open
-    expect(ohlc.last).toBe(5160); // Last candle's close
-    // High should be the max high across all candles
-    expect(ohlc.high).toBe(5162);
-    // Low should be the min low across all candles
+    expect(ohlc.last).toBe(5157); // The 10:25 bar's close
+    // High: the max over bars 0..11
+    expect(ohlc.high).toBe(5160);
+    // Low: the min low across them
     expect(ohlc.low).toBe(5095);
   });
 
-  // The running range is taken over candles 0..index of the array it is
-  // given, so it only stays free of lookahead while each datetime appears
-  // once, in order. /api/history guarantees that (a doubled session once
-  // handed every snapshot of its day the full day's high and low).
+  // The running range is taken over the bars ended by the slot, so it only
+  // stays free of lookahead while each datetime appears once, in order.
+  // /api/history guarantees that (a doubled session once handed every
+  // snapshot of its day the full day's high and low).
   it('stops the running high and low at the requested time', async () => {
     mockHistoryFetch(mockHistory);
 
@@ -451,16 +476,22 @@ describe('useHistoryData: getStateAtTime', () => {
       expect(result.current.hasHistory).toBe(true);
     });
 
-    // 10:00 AM ET = candle index 6, so the 10:05..10:30 candles (day high
+    // 10:00 AM ET: bars 0..5 have ended, so the 10:00..10:30 bars (day high
     // 5162) are still in the future.
     const at1000 = result.current.getStateAtTime(10, 0)!.runningOHLC;
-    expect(at1000).toEqual({ open: 5100, high: 5140, low: 5095, last: 5138 });
+    expect(at1000).toEqual({ open: 5100, high: 5135, low: 5095, last: 5132 });
 
+    // 9:35 AM ET: only the first bar has ended.
+    const at0935 = result.current.getStateAtTime(9, 35)!.runningOHLC;
+    expect(at0935).toEqual({ open: 5100, high: 5110, low: 5095, last: 5105 });
+
+    // 9:30 AM ET, the open: none has, so the first bar's open is all that is
+    // known.
     const atOpen = result.current.getStateAtTime(9, 30)!.runningOHLC;
-    expect(atOpen).toEqual({ open: 5100, high: 5110, low: 5095, last: 5105 });
+    expect(atOpen).toEqual({ open: 5100, high: 5100, low: 5100, last: 5100 });
   });
 
-  it('computes opening range from first 6 candles', async () => {
+  it('the opening range is null at 9:30 ET, partial before 10:00 ET and complete from 10:00 ET', async () => {
     mockHistoryFetch(mockHistory);
 
     const { result } = renderHook(() => useHistoryData('2024-03-04'));
@@ -469,17 +500,71 @@ describe('useHistoryData: getStateAtTime', () => {
       expect(result.current.hasHistory).toBe(true);
     });
 
-    const snapshot = result.current.getStateAtTime(10, 30);
-    expect(snapshot).not.toBeNull();
-    expect(snapshot!.openingRange).not.toBeNull();
+    // No opening-range bar has ended at the open.
+    expect(result.current.getStateAtTime(9, 30)!.openingRange).toBeNull();
 
-    const or = snapshot!.openingRange!;
-    expect(or.complete).toBe(true); // We have >= 6 candles
-    // High of first 6 candles: max of 5110, 5115, 5120, 5125, 5130, 5135
-    expect(or.high).toBe(5135);
-    // Low of first 6 candles: min of 5095, 5100, 5108, 5115, 5120, 5125
-    expect(or.low).toBe(5095);
-    expect(or.rangePts).toBe(40);
+    // 9:35: the first bar. 9:55: bars 0..4, max of 5110, 5115, 5120, 5125,
+    // 5130 and min of 5095, 5100, 5108, 5115, 5120.
+    expect(result.current.getStateAtTime(9, 35)!.openingRange).toEqual({
+      high: 5110,
+      low: 5095,
+      rangePts: 15,
+      complete: false,
+    });
+    expect(result.current.getStateAtTime(9, 55)!.openingRange).toEqual({
+      high: 5130,
+      low: 5095,
+      rangePts: 35,
+      complete: false,
+    });
+
+    // 10:00 on: bars 0..5, the whole 30 minutes. Later bars don't change it.
+    const full = { high: 5135, low: 5095, rangePts: 40, complete: true };
+    expect(result.current.getStateAtTime(10, 0)!.openingRange).toEqual(full);
+    expect(result.current.getStateAtTime(10, 30)!.openingRange).toEqual(full);
+  });
+
+  it('reads the VIX family from the bar ended by the slot on each symbol’s own candles', async () => {
+    // Two bars each, 9:30 and 9:35 ET, so the slot decides which one.
+    const twoBars = (a: number, b: number) => ({
+      candles: [
+        makeCandle(9, 30, a, a + 0.5, a - 0.5, a + 0.1),
+        makeCandle(9, 35, b, b + 0.5, b - 0.5, b + 0.1),
+      ],
+      previousClose: a,
+      previousDay: null,
+    });
+    mockHistoryFetch({
+      ...mockHistory,
+      vix: twoBars(14, 15),
+      vix1d: twoBars(10, 11),
+      vix9d: twoBars(12, 13),
+      vvix: twoBars(85, 86),
+    });
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    // 9:30: no bar has ended, so each takes its first bar's open.
+    const atOpen = result.current.getStateAtTime(9, 30)!;
+    expect([atOpen.vix, atOpen.vix1d, atOpen.vix9d, atOpen.vvix]).toEqual([
+      14, 10, 12, 85,
+    ]);
+
+    // 9:35: the first bar ended, so its close, not the 9:35 bar's.
+    const at0935 = result.current.getStateAtTime(9, 35)!;
+    expect([at0935.vix, at0935.vix1d, at0935.vix9d, at0935.vvix]).toEqual([
+      14.1, 10.1, 12.1, 85.1,
+    ]);
+
+    // 9:40: the second bar ended.
+    const at0940 = result.current.getStateAtTime(9, 40)!;
+    expect([at0940.vix, at0940.vix1d, at0940.vix9d, at0940.vvix]).toEqual([
+      15.1, 11.1, 13.1, 86.1,
+    ]);
   });
 
   it('exposes previousClose for gap calculation', async () => {
@@ -554,9 +639,34 @@ describe('useHistoryData: edge cases', () => {
       expect(result.current.hasHistory).toBe(true);
     });
 
+    // 9:40 AM ET: the 9:30 and 9:35 bars have ended, and the third is
+    // running. Before 10:00 ET the range is partial, whatever the bar count.
     const snapshot = result.current.getStateAtTime(9, 40);
-    expect(snapshot!.openingRange).not.toBeNull();
-    expect(snapshot!.openingRange!.complete).toBe(false);
+    expect(snapshot!.openingRange).toEqual({
+      high: 5115,
+      low: 5095,
+      rangePts: 20,
+      complete: false,
+    });
+  });
+
+  // The module returns null over a guessed value: a first bar that is not the
+  // 9:30 ET open would make another bar's open the day's open.
+  it('a date whose first bar is not 9:30 ET has history but no state', async () => {
+    const lateOpen: HistoryResponse = {
+      ...mockHistory,
+      spx: { ...mockHistory.spx, candles: spxCandles.slice(1) },
+      candleCount: 12,
+    };
+    mockHistoryFetch(lateOpen);
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    expect(result.current.getStateAtTime(10, 0)).toBeNull();
   });
 
   it('returns null previousDay when history has none', async () => {

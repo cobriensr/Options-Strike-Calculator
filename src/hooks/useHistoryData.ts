@@ -21,11 +21,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { z } from 'zod';
 import type { VIXDataMap, VIXDayData } from '../types';
-import type {
-  HistoryResponse,
-  HistoryCandle,
-  SymbolDayData,
-} from '../types/api';
+import type { HistoryResponse } from '../types/api';
 import {
   INVALID_SHAPE_ERROR,
   NOT_JSON_ERROR,
@@ -33,62 +29,22 @@ import {
 } from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getAccessMode } from '../utils/auth';
+import { ET_AHEAD_OF_CT_MIN } from '../utils/entry-time';
 import { getErrorMessage } from '../utils/error';
-import { getETToday, getETTotalMinutes } from '../utils/timezone';
+import {
+  historySnapshotAt,
+  type HistorySnapshot,
+} from '../utils/snapshot-slot';
+import { getETToday } from '../utils/timezone';
 import { getMarketCloseHourET } from '../data/marketHours';
 
 // ============================================================
 // TYPES
 // ============================================================
 
-export interface HistorySnapshot {
-  /** SPX price at the selected time */
-  spot: number;
-  /** SPY-equivalent price (spot / 10) */
-  spy: number;
-  /** Running SPX OHLC from market open to the selected time */
-  runningOHLC: {
-    open: number;
-    high: number;
-    low: number;
-    last: number;
-  };
-  /** First 30 minutes of SPX trading (first 6 candles) */
-  openingRange: {
-    high: number;
-    low: number;
-    rangePts: number;
-    complete: boolean;
-  } | null;
-  /** Previous trading day's SPX OHLC for clustering */
-  yesterday: {
-    date: string;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    rangePct: number;
-    rangePts: number;
-  } | null;
-  /** VIX value at the selected time */
-  vix: number | null;
-  /** VIX previous close (for RV/IV calculation) */
-  vixPrevClose: number | null;
-  /** VIX1D value at the selected time */
-  vix1d: number | null;
-  /** VIX9D value at the selected time */
-  vix9d: number | null;
-  /** VVIX value at the selected time */
-  vvix: number | null;
-  /** SPX previous close */
-  previousClose: number;
-  /** The SPX candle matching the selected time */
-  candle: HistoryCandle;
-  /** Index of the candle in the full day */
-  candleIndex: number;
-  /** Total candles for the day */
-  totalCandles: number;
-}
+// The snapshot's shape and assembly live in `utils/snapshot-slot`, which the
+// server builder shares; the type stays importable from here.
+export type { HistorySnapshot };
 
 export interface UseHistoryDataReturn {
   history: HistoryResponse | null;
@@ -212,63 +168,8 @@ function isAbortError(err: unknown): boolean {
 }
 
 // ============================================================
-// CANDLE LOOKUP
+// DAILY VIX OHLC FROM THE CANDLES
 // ============================================================
-
-/**
- * Find the candle at or just before the given ET time.
- */
-function findCandleAtTime(
-  candles: readonly HistoryCandle[],
-  hourET: number,
-  minuteET: number,
-): { candle: HistoryCandle; index: number } | null {
-  if (candles.length === 0) return null;
-
-  const targetMin = hourET * 60 + minuteET;
-
-  for (let i = candles.length - 1; i >= 0; i--) {
-    const c = candles[i]!;
-    const d = new Date(c.datetime);
-    const candleMin = getETTotalMinutes(d);
-
-    if (candleMin <= targetMin) {
-      return { candle: c, index: i };
-    }
-  }
-
-  return { candle: candles[0]!, index: 0 };
-}
-
-/**
- * Get the close price of a symbol's candle at the given ET time.
- */
-function getSymbolPriceAtTime(
-  data: SymbolDayData,
-  hourET: number,
-  minuteET: number,
-): number | null {
-  const match = findCandleAtTime(data.candles, hourET, minuteET);
-  return match ? match.candle.close : null;
-}
-
-function computeRunningOHLC(
-  candles: readonly HistoryCandle[],
-  endIdx: number,
-): { open: number; high: number; low: number; last: number } {
-  const open = candles[0]!.open;
-  const last = candles[endIdx]!.close;
-  let high = -Infinity;
-  let low = Infinity;
-
-  for (let i = 0; i <= endIdx; i++) {
-    const c = candles[i]!;
-    if (c.high > high) high = c.high;
-    if (c.low < low) low = c.low;
-  }
-
-  return { open, high, low, last };
-}
 
 /**
  * The day's VIX OHLC from `history`'s 5-min VIX candles. Null when
@@ -318,29 +219,6 @@ export function useHistoryVixOHLCFallback(
     if (hasTableEntry || !fromHistory || vixOHLC === fromHistory) return;
     setVixOHLC(fromHistory);
   }, [hasTableEntry, fromHistory, vixOHLC, setVixOHLC]);
-}
-
-function computeOpeningRange(
-  candles: readonly HistoryCandle[],
-): { high: number; low: number; rangePts: number; complete: boolean } | null {
-  if (candles.length === 0) return null;
-
-  const count = Math.min(candles.length, 6); // 6 candles × 5 min = 30 min
-  let high = -Infinity;
-  let low = Infinity;
-
-  for (let i = 0; i < count; i++) {
-    const c = candles[i]!;
-    if (c.high > high) high = c.high;
-    if (c.low < low) low = c.low;
-  }
-
-  return {
-    high,
-    low,
-    rangePts: Math.round((high - low) * 100) / 100,
-    complete: count >= 6,
-  };
 }
 
 // ============================================================
@@ -428,44 +306,16 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
   const loading = !isPublic && heldLoading;
   const error = isPublic ? null : heldError;
 
+  // The page's ET time, as the as-of slot the shared module takes (CT minutes
+  // since midnight). Every value comes from bars that have ended by it.
   const getStateAtTime = useCallback(
-    (hourET: number, minuteET: number): HistorySnapshot | null => {
-      if (!history || history.spx.candles.length === 0) return null;
-
-      const spxCandles = history.spx.candles;
-      const match = findCandleAtTime(spxCandles, hourET, minuteET);
-      if (!match) return null;
-
-      const { candle, index } = match;
-      const runningOHLC = computeRunningOHLC(spxCandles, index);
-      const openingRange = computeOpeningRange(spxCandles);
-
-      const spot = candle.close;
-      const spy = Math.round((spot / 10) * 100) / 100;
-
-      // VIX values at the same time
-      const vix = getSymbolPriceAtTime(history.vix, hourET, minuteET);
-      const vix1d = getSymbolPriceAtTime(history.vix1d, hourET, minuteET);
-      const vix9d = getSymbolPriceAtTime(history.vix9d, hourET, minuteET);
-      const vvix = getSymbolPriceAtTime(history.vvix, hourET, minuteET);
-
-      return {
-        spot,
-        spy,
-        runningOHLC,
-        openingRange,
-        yesterday: history.spx.previousDay,
-        vix,
-        vixPrevClose: history.vix.previousClose || null,
-        vix1d,
-        vix9d,
-        vvix,
-        previousClose: history.spx.previousClose,
-        candle,
-        candleIndex: index,
-        totalCandles: spxCandles.length,
-      };
-    },
+    (hourET: number, minuteET: number): HistorySnapshot | null =>
+      history
+        ? historySnapshotAt(
+            history,
+            hourET * 60 + minuteET - ET_AHEAD_OF_CT_MIN,
+          )
+        : null,
     [history],
   );
 

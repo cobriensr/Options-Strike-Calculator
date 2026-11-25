@@ -65,6 +65,13 @@ const FIVE_MIN_MS = 5 * 60_000;
 const CANDLE_COUNT = 15;
 const LAST_CANDLE_SPX = 7700 + CANDLE_COUNT - 1;
 const LAST_CANDLE_VIX = 18 + (CANDLE_COUNT - 1) * 0.02;
+/**
+ * A past date's VIX at 9:40 CT (10:40 ET), the as-of rule: the last bar ended
+ * by then is the 10:35 one, the one before the last candle, whose 10:40 bar is
+ * still running. `LAST_CANDLE_VIX` is today's live check, where the last bar's
+ * VIX is the right value.
+ */
+const AS_OF_940_VIX = 18 + (CANDLE_COUNT - 2) * 0.02;
 
 function candles(base: number, step: number): HistoryCandle[] {
   return Array.from({ length: CANDLE_COUNT }, (_, i) => {
@@ -1038,7 +1045,8 @@ describe("the selected date's daily VIX OHLC", () => {
     const { iv, historySnapshot } = hook.result.current;
     expect(historySnapshot).not.toBeNull();
     expect(iv.vixInput).toBe(historySnapshot!.vix!.toFixed(2));
-    expect(iv.vixInput).toBe(LAST_CANDLE_VIX.toFixed(2));
+    expect(iv.vixInput).toBe(AS_OF_940_VIX.toFixed(2));
+    expect(iv.vixInput).not.toBe(LAST_CANDLE_VIX.toFixed(2));
     expect(iv.vixInput).not.toBe(candleVixOHLC().open.toFixed(2));
     expect(iv.vixInput).not.toBe(SNAPSHOT_VIX_OHLC.open.toFixed(2));
   };

@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
+  historySnapshotAt,
   priceContextAsOf,
   spxSlotStateAsOf,
   symbolPriceAsOf,
   type SlotCandle,
 } from '../../utils/snapshot-slot';
+import type {
+  HistoryCandle,
+  HistoryResponse,
+  SymbolDayData,
+} from '../../types/api';
 
 // The 9:30 ET open on a winter date (EST, UTC-5) and a summer date (EDT,
 // UTC-4). The rule reads the ET wall clock, so both must give one answer.
@@ -397,11 +403,11 @@ function startMinuteOf(candle: SlotCandle): number {
  * and close of a bar that has started but not ended. A bar that has ended is
  * left alone, and so is the open of a running bar, which is a print.
  */
-function withFutureReplaced(
-  day: readonly SlotCandle[],
+function withFutureReplaced<T extends SlotCandle>(
+  day: readonly T[],
   slotMinuteCT: number,
   bad: number,
-): SlotCandle[] {
+): T[] {
   const slotET = slotMinuteCT + CT_BEHIND_ET_MIN;
   return day.map((c) => {
     const start = startMinuteOf(c);
@@ -885,6 +891,208 @@ describe('look-ahead sweep (spec G2): symbolPriceAsOf', () => {
           symbolPriceAsOf(withFutureReplaced(day, slot, bad), slot),
           `slot ${slot}`,
         ).toBe(want);
+      }
+    },
+  );
+});
+
+// ── historySnapshotAt: the page's whole snapshot, as of a slot ──────────────
+
+const PREVIOUS_DAY = {
+  date: '2026-07-14',
+  open: 5980,
+  high: 6010,
+  low: 5960,
+  close: 5990,
+  rangePct: 0.84,
+  rangePts: 50,
+};
+
+/** `asOfDay(count)` as a history series, every price divided by `divisor`. */
+function seriesOf(
+  count: number,
+  divisor: number,
+  previousClose: number,
+): SymbolDayData {
+  return {
+    candles: asOfDay(count).map((c) => ({
+      datetime: c.datetime,
+      time: `bar ${(c.datetime - AS_OF_OPEN_MS) / BAR_MS}`,
+      open: c.open / divisor,
+      high: c.high / divisor,
+      low: c.low / divisor,
+      close: c.close / divisor,
+    })),
+    previousClose,
+    previousDay: null,
+  };
+}
+
+/**
+ * A full 2026-07-15 session: SPX as `asOfDay`, VIX its prices over 300, VIX1D
+ * absent (it often is), VIX9D and VVIX its prices over 400.
+ */
+function asOfHistory(): HistoryResponse {
+  return {
+    date: '2026-07-15',
+    spx: { ...seriesOf(78, 1, 5990), previousDay: PREVIOUS_DAY },
+    vix: seriesOf(78, 300, 17),
+    vix1d: { candles: [], previousClose: 12, previousDay: null },
+    vix9d: seriesOf(78, 400, 0),
+    vvix: seriesOf(78, 400, 0),
+    candleCount: 78,
+    asOf: '2026-07-15T20:00:00Z',
+  };
+}
+
+describe('historySnapshotAt', () => {
+  const history = asOfHistory();
+  const bar = (i: number): HistoryCandle => history.spx.candles[i]!;
+
+  it('at 8:30 CT, the open: the first bar’s open everywhere, and no range yet', () => {
+    expect(historySnapshotAt(history, 510)).toEqual({
+      spot: 6000,
+      spy: 600,
+      runningOHLC: { open: 6000, high: 6000, low: 6000, last: 6000 },
+      openingRange: null,
+      yesterday: PREVIOUS_DAY,
+      vix: 6000 / 300,
+      vixPrevClose: 17,
+      vix1d: null,
+      vix9d: 6000 / 400,
+      vvix: 6000 / 400,
+      previousClose: 5990,
+      candle: bar(0),
+      candleIndex: -1,
+      totalCandles: 78,
+    });
+  });
+
+  it('at 9:00 CT, 10:00 ET: the close of the bar that started at 9:55, and a complete range', () => {
+    expect(historySnapshotAt(history, 540)).toEqual({
+      spot: 6006,
+      spy: 600.6,
+      runningOHLC: { open: 6000, high: 6008, low: 5998, last: 6006 },
+      openingRange: { high: 6008, low: 5998, rangePts: 10, complete: true },
+      yesterday: PREVIOUS_DAY,
+      vix: 6006 / 300,
+      vixPrevClose: 17,
+      vix1d: null,
+      vix9d: 6006 / 400,
+      vvix: 6006 / 400,
+      previousClose: 5990,
+      candle: bar(5),
+      candleIndex: 5,
+      totalCandles: 78,
+    });
+  });
+
+  it('rounds SPY to the cent', () => {
+    // Bar 0's close is 6001: 600.1. Bar 3's close, 6004, gives 600.4.
+    expect(historySnapshotAt(history, 515)?.spy).toBe(600.1);
+    expect(historySnapshotAt(history, 530)?.spy).toBe(600.4);
+    const odd = {
+      ...history,
+      spx: {
+        ...history.spx,
+        candles: history.spx.candles.map((c, i) =>
+          i === 0 ? { ...c, close: 6001.57 } : c,
+        ),
+      },
+    };
+    expect(historySnapshotAt(odd, 515)?.spy).toBe(600.16);
+  });
+
+  it('passes the previous close, yesterday and the VIX previous close through', () => {
+    const snapshot = historySnapshotAt(history, 600)!;
+    expect(snapshot.previousClose).toBe(5990);
+    expect(snapshot.yesterday).toBe(PREVIOUS_DAY);
+    expect(snapshot.vixPrevClose).toBe(17);
+  });
+
+  it('turns a VIX previous close of 0 into null', () => {
+    const noPrev = { ...history, vix: { ...history.vix, previousClose: 0 } };
+    expect(historySnapshotAt(noPrev, 600)?.vixPrevClose).toBeNull();
+  });
+
+  it('reads each symbol as of the slot on its own candles', () => {
+    // VIX has one bar at 10:00 ET and nothing before it.
+    const sparseVix: SymbolDayData = {
+      candles: [
+        {
+          datetime: AS_OF_OPEN_MS + 30 * MINUTE_MS,
+          time: '10:00',
+          open: 15,
+          high: 15.5,
+          low: 14.9,
+          close: 15.2,
+        },
+      ],
+      previousClose: 17,
+      previousDay: null,
+    };
+    const sparse = { ...history, vix: sparseVix };
+
+    expect(historySnapshotAt(sparse, 535)?.vix).toBeNull(); // 9:55 ET
+    expect(historySnapshotAt(sparse, 540)?.vix).toBe(15); // 10:00 ET, running
+    expect(historySnapshotAt(sparse, 545)?.vix).toBe(15.2); // ended
+    // The others are not held back by it.
+    expect(historySnapshotAt(sparse, 535)?.vix9d).toBe(6005 / 400);
+  });
+
+  it('is null with no SPX candles, before the open, and for a slot that is not a number', () => {
+    const noSpx = { ...history, spx: { ...history.spx, candles: [] } };
+    expect(historySnapshotAt(noSpx, 600)).toBeNull();
+    expect(historySnapshotAt(history, 509)).toBeNull();
+    expect(historySnapshotAt(history, Number.NaN)).toBeNull();
+  });
+
+  it('is null when the SPX session does not start at 9:30 ET, not a guess from another bar', () => {
+    const late = {
+      ...history,
+      spx: { ...history.spx, candles: history.spx.candles.slice(1) },
+    };
+    expect(historySnapshotAt(late, 600)).toBeNull();
+  });
+});
+
+describe('look-ahead sweep (spec G2): historySnapshotAt', () => {
+  const history = asOfHistory();
+
+  /** Every symbol's future at `slot` replaced by `bad` (VIX1D has no bars). */
+  function perturbed(slot: number, bad: number): HistoryResponse {
+    const swap = (data: SymbolDayData): SymbolDayData => ({
+      ...data,
+      candles: withFutureReplaced(data.candles, slot, bad),
+    });
+    return {
+      ...history,
+      spx: swap(history.spx),
+      vix: swap(history.vix),
+      vix1d: swap(history.vix1d),
+      vix9d: swap(history.vix9d),
+      vvix: swap(history.vvix),
+    };
+  }
+
+  /** The snapshot without `candle`, which only identifies the position. */
+  function withoutCandle(snapshot: ReturnType<typeof historySnapshotAt>) {
+    if (snapshot == null) return null;
+    const { candle, ...rest } = snapshot;
+    return { ...rest, candleDatetime: candle.datetime };
+  }
+
+  it.each(FUTURE_VALUES)(
+    'bars the slot has not ended, in all five symbols, replaced with %s, change nothing',
+    (_name, bad) => {
+      for (const slot of SWEEP_SLOTS) {
+        const want = historySnapshotAt(history, slot);
+        // Not vacuous: from the open on there is a snapshot to compare.
+        if (slot >= 510) expect(want, `slot ${slot}`).not.toBeNull();
+        expect(
+          withoutCandle(historySnapshotAt(perturbed(slot, bad), slot)),
+          `slot ${slot}`,
+        ).toEqual(withoutCandle(want));
       }
     },
   );

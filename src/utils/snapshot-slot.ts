@@ -1,14 +1,16 @@
 /**
  * What a `market_snapshots` row labelled with a slot may know about the SPX
  * price, under the as-of rule (server snapshot builder spec, G2: no
- * look-ahead). The backfill and the server builder share this module, and
- * `api/` imports it, so every non-type relative import here needs `.js`.
+ * look-ahead). The backfill, the server builder and the page's backtest view
+ * (`useHistoryData`) share this module, and `api/` imports it, so every
+ * non-type relative import here needs `.js`.
  */
 
 import {
   CASH_OPEN_MIN_ET,
   OPENING_RANGE_END_MIN_ET,
 } from '../data/marketHours.js';
+import type { HistoryCandle, HistoryResponse } from '../types/api.js';
 import { ET_AHEAD_OF_CT_MIN } from './entry-time.js';
 import { getETTotalMinutes } from './timezone.js';
 
@@ -221,6 +223,117 @@ export function symbolPriceAsOf(
     price = candles[lastStarted]?.open;
   }
   return price != null && isPrice(price) ? price : null;
+}
+
+/** What the page's backtest view knows at one slot of one session. */
+export interface HistorySnapshot {
+  /**
+   * SPX price at the slot: the close of the last bar ended by it; the first
+   * bar's open at the open.
+   */
+  spot: number;
+  /** SPY-equivalent price (spot / 10) */
+  spy: number;
+  /** Running SPX OHLC over the bars ended by the slot. */
+  runningOHLC: {
+    open: number;
+    high: number;
+    low: number;
+    last: number;
+  };
+  /**
+   * The 9:30-10:00 ET bars ended by the slot: null until the first has,
+   * partial before 10:00 ET and complete from 10:00 ET.
+   */
+  openingRange: {
+    high: number;
+    low: number;
+    rangePts: number;
+    complete: boolean;
+  } | null;
+  /** Previous trading day's SPX OHLC for clustering */
+  yesterday: {
+    date: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    rangePct: number;
+    rangePts: number;
+  } | null;
+  /** VIX value at the slot, as of it. */
+  vix: number | null;
+  /** VIX previous close (for RV/IV calculation) */
+  vixPrevClose: number | null;
+  /** VIX1D value at the slot, as of it. */
+  vix1d: number | null;
+  /** VIX9D value at the slot, as of it. */
+  vix9d: number | null;
+  /** VVIX value at the slot, as of it. */
+  vvix: number | null;
+  /** SPX previous close */
+  previousClose: number;
+  /**
+   * Identifies the as-of position, for React keys and labels. It is the last
+   * bar ended by the slot, or the first bar at the open. At the open its high,
+   * low and close are not yet known, so never read its prices: use `spot`,
+   * `runningOHLC` and `openingRange`.
+   */
+  candle: HistoryCandle;
+  /** Index of the last bar ended by the slot; -1 at the open. */
+  candleIndex: number;
+  /** Total candles for the day */
+  totalCandles: number;
+}
+
+/**
+ * The page's whole backtest snapshot at a slot, from the bars that have ended
+ * by it. This is `useHistoryData.getStateAtTime` without React, so the server
+ * builder reads the same values the page does.
+ *
+ * The as-of rule (server snapshot builder spec, call 1): "A row at slot T
+ * uses only bars that end at or before T." SPX comes from `spxSlotStateAsOf`
+ * (spot, running OHLC, opening range and the entry index), and VIX, VIX1D,
+ * VIX9D and VVIX each from `symbolPriceAsOf` on their own candles. Yesterday,
+ * the previous close and the VIX previous close pass through (a VIX previous
+ * close of 0, which `/api/history` sends for an unknown one, is null).
+ *
+ * Null over a guessed value: `null` whenever `spxSlotStateAsOf` is null (no
+ * SPX candles, a slot that is not finite or is before the open, a first bar
+ * not at 9:30 ET, and the other cases it lists). It never throws: it runs
+ * during App render.
+ *
+ * @param slotMinuteCT Minutes since midnight CT, as `parseEntryTimeMinutes`
+ * returns them: 8:30 AM CT is 510.
+ */
+export function historySnapshotAt(
+  history: HistoryResponse,
+  slotMinuteCT: number,
+): HistorySnapshot | null {
+  const candles = history.spx.candles;
+  const state = spxSlotStateAsOf(candles, slotMinuteCT);
+  if (state == null) return null;
+
+  // At the open no bar has ended, and the first one stands in for the position.
+  const candle = candles[Math.max(state.entryIndex, 0)];
+  if (candle == null) return null;
+
+  return {
+    spot: state.spot,
+    spy: Math.round((state.spot / 10) * 100) / 100,
+    runningOHLC: state.runningOHLC,
+    openingRange: state.openingRange,
+    yesterday: history.spx.previousDay,
+    vix: symbolPriceAsOf(history.vix.candles, slotMinuteCT),
+    vixPrevClose: history.vix.previousClose || null,
+    vix1d: symbolPriceAsOf(history.vix1d.candles, slotMinuteCT),
+    vix9d: symbolPriceAsOf(history.vix9d.candles, slotMinuteCT),
+    vvix: symbolPriceAsOf(history.vvix.candles, slotMinuteCT),
+    previousClose: history.spx.previousClose,
+    candle,
+    candleIndex: state.entryIndex,
+    totalCandles: candles.length,
+  };
 }
 
 /**
