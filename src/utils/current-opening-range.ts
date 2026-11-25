@@ -1,3 +1,8 @@
+import { isTradingDay, priorTradingDay } from '../data/marketHours.js';
+import type { IntradayResponse } from '../types/api';
+
+type OpeningRange = NonNullable<IntradayResponse['openingRange']>;
+
 /**
  * Which held opening range is the current one.
  *
@@ -24,12 +29,6 @@
  *
  * @param etToday Today's ET date, YYYY-MM-DD.
  */
-
-import { isTradingDay, priorTradingDay } from '../data/marketHours.js';
-import type { IntradayResponse } from '../types/api';
-
-export type OpeningRange = NonNullable<IntradayResponse['openingRange']>;
-
 export function currentOpeningRange(
   intraday:
     | Pick<IntradayResponse, 'sessionDate' | 'openingRange'>
