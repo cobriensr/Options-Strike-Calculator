@@ -223,6 +223,10 @@ For the unsettled keys:
 
   The block message names each doc and both fixes: run the spec-reviewer, or the owner types the waiver phrase. A missing log blocks, naming the file. Any other error blocks too, as with the review gate. A line it can't parse is skipped.
 
+  - **A doc with no key blocks too:** a name outside `[A-Za-z0-9._-]`, such as one with a space. No hook can record a review or a waiver for it, so passing it would let a file name dodge the gate. The message tells Claude to rename it.
+  - **The waiver phrase in the message** names every blocked key, separated by spaces, because the waiver reads a list.
+  - **A non-ASCII name** may reach the check quoted, through git's `core.quotepath`. It has no key either way, so it blocks.
+
 - **Node builtins only,** for both `scripts/spec-review-check.mjs` and `scripts/_lib/spec-review-log.mjs`. The hook runs them in worktrees that may have no `node_modules`, the same reason `scripts/_lib/git-run.mjs` gives for the review gate.
 - **Only added docs.** A later commit that changes a doc (an "As built" note, a checked box) passes, as the rule says.
 - **No time condition.** A commit can't tell when the doc was written, so any recorded review counts.
