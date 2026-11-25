@@ -1050,6 +1050,202 @@ describe('useSnapshotSave — the cluster multipliers a row carries', () => {
 });
 
 // ============================================================
+// A ROW SAVED WITHOUT YESTERDAY'S FIELDS IS POSTED AGAIN WHEN THEY ARRIVE
+// ============================================================
+
+// Each key posts once per session and a 200 keeps it. A row saved in the gap
+// before yesterday arrives (null multiplier or null RV: the server's own test
+// for "without yesterday") would stay empty for the whole slot, though
+// yesterday lands seconds later. So a key saved marked is posted once more when
+// its mark clears, while it is still the page's entry time. The re-post is
+// armed by the marked POST's 200, not by sending it: a re-post that went out
+// while the marked POST was in flight could commit first, and the marked
+// insert land second and leave the row marked.
+describe('useSnapshotSave — a marked row is posted again when its mark clears', () => {
+  /** What a save carries while the app has no current yesterday. */
+  const gap = {
+    meta: { ...baseMeta, clusterMult: null },
+    signals: { ...defaultSignals, rvAnnualized: null },
+  };
+  /** The same slot once yesterday has arrived. */
+  const arrived = {
+    meta: { ...baseMeta, clusterMult: 1.2 },
+    signals: {
+      ...defaultSignals,
+      rvAnnualized: 0.12,
+      clusterPutMult: 1.3,
+      clusterCallMult: 1.1,
+    },
+  };
+  type Inputs = { meta: SnapshotMeta; signals: ComputedSignals };
+
+  /** Let a POST's answer reach its handler (only Date is faked here). */
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  function renderSave(initial: Inputs) {
+    return renderHook(
+      ({ meta, signals }: Inputs) =>
+        useSnapshotSave(makeResults(), signals, meta, true),
+      { initialProps: initial },
+    );
+  }
+
+  it('posts the key once more with the fields when yesterday arrives within the slot', async () => {
+    const { rerender } = renderSave(gap);
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body(0).clusterMult).toBeNull();
+
+    rerender(arrived);
+    await settle();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(body(1)).toMatchObject({
+      entryTime: baseMeta.entryTime,
+      clusterMult: 1.2,
+      clusterPutMult: 1.3,
+      clusterCallMult: 1.1,
+      rvAnnualized: 0.12,
+    });
+  });
+
+  it('posts it once more only: later renders post nothing', async () => {
+    const { rerender } = renderSave(gap);
+    await settle();
+    rerender(arrived);
+    await settle();
+    for (let i = 0; i < 3; i++) {
+      rerender({ ...arrived });
+      await settle();
+    }
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('posts nothing more while the mark stays', async () => {
+    const { rerender } = renderSave(gap);
+    await settle();
+    for (let i = 0; i < 3; i++) {
+      rerender({ ...gap });
+      await settle();
+    }
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not post a key that saved with its fields again', async () => {
+    const { rerender } = renderSave(arrived);
+    await settle();
+    rerender({ ...arrived });
+    await settle();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not post it again once the slot has moved on', async () => {
+    const { rerender } = renderSave(gap);
+    await settle();
+    // The next slot, also saved in the gap.
+    rerender({ ...gap, meta: { ...gap.meta, entryTime: '09:40' } });
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    rerender({ ...arrived, meta: { ...arrived.meta, entryTime: '09:40' } });
+    await settle();
+
+    // Only the slot that is the entry time now is posted again.
+    const slots = fetchSpy.mock.calls.map((_c: unknown, n: number) => {
+      return body(n).entryTime;
+    });
+    expect(slots).toEqual(['09:35', '09:40', '09:40']);
+  });
+
+  it('waits for RV when the owner’s edit gave a multiplier: the mark clears when RV arrives', async () => {
+    // An edited yesterday range gives the cluster inputs (a multiplier) but not
+    // RV, which ignores edits: the row is still marked.
+    const edited = {
+      meta: { ...baseMeta, clusterMult: 1.2 },
+      signals: { ...defaultSignals, rvAnnualized: null },
+    };
+    const { rerender } = renderSave(edited);
+    await settle();
+    expect(body(0)).toMatchObject({ clusterMult: 1.2, rvAnnualized: null });
+
+    rerender({ ...edited });
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    rerender({ ...edited, signals: { ...edited.signals, rvAnnualized: 0.12 } });
+    await settle();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(body(1)).toMatchObject({ clusterMult: 1.2, rvAnnualized: 0.12 });
+  });
+
+  it('waits for the marked POST’s answer when yesterday arrives while it is still pending', async () => {
+    let answer: (res: Response) => void = () => {};
+    fetchSpy.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const { rerender } = renderSave(gap);
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Yesterday lands while the first POST is in flight: no second POST yet,
+    // which could commit before the marked one and be overwritten by it.
+    rerender(arrived);
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // The marked POST is answered: the re-post goes out at once, with no
+    // further change to the inputs.
+    await act(async () => {
+      answer(new Response(JSON.stringify({ id: 'a', saved: true })));
+      await settle();
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(body(1)).toMatchObject({ clusterMult: 1.2, rvAnnualized: 0.12 });
+  });
+
+  it('does not post it again when the marked POST was not saved (a 400 keeps the key)', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'bad' }), { status: 400 }),
+    );
+    const { rerender } = renderSave(gap);
+    await settle();
+
+    rerender(arrived);
+    await settle();
+
+    // Armed by a 200 only: a refused body is not re-posted by this rule.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not post it again from an answer that lands after the page unmounted', async () => {
+    // Unmount aborts the POST and releases its key; a late answer arms nothing
+    // that can post.
+    let answer: (res: Response) => void = () => {};
+    fetchSpy.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const { unmount } = renderSave(gap);
+    await settle();
+    unmount();
+    answer(new Response(JSON.stringify({ id: 'a', saved: true })));
+    await settle();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================
 // THE META APP PASSES (wiring)
 // ============================================================
 

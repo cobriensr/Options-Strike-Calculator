@@ -1001,6 +1001,28 @@ describe('the saved cluster multiplier, with no Market Regime panel mounted', ()
     expect(posts.some((p) => p.body.clusterMult === 1)).toBe(false);
   });
 
+  it('posts the slot’s row again with its multiplier and RV once yesterday arrives within the slot', async () => {
+    const hook = renderHook(
+      ({ held }: { held: DaySummary | null }) => useLiveSession(held),
+      { initialProps: { held: null as DaySummary | null } },
+    );
+    await settle(2000);
+    const slot = String(postsFor(TODAY)[0]!.body.entryTime);
+    expect(postsFor(TODAY)[0]!.body.clusterMult).toBeNull();
+
+    // The app re-asks for yesterday every tick and gets it: same slot.
+    hook.rerender({ held: LIVE_YESTERDAY });
+    await settle(2000);
+
+    const rows = postsFor(TODAY).filter((p) => p.body.entryTime === slot);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]!.body.clusterMult).toBe(LIVE_MULT);
+    expect(rows[1]!.body.rvAnnualized).toBe(parkinsonRV(LIVE_YESTERDAY));
+    expect(rows[1]!.body.clusterCallMult).toBeGreaterThan(
+      rows[1]!.body.clusterPutMult as number,
+    );
+  });
+
   it("saves no multiplier, not today's yesterday, when the past date's history has no previous day", async () => {
     const withoutPreviousDay = () => {
       const history = historyFor(PAST_DATE);

@@ -62,9 +62,21 @@
  * a 422 and a 401, which are expected (a stale quote is the server's to
  * report). A 200 that saved nothing (a kept live row, a date the server
  * skipped) keeps the key: it was answered, not lost.
+ *
+ * A row saved without yesterday's fields is marked: its payload has no
+ * `clusterMult` or no `rvAnnualized`, the server's own test for a live row
+ * saved in that gap (and build-features', for the day's features). A key saved
+ * marked is posted once more when its mark clears, while it is still the entry
+ * time (the window a refused key's re-post has), so a gap of a few seconds at
+ * the start of a slot does not leave the slot's row empty for good. That
+ * re-post is armed by the marked POST's 200, not by sending it: yesterday can
+ * land while the marked POST is in flight, and a re-post sent then could commit
+ * first and be overwritten by the marked insert. If the mark has already
+ * cleared when the 200 arrives, the re-post goes out at once. A key whose
+ * marked POST was not answered 200 is not armed.
  */
 
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useReducer, useRef, useSyncExternalStore } from 'react';
 import {
   isLiveSaveDevice,
   subscribeLiveSaveDevice,
@@ -340,6 +352,12 @@ export function useSnapshotSave(
   // under StrictMode, whose simulated unmount aborts the mount pass's POST
   // and re-runs the effect, which must then post that key again.
   const inFlightRef = useRef<Map<AbortController, string>>(new Map());
+  // Keys whose marked POST was answered 200: each is posted once more when the
+  // mark clears. Dropped as it is posted, so it holds waiting keys only.
+  const armedRef = useRef<Set<string>>(new Set());
+  // Re-runs the effect below when a marked POST is answered: the mark can have
+  // cleared while the POST was in flight, and no dependency change need follow.
+  const [repostTick, armedAnswer] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
     const inFlight = inFlightRef.current;
     const saved = savedRef.current;
@@ -369,6 +387,10 @@ export function useSnapshotSave(
     subscribeLiveSaveDevice,
     isLiveSaveDevice,
   );
+  // Whether a row saved now would be marked: the server's own predicate
+  // (api/snapshot.ts) and build-features'. The meta's multiplier is null with
+  // no cluster inputs, and RV is null without yesterday's high and low.
+  const markedNow = meta.clusterMult == null || signals.rvAnnualized == null;
 
   useEffect(() => {
     if (!results || !enabled) return;
@@ -399,7 +421,12 @@ export function useSnapshotSave(
     if (kind === 'live' && !liveSaveDevice) return;
 
     const key = `${meta.selectedDate}|${meta.entryTime}`;
-    if (savedRef.current.has(key)) return;
+    if (savedRef.current.has(key)) {
+      // Saved. A key saved marked is posted once more when its mark clears,
+      // and only once its marked POST was answered 200 (see the header).
+      if (!armedRef.current.has(key) || markedNow) return;
+      armedRef.current.delete(key);
+    }
     // Live rows carry their quote time; a replay's is undefined and is never
     // refused for it.
     const quotedAt = kind === 'live' ? (liveQuotedAt ?? null) : undefined;
@@ -499,6 +526,8 @@ export function useSnapshotSave(
 
       strikes,
     };
+    // This row is marked: no multiplier, or no RV.
+    const marked = payload.clusterMult == null || payload.rvAnnualized == null;
 
     const attempt: KeyAttempts = attemptsRef.current.get(key) ?? {
       posts: 0,
@@ -536,6 +565,14 @@ export function useSnapshotSave(
       .then((res) => {
         if (res.ok) {
           attemptsRef.current.delete(key);
+          if (marked) {
+            armedRef.current.add(key);
+            // Yesterday may have landed while this POST was in flight, and
+            // nothing else would run the effect for it: run it now, and it
+            // posts the key again if the mark has cleared and the key is
+            // still the entry time.
+            armedAnswer();
+          }
           return;
         }
         const { status } = res;
@@ -595,5 +632,7 @@ export function useSnapshotSave(
     meta.clusterMult,
     enabled,
     liveSaveDevice,
+    markedNow,
+    repostTick,
   ]);
 }
