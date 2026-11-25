@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ctWallClockToUtcIso } from '../../src/utils/timezone.js';
 import {
@@ -12,6 +12,7 @@ import {
   PROXY_JUMP_PTS,
   WINDOW_GRACE_MS,
   buildCashWindow,
+  buildDayAnalogWindows,
   cashSessionLabels,
   formatWindowSummary,
   openGaps,
@@ -19,10 +20,17 @@ import {
   type AnalogWindow,
   type AnalogWindowMinutes,
   type CashSessionLabels,
+  type DayAnalogBuild,
   type LabelResult,
   type Refusal,
   type WindowResult,
 } from '../_lib/day-analog-builder.js';
+import {
+  fetchFuturesBars,
+  type StoredFuturesBar,
+} from '../_lib/futures-bars.js';
+
+vi.mock('../_lib/futures-bars.js', () => ({ fetchFuturesBars: vi.fn() }));
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -889,5 +897,252 @@ describe('matches every case in the shared parity fixture', () => {
       };
       expect(formatWindowSummary(w)).toBe(c.expect);
     });
+  });
+});
+
+// ── buildDayAnalogWindows ────────────────────────────────────────────
+
+const mockFetch = vi.mocked(fetchFuturesBars);
+
+/** The stored form of `bars`: prices as the NUMERIC text the read returns. */
+function stored(
+  date: string,
+  fromCtMin: number,
+  rows: readonly Row[],
+): StoredFuturesBar[] {
+  return bars(date, fromCtMin, rows).map((b) => ({
+    ts: b.ts,
+    open: b.open.toFixed(4),
+    high: b.high.toFixed(4),
+    low: b.low.toFixed(4),
+    close: b.close.toFixed(4),
+    volume: b.volume,
+    buyVolume: null,
+    sellVolume: null,
+    buyPrints: null,
+    sellPrints: null,
+    contract: b.contract,
+  }));
+}
+
+/** What the read returns for a full day: lead-in, 390 session bars, 15:00. */
+function fullDayStored(date: string, contract: string | null = null) {
+  const withContract = (rows: readonly Row[]): Row[] =>
+    rows.map(([o, h, l, c, v]) => [o, h, l, c, v, contract]);
+  return [
+    ...stored(date, OPEN - 60, withContract(flat(60))),
+    ...stored(date, OPEN, withContract([...fullDayRows(), AFTER_FULL])),
+  ];
+}
+
+/** CT wall-clock `hour:minute:second` on `date`, DST-safe through the UTC stamp. */
+function at(date: string, hour: number, minute: number, second = 0): Date {
+  return new Date(Date.parse(isoAt(date, ct(hour, minute))) + second * 1000);
+}
+
+const status = (r: { ok: true } | { ok: false; reason: Refusal }): string =>
+  r.ok ? 'ok' : r.reason;
+
+/** Each window's result and the labels' result, as one comparable object. */
+const statuses = (b: DayAnalogBuild) => ({
+  windows: b.windows.map(status),
+  labels: status(b.labels),
+});
+
+describe('buildDayAnalogWindows', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reads 07:30 CT to the bar after the close in UTC, across DST', async () => {
+    const cases = [
+      // CST before the March change, CDT after it, CST again on a half day.
+      ['2026-03-06', '2026-03-06T13:30:00.000Z', '2026-03-06T21:01:00.000Z'],
+      ['2026-03-09', '2026-03-09T12:30:00.000Z', '2026-03-09T20:01:00.000Z'],
+      ['2026-11-27', '2026-11-27T13:30:00.000Z', '2026-11-27T18:01:00.000Z'],
+    ] as const;
+    for (const [date, start, end] of cases) {
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValue([]);
+      await buildDayAnalogWindows(date, at(date, 16, 0));
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith('ES', start, end);
+    }
+  });
+
+  it('holds a window until 75 s after its end', async () => {
+    mockFetch.mockResolvedValue([
+      ...stored(DATE, OPEN - 60, flat(60)),
+      ...stored(DATE, OPEN, flat(40)), // 08:30 - 09:09
+    ]);
+    const build = (second: number, minute = 1, hour = 9) =>
+      buildDayAnalogWindows(DATE, at(DATE, hour, minute, second));
+
+    // N = 30 ends 09:00; its bar after, 09:00, closes at 09:01.
+    expect(statuses(await build(14))).toEqual({
+      windows: ['ok', 'incomplete', 'incomplete'],
+      labels: 'incomplete',
+    });
+    expect(statuses(await build(15))).toEqual({
+      windows: ['ok', 'ok', 'incomplete'],
+      labels: 'incomplete',
+    });
+    expect(statuses(await build(30, 9))).toEqual({
+      windows: ['ok', 'ok', 'incomplete'],
+      labels: 'incomplete',
+    });
+
+    mockFetch.mockResolvedValue(fullDayStored(DATE));
+    expect(statuses(await build(14, 1, 15))).toEqual({
+      windows: ['ok', 'ok', 'ok'],
+      labels: 'incomplete',
+    });
+    expect(statuses(await build(15, 1, 15))).toEqual({
+      windows: ['ok', 'ok', 'ok'],
+      labels: 'ok',
+    });
+
+    // The half day ends at 12:00.
+    const half = '2026-11-27';
+    mockFetch.mockResolvedValue([
+      ...stored(half, OPEN - 60, flat(60)),
+      ...stored(half, OPEN, flat(211)), // 08:30 - 12:00
+    ]);
+    const buildHalf = (second: number) =>
+      buildDayAnalogWindows(half, at(half, 12, 1, second));
+    expect((await buildHalf(14)).labels).toEqual({
+      ok: false,
+      reason: 'incomplete',
+    });
+    expect((await buildHalf(15)).labels.ok).toBe(true);
+  });
+
+  it('drops the still-forming bar from the series', async () => {
+    mockFetch.mockResolvedValue([
+      ...stored(DATE, OPEN - 60, flat(60)),
+      ...stored(DATE, OPEN, flat(15)), // 08:30 - 08:44, last close 6000
+      // No 08:45 bar. 08:46 opens 20 pt above the 08:44 close.
+      ...stored(DATE, ct(8, 46), flat(24, 6020)), // 08:46 - 09:09
+    ]);
+    const windows = async (minute: number, second: number) =>
+      statuses(await buildDayAnalogWindows(DATE, at(DATE, 8, minute, second)))
+        .windows;
+
+    // The 08:46 bar finishes at 08:47, so at 08:46:30 it is still forming.
+    expect(await windows(46, 30)).toEqual(['ok', 'incomplete', 'incomplete']);
+    // At 08:47:00 it is kept and its gap flags the 15-minute window.
+    expect(await windows(47, 0)).toEqual([
+      'flagged',
+      'incomplete',
+      'incomplete',
+    ]);
+    // N = 15 is ready at 08:46:15, whatever the series holds.
+    expect(await windows(46, 14)).toEqual([
+      'incomplete',
+      'incomplete',
+      'incomplete',
+    ]);
+  });
+
+  it('builds all three windows and labels after the close', async () => {
+    mockFetch.mockResolvedValue(fullDayStored(DATE, 'ESZ6'));
+    const built = await buildDayAnalogWindows(DATE, at(DATE, 15, 5));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(built.date).toBe(DATE);
+    expect(statuses(built)).toEqual({
+      windows: ['ok', 'ok', 'ok'],
+      labels: 'ok',
+    });
+    const windows = built.windows.map(okWindow);
+    expect(windows.map((w) => w.nMinutes)).toEqual([15, 30, 60]);
+    expect(windows.map((w) => w.features.length)).toEqual([15, 30, 60]);
+    // Text prices and the volume reach the core as numbers.
+    expect(windows.map((w) => [w.open, w.volume, w.bars, w.contract])).toEqual([
+      [6000, 1500, 15, 'ESZ6'],
+      [6000, 3000, 30, 'ESZ6'],
+      [6000, 6000, 60, 'ESZ6'],
+    ]);
+    expect(okLabels(built.labels)).toEqual({
+      open: 6000,
+      high: 6040,
+      low: 5980,
+      close: 6010,
+      rangePt: 60,
+      upExc: 40,
+      downExc: 20,
+    });
+  });
+
+  it('uses the current time when asOf is omitted', async () => {
+    mockFetch.mockResolvedValue(fullDayStored(DATE));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(at(DATE, 9, 9, 30));
+    expect(statuses(await buildDayAnalogWindows(DATE))).toEqual({
+      windows: ['ok', 'ok', 'incomplete'],
+      labels: 'incomplete',
+    });
+  });
+
+  it('skips the read on a holiday', async () => {
+    const built = await buildDayAnalogWindows(
+      '2026-11-26', // Thanksgiving
+      at('2026-11-27', 16, 0),
+    );
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(built).toEqual({
+      date: '2026-11-26',
+      windows: ANALOG_WINDOW_MINUTES.map((nMinutes) => ({
+        ok: false,
+        nMinutes,
+        reason: 'not_trading_day',
+      })),
+      labels: { ok: false, reason: 'not_trading_day' },
+    });
+  });
+
+  it('refuses a bar whose price text is malformed', async () => {
+    const day = fullDayStored(DATE);
+    const corrupt = (ctMinutes: number): StoredFuturesBar[] =>
+      day.map((b) =>
+        b.ts === isoAt(DATE, ctMinutes) ? { ...b, close: 'abc' } : b,
+      );
+
+    // 08:35 is inside every window and the session.
+    mockFetch.mockResolvedValue(corrupt(ct(8, 35)));
+    expect(await buildDayAnalogWindows(DATE, at(DATE, 15, 5))).toEqual({
+      date: DATE,
+      windows: ANALOG_WINDOW_MINUTES.map((nMinutes) => ({
+        ok: false,
+        nMinutes,
+        reason: 'bad_bar',
+      })),
+      labels: { ok: false, reason: 'bad_bar' },
+    });
+
+    // 10:00 is past every window: only the labels read it.
+    mockFetch.mockResolvedValue(corrupt(ct(10, 0)));
+    const late = await buildDayAnalogWindows(DATE, at(DATE, 15, 5));
+    expect(statuses(late)).toEqual({
+      windows: ['ok', 'ok', 'ok'],
+      labels: 'bad_bar',
+    });
+    for (const w of late.windows.map(okWindow)) {
+      expect(w.features.every(Number.isFinite)).toBe(true);
+    }
+  });
+
+  it('rejects when the database read fails', async () => {
+    const failure = new Error('neon down');
+    mockFetch.mockRejectedValue(failure);
+
+    await expect(buildDayAnalogWindows(DATE, at(DATE, 15, 5))).rejects.toBe(
+      failure,
+    );
   });
 });

@@ -1,7 +1,8 @@
 /**
- * The cash-open day-analog builder's pure core: ES one-minute bars in,
- * 08:30 CT window fingerprints, prediction-only summaries and full-session
- * range labels out. No I/O; the async read lands on top of these exports.
+ * The cash-open day-analog builder: ES one-minute bars in, 08:30 CT window
+ * fingerprints, prediction-only summaries and full-session range labels
+ * out. The core functions do no I/O; `buildDayAnalogWindows`, at the bottom,
+ * is the one read and decides which windows are finished.
  *
  * Spec: `docs/superpowers/specs/day-analogs-rebuild-2026-10-02.md`
  * ("Window decision", "P1 - P1a"). Plan:
@@ -73,6 +74,7 @@ import {
   isTradingDay,
 } from '../../src/data/marketHours.js';
 import { ctWallClockToUtcIso } from '../../src/utils/timezone.js';
+import { fetchFuturesBars, type StoredFuturesBar } from './futures-bars.js';
 import { formatDelta, formatVolume } from './postgres-day-summary.js';
 
 export const DAY_ANALOG_FEATURE_SET = 'cash_open_pct_change_v2';
@@ -157,9 +159,10 @@ function isBadBar(bar: AnalogBar): boolean {
 /**
  * The one spelling of an ES contract: root, month code and the last year
  * digit, so `ESZ26` is `ESZ6`. Anything else passes through unchanged.
- * Not the `canonicalContract` of `futures-contracts.ts`: that one takes a
- * root and a reference date and pulls in the UW client, and this check only
- * compares the names of two bars.
+ * Not the `canonicalContract` of `futures-contracts.ts`: that one is called
+ * with a root, a contract symbol and a reference time, `(root, sym, refIso)`,
+ * and pulls in the UW client, and this check only compares the names of two
+ * bars.
  */
 function foldEsContract(contract: string): string {
   return contract.replace(/^(ES[FGHJKMNQUVXZ])\d?(\d)$/, '$1$2');
@@ -283,7 +286,7 @@ export function buildCashWindow(
     window: {
       ...fields,
       features,
-      summary: summaryLine(fields),
+      summary: formatWindowSummary(fields),
       bars: slice.length,
       contract,
     },
@@ -296,7 +299,11 @@ type SummaryFields = Pick<
   'nMinutes' | 'open' | 'close' | 'high' | 'low' | 'volume'
 >;
 
-function summaryLine(w: SummaryFields): string {
+/**
+ * The prediction-only summary line: open, the N-minute delta, high, low,
+ * range and volume. Nothing after minute N−1 and no date.
+ */
+export function formatWindowSummary(w: SummaryFields): string {
   const n = w.nMinutes;
   return [
     'ES',
@@ -307,14 +314,6 @@ function summaryLine(w: SummaryFields): string {
     `${n}m range ${(w.high - w.low).toFixed(2)}`,
     `${n}m vol ${formatVolume(w.volume)}`,
   ].join(' | ');
-}
-
-/**
- * The prediction-only summary line: open, the N-minute delta, high, low,
- * range and volume. Nothing after minute N−1 and no date.
- */
-export function formatWindowSummary(w: AnalogWindow): string {
-  return summaryLine(w);
 }
 
 /**
@@ -342,5 +341,94 @@ export function cashSessionLabels(
       upExc: high - anchor.open,
       downExc: anchor.open - low,
     },
+  };
+}
+
+/** One date's results: a window per ANALOG_WINDOW_MINUTES, then the labels. */
+export interface DayAnalogBuild {
+  date: string;
+  windows: WindowResult[]; // in ANALOG_WINDOW_MINUTES order
+  labels: LabelResult;
+}
+
+/**
+ * The read starts an hour before the open. The anchor's gap check compares
+ * it with the nearest earlier bar, which on a thin pre-open can be some
+ * minutes back.
+ */
+const LEAD_IN_MINUTES = 60;
+
+/** The stored bar as the core takes it. A malformed price text stays NaN. */
+function toAnalogBar(row: StoredFuturesBar): AnalogBar {
+  return {
+    ts: row.ts,
+    open: Number(row.open),
+    high: Number(row.high),
+    low: Number(row.low),
+    close: Number(row.close),
+    volume: row.volume,
+    contract: row.contract,
+  };
+}
+
+/**
+ * Reads the ES bars for `date` (CT) once and builds its windows and labels
+ * as of `asOf`.
+ *
+ * - A non-trading day is refused `not_trading_day` without a read.
+ * - The read runs from 07:30 CT to one minute past the session end. Its end
+ *   is exclusive, so it includes the bar after the session, which the gap
+ *   check on the last close needs.
+ * - A bar counts only once it has finished (`ts` + 1 minute ≤ `asOf`), so a
+ *   bar still forming never reaches the series.
+ * - A window (or the session, for the labels) is `incomplete` until its end
+ *   plus WINDOW_GRACE_MS. uw-stream writes minute M only once a print in
+ *   minute M+1 arrives, so the grace lets the last bar and the bar after it
+ *   land before the gap check reads them (plan decision 8).
+ *
+ * A database error rejects. The callers decide how to degrade.
+ */
+export async function buildDayAnalogWindows(
+  date: string,
+  asOf: Date = new Date(),
+): Promise<DayAnalogBuild> {
+  const sessionMinutes = cashSessionMinutes(date);
+  const start = isTradingDay(date)
+    ? ctWallClockToUtcIso(date, CASH_OPEN_MIN_CT - LEAD_IN_MINUTES)
+    : null;
+  const end = ctWallClockToUtcIso(date, CASH_OPEN_MIN_CT + sessionMinutes + 1);
+  if (start === null || end === null) {
+    return {
+      date,
+      windows: ANALOG_WINDOW_MINUTES.map(
+        (nMinutes): WindowResult => ({
+          ok: false,
+          nMinutes,
+          reason: 'not_trading_day',
+        }),
+      ),
+      labels: { ok: false, reason: 'not_trading_day' },
+    };
+  }
+
+  const asOfMs = asOf.getTime();
+  const anchorMs = Date.parse(start) + LEAD_IN_MINUTES * MS_PER_MINUTE;
+  const series = (await fetchFuturesBars('ES', start, end))
+    .filter((row) => Date.parse(row.ts) + MS_PER_MINUTE <= asOfMs)
+    .map(toAnalogBar);
+  const incomplete = (minutes: number): boolean =>
+    asOfMs < anchorMs + minutes * MS_PER_MINUTE + WINDOW_GRACE_MS;
+
+  return {
+    date,
+    windows: ANALOG_WINDOW_MINUTES.map(
+      (nMinutes): WindowResult =>
+        incomplete(nMinutes)
+          ? { ok: false, nMinutes, reason: 'incomplete' }
+          : buildCashWindow(date, nMinutes, series),
+    ),
+    labels: incomplete(sessionMinutes)
+      ? { ok: false, reason: 'incomplete' }
+      : cashSessionLabels(date, series),
   };
 }
