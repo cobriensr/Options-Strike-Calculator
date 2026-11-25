@@ -17,7 +17,9 @@ when the median |d| is at most 2 pt and the p99 |d| at most 5 pt (spec:
 docs/superpowers/specs/2026-11-24-spx-candle-placeholder-repair.md, section 4
 and the Thresholds table). The gate reads p99 and not the max because a live
 day can carry one outlier minute (2026-11-20: median 0.67, max 25.3). A
-placeholder day sits at a median of about 25.
+placeholder day sits at a median of about 25. The day also fails when fewer
+than 99% of its candle minutes have a tape spot (real days are 390 of 390), so
+a thin tape cannot pass on a small sample.
 
 `--before 17:11Z` keeps only the candle minutes strictly before that UTC time
 of the date. 2026-04-10 is placeholder only before 17:11Z, so the cut keeps
@@ -73,6 +75,9 @@ P99_ABS_MAX = 5.0
 # on at least RATIO_SHARE_MIN of the minutes both bars exist.
 RATIO_TOL = 1e-6
 RATIO_SHARE_MIN = 0.99
+# The coverage floor: the tape must hold a spot for at least this share of the
+# candle minutes (real days are 390 of 390; 99% allows 3 missing of 390).
+COVERAGE_MIN = 0.99
 
 # The tape read's share of the shared box: DuckDB defaults to every core and
 # 80% of RAM.
@@ -208,9 +213,24 @@ def ratio_share(
     return within / len(common)
 
 
-def evaluate(stats: dict, share: float | None) -> tuple[bool, list[str]]:
-    """The verdict: the gate, plus the ratio check when a share was computed."""
+def evaluate(
+    stats: dict, share: float | None, candle_minutes: int
+) -> tuple[bool, list[str]]:
+    """The verdict: the gate, the tape coverage floor and the ratio check.
+
+    The floor: the compared minutes must be at least COVERAGE_MIN of the
+    `candle_minutes`, or a tape holding a few of the day's minutes would pass
+    on that sample. No common minute is already "no overlap" and gets no
+    second reason. The ratio check runs only when a share was computed.
+    """
     ok, reasons = gate(stats)
+    compared = stats["minutes"]
+    if compared and compared / candle_minutes < COVERAGE_MIN:
+        ok = False
+        reasons.append(
+            f"only {compared} of {candle_minutes} candle minutes have a tape spot "
+            f"(under {COVERAGE_MIN:.0%})"
+        )
     if share is not None and share < RATIO_SHARE_MIN:
         ok = False
         reasons.append(
@@ -355,31 +375,50 @@ def main_checkout_dir() -> Path:
     return main_checkout_from_common_dir(out)
 
 
-def load_credentials(path: Path | None = None) -> None:
-    """Put the five allowed names from .env.local into os.environ.
+def load_credentials(env_path: Path) -> None:
+    """Put the five allowed names from the env file into os.environ.
 
     A name already set (non-empty) in the shell keeps its value. Raises with
     the names still missing, never a value.
     """
-    env_path = path if path is not None else main_checkout_dir() / ".env.local"
     for name, value in read_allowed_env(env_path).items():
         if value and not os.environ.get(name):
             os.environ[name] = value
     missing = [name for name in ALLOWED_ENV_NAMES if not os.environ.get(name)]
     if missing:
         raise RuntimeError(
-            f"missing credentials: {', '.join(missing)} (looked in {env_path} and the environment)"
+            f"missing credentials: {', '.join(missing)} "
+            f"(looked in {env_path} and the environment)"
         )
 
 
+def _url_parts(value: str) -> set[str]:
+    """The user, password and host of a URL; empty when it does not parse."""
+    try:
+        parts = urlsplit(value)
+        return {parts.username or "", parts.password or "", parts.hostname or ""}
+    except ValueError:
+        return set()
+
+
 def redact(text: str) -> str:
-    """`text` with every credential value in the environment replaced by ***."""
-    secrets = {os.environ.get(name) or "" for name in ALLOWED_ENV_NAMES}
-    password = urlsplit(os.environ.get("DATABASE_URL") or "").password
-    secrets.add(password or "")
-    for secret in sorted(secrets - {""}, key=len, reverse=True):
-        text = text.replace(secret, "***")
-    return text
+    """`text` with every credential value in the environment replaced by ***.
+
+    Besides the five values, it hides what a driver prints of a URL on its
+    own: the user, password and host of DATABASE_URL (libpq: `connection to
+    server at "<host>" ... for user "<user>"`) and the host of R2_ENDPOINT_URL
+    (`Could not resolve host <host>`). The match ignores case, because
+    urlsplit lowercases a host the driver prints as written, and tries the
+    longest value first, so a value that starts another is replaced whole.
+    """
+    values = {os.environ.get(name) or "" for name in ALLOWED_ENV_NAMES}
+    for url_name in ("DATABASE_URL", "R2_ENDPOINT_URL"):
+        values |= _url_parts(os.environ.get(url_name) or "")
+    secrets = sorted(values - {""}, key=len, reverse=True)
+    if not secrets:
+        return text
+    pattern = re.compile("|".join(re.escape(s) for s in secrets), re.IGNORECASE)
+    return pattern.sub("***", text)
 
 
 # ── Reads ────────────────────────────────────────────────────────────────────
@@ -437,7 +476,7 @@ def _pt(value: float) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        load_credentials()
+        load_credentials(main_checkout_dir() / ".env.local")
         candles, etf = fetch_index_and_etf(args.symbol, args.date)
         tape = fetch_tape_spots(args.date)
     except Exception as exc:  # the CLI boundary: name it, redacted, no verdict
@@ -448,7 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     candles = apply_cut(candles, cut)
     stats = minute_stats(candles, tape)
     share = ratio_share(candles, etf, args.ratio) if args.ratio is not None else None
-    ok, reasons = evaluate(stats, share)
+    ok, reasons = evaluate(stats, share, len(candles))
 
     scope = f" (minutes before {args.before} only)" if args.before else ""
     print(f"{args.symbol} {args.date} vs the Full Tape SPXW spot{scope}")

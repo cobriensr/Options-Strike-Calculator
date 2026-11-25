@@ -175,29 +175,61 @@ def test_ratio_share_counts_a_zero_etf_close_as_a_mismatch_not_a_division_error(
     assert vic.ratio_share(index, etf, 10.04) == 0.5
 
 
-# ── evaluate: the gate plus the ratio check ──────────────────────────────────
+# ── evaluate: the gate, the coverage floor and the ratio check ───────────────
 
 
 def test_evaluate_passes_without_a_ratio():
-    assert vic.evaluate(stats_of(0.9, 2.0), None) == (True, [])
+    assert vic.evaluate(stats_of(0.9, 2.0), None, 390) == (True, [])
 
 
 def test_evaluate_fails_a_ratio_share_under_99_percent_and_names_the_ratio():
-    ok, reasons = vic.evaluate(stats_of(0.9, 2.0), 0.98)
+    ok, reasons = vic.evaluate(stats_of(0.9, 2.0), 0.98, 390)
     assert ok is False
     assert len(reasons) == 1
     assert "ratio" in reasons[0]
 
 
 def test_evaluate_passes_a_ratio_share_of_exactly_99_percent():
-    assert vic.evaluate(stats_of(0.9, 2.0), 0.99) == (True, [])
+    assert vic.evaluate(stats_of(0.9, 2.0), 0.99, 390) == (True, [])
 
 
 def test_evaluate_keeps_the_gate_reason_next_to_the_ratio_reason():
-    ok, reasons = vic.evaluate(stats_of(25.1, 25.4), 0.0)
+    ok, reasons = vic.evaluate(stats_of(25.1, 25.4), 0.0, 390)
     assert ok is False
     assert any("median" in r for r in reasons)
     assert any("ratio" in r for r in reasons)
+
+
+def test_evaluate_fails_a_tape_that_covers_under_99_percent_of_the_candle_minutes():
+    # 99% of 390 is 386.1: 387 passes, 386 does not (the ratio gate's rule).
+    assert vic.evaluate(stats_of(0.9, 2.0, minutes=387), None, 390) == (True, [])
+    ok, reasons = vic.evaluate(stats_of(0.9, 2.0, minutes=386), None, 390)
+    assert ok is False
+    assert reasons == [
+        "only 386 of 390 candle minutes have a tape spot (under 99%)",
+    ]
+
+
+def test_evaluate_coverage_floor_is_inclusive_at_exactly_99_percent():
+    assert vic.evaluate(stats_of(0.9, 2.0, minutes=99), None, 100) == (True, [])
+    assert vic.evaluate(stats_of(0.9, 2.0, minutes=98), None, 100)[0] is False
+
+
+def test_evaluate_lists_the_coverage_reason_with_the_gates_other_reasons():
+    ok, reasons = vic.evaluate(stats_of(25.1, 25.4, minutes=300), 0.5, 390)
+    assert ok is False
+    assert any("median" in r for r in reasons)
+    assert any("p99" in r for r in reasons)
+    assert any("only 300 of 390 candle minutes have a tape spot" in r for r in reasons)
+    assert any("ratio" in r for r in reasons)
+
+
+def test_evaluate_no_overlap_keeps_only_its_own_reason():
+    # No common minute is "no overlap", not also "only 0 of N".
+    ok, reasons = vic.evaluate(vic.minute_stats({0: 1.0}, {9: 1.0}), None, 1)
+    assert ok is False
+    assert len(reasons) == 1
+    assert "no overlap" in reasons[0]
 
 
 # ── arguments ────────────────────────────────────────────────────────────────
@@ -407,6 +439,75 @@ def test_redact_hides_a_database_password_that_shows_up_alone(monkeypatch):
     )
 
 
+NEON_HOST = "ep-fake-pooler.us-east-2.aws.neon.tech"
+R2_HOST = "0123abcd.r2.cloudflarestorage.com"
+
+
+def test_redact_hides_the_database_host_and_user_in_libpqs_own_message(monkeypatch):
+    monkeypatch.setattr(
+        os,
+        "environ",
+        {
+            "DATABASE_URL": f"postgres://app_owner:hunter2@{NEON_HOST}/neondb",
+            "R2_ENDPOINT_URL": f"https://{R2_HOST}",
+        },
+    )
+    libpq = (
+        f'connection to server at "{NEON_HOST}" (3.4.5.6), port 5432 failed: '
+        'FATAL: password authentication failed for user "app_owner"'
+    )
+    redacted = vic.redact(libpq)
+    assert "app_owner" not in redacted
+    assert NEON_HOST not in redacted
+    assert redacted == (
+        'connection to server at "***" (3.4.5.6), port 5432 failed: '
+        'FATAL: password authentication failed for user "***"'
+    )
+
+
+def test_redact_hides_the_r2_host_when_a_message_names_only_the_host(monkeypatch):
+    monkeypatch.setattr(os, "environ", {"R2_ENDPOINT_URL": f"https://{R2_HOST}"})
+    assert vic.redact(f"Could not resolve host {R2_HOST}") == (
+        "Could not resolve host ***"
+    )
+
+
+def test_redact_matches_a_host_whatever_its_case(monkeypatch):
+    # urlsplit lowercases the host; the driver prints it as the URL spelled it.
+    monkeypatch.setattr(
+        os,
+        "environ",
+        {"DATABASE_URL": "postgres://app_owner:hunter2@EP-Mixed.Neon.TECH/db"},
+    )
+    assert vic.redact('server at "EP-Mixed.Neon.TECH" refused') == (
+        'server at "***" refused'
+    )
+
+
+def test_redact_survives_a_database_url_that_does_not_parse(monkeypatch):
+    # urlsplit raises ValueError on this one. The error path must not crash
+    # (an uncaught exception would exit 1, which reads as a FAIL verdict).
+    monkeypatch.setattr(os, "environ", {"DATABASE_URL": "postgres://[bad-host/db"})
+    assert vic.redact("could not parse postgres://[bad-host/db") == (
+        "could not parse ***"
+    )
+
+
+def test_redact_replaces_a_value_that_starts_another_value_whole(monkeypatch):
+    monkeypatch.setattr(
+        os,
+        "environ",
+        {"R2_ACCESS_KEY_ID": "AKIA", "R2_SECRET_ACCESS_KEY": "AKIAFULLSECRET"},
+    )
+    assert vic.redact("bad key AKIAFULLSECRET") == "bad key ***"
+
+
+def test_redact_with_nothing_to_hide_changes_nothing(monkeypatch):
+    # An empty pattern would match between every character.
+    monkeypatch.setattr(os, "environ", {})
+    assert vic.redact("nothing to hide") == "nothing to hide"
+
+
 # ── the Postgres read ────────────────────────────────────────────────────────
 
 
@@ -433,7 +534,7 @@ class FakeConnection:
     def __init__(self, tables, fail_on_execute=False):
         self.tables = tables
         self.fail_on_execute = fail_on_execute
-        self.events = [("connect",)]
+        self.events: list[tuple] = [("connect",)]
 
     def set_session(self, **kwargs):
         self.events.append(("set_session", kwargs))
@@ -566,13 +667,56 @@ def test_fetch_tape_spots_takes_the_last_spxw_spot_per_utc_minute(
     assert asked == {"threads": 4, "memory_limit": "3000MiB"}
 
 
+class FailingTapeConnection:
+    """A DuckDB connection whose query fails, as a 404 on an absent day does."""
+
+    def __init__(self):
+        self.closed = False
+
+    def execute(self, sql):
+        raise duckdb.IOException("HTTP 404 Not Found reading the tape")
+
+    def close(self):
+        self.closed = True
+
+
+def test_fetch_tape_spots_closes_the_connection_when_the_query_fails(monkeypatch):
+    monkeypatch.syspath_prepend(str(vic.ML_SRC))
+    import utils.r2 as r2
+
+    conn = FailingTapeConnection()
+    monkeypatch.setattr(r2, "fulltape_connection", lambda **kwargs: conn)
+    monkeypatch.setattr(r2, "r2_url", lambda day: "s3://bucket/2026-03-28.parquet")
+    with pytest.raises(duckdb.IOException, match="404"):
+        vic.fetch_tape_spots(date(2026, 3, 28))
+    assert conn.closed
+
+
+def test_fetch_tape_spots_closes_the_connection_when_the_url_cannot_be_built(
+    monkeypatch,
+):
+    monkeypatch.syspath_prepend(str(vic.ML_SRC))
+    import utils.r2 as r2
+
+    def no_bucket(day):
+        raise RuntimeError("Missing env var 'R2_BUCKET_FULLTAPE'")
+
+    conn = FailingTapeConnection()
+    monkeypatch.setattr(r2, "fulltape_connection", lambda **kwargs: conn)
+    monkeypatch.setattr(r2, "r2_url", no_bucket)
+    with pytest.raises(RuntimeError, match="R2_BUCKET_FULLTAPE"):
+        vic.fetch_tape_spots(date(2026, 3, 28))
+    assert conn.closed
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 M0 = 1_000_000  # an arbitrary UTC epoch minute
 
 
 def install_main_fakes(monkeypatch, candles, etf, tape):
-    monkeypatch.setattr(vic, "load_credentials", lambda path=None: None)
+    monkeypatch.setattr(vic, "main_checkout_dir", lambda: Path("unused-checkout"))
+    monkeypatch.setattr(vic, "load_credentials", lambda path: None)
     monkeypatch.setattr(vic, "fetch_index_and_etf", lambda symbol, day: (candles, etf))
     monkeypatch.setattr(vic, "fetch_tape_spots", lambda day: tape)
 
@@ -639,10 +783,24 @@ def test_main_before_cuts_off_the_minutes_from_the_cut_on(monkeypatch, capsys):
     assert "compared: 3 " in capsys.readouterr().out
 
 
+def test_main_fails_a_tape_that_covers_only_part_of_the_candle_minutes(
+    monkeypatch, capsys
+):
+    candles = {M0 + i: 5800.0 for i in range(10)}
+    tape = {M0 + i: 5800.5 for i in range(5)}  # every compared minute is close
+    install_main_fakes(monkeypatch, candles, {}, tape)
+    assert run_main([]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL" in out
+    assert "only 5 of 10 candle minutes have a tape spot" in out
+    assert "median" not in out.split("FAIL", 1)[1]  # the day's figures are fine
+
+
 def test_main_exits_2_on_a_read_failure_and_prints_no_secret(monkeypatch, capsys):
     secret_url = "postgres://user:hunter2@host/db"
     monkeypatch.setattr(os, "environ", {"DATABASE_URL": secret_url})
-    monkeypatch.setattr(vic, "load_credentials", lambda path=None: None)
+    monkeypatch.setattr(vic, "main_checkout_dir", lambda: Path("unused-checkout"))
+    monkeypatch.setattr(vic, "load_credentials", lambda path: None)
 
     def boom(symbol, day):
         raise RuntimeError(f"could not connect to {secret_url}")
@@ -658,10 +816,54 @@ def test_main_exits_2_on_a_read_failure_and_prints_no_secret(monkeypatch, capsys
     assert "PASS" not in shown
 
 
+def test_main_exits_2_when_the_tape_read_fails_and_prints_no_bucket_name(
+    monkeypatch, capsys
+):
+    # A day with no tape landed: DuckDB's 404 names the s3:// URL.
+    monkeypatch.setattr(os, "environ", {"R2_BUCKET_FULLTAPE": "secret-bucket-xyz"})
+    install_main_fakes(monkeypatch, {M0: 5800.0}, {}, {})
+
+    def no_tape(day):
+        raise RuntimeError(
+            "HTTP 404 reading s3://secret-bucket-xyz/fulltape/2026-03-28-fulltape.parquet"
+        )
+
+    monkeypatch.setattr(vic, "fetch_tape_spots", no_tape)
+    assert run_main([]) == 2
+    captured = capsys.readouterr()
+    shown = captured.out + captured.err
+    assert "secret-bucket-xyz" not in shown
+    assert "s3://***/fulltape/2026-03-28-fulltape.parquet" in shown
+    assert "RuntimeError" in shown
+    assert "PASS" not in shown
+    assert "FAIL" not in shown
+
+
+def test_main_loads_the_env_file_of_the_main_checkout(monkeypatch):
+    install_main_fakes(monkeypatch, {M0: 5800.0}, {}, {M0: 5800.0})
+    monkeypatch.setattr(vic, "main_checkout_dir", lambda: Path("the-main-checkout"))
+    loaded = []
+    monkeypatch.setattr(vic, "load_credentials", lambda path: loaded.append(path))
+    assert run_main([]) == 0
+    assert loaded == [Path("the-main-checkout") / ".env.local"]
+
+
+def test_main_exits_2_when_the_main_checkout_cannot_be_found(monkeypatch, capsys):
+    def no_git(*args, **kwargs):
+        raise ValueError("not a .git directory: '/srv/repo/x'")
+
+    monkeypatch.setattr(vic, "main_checkout_dir", no_git)
+    assert run_main([]) == 2
+    err = capsys.readouterr().err
+    assert "ValueError" in err
+    assert "not a .git directory" in err
+
+
 def test_main_exits_2_when_credentials_are_missing_and_names_them(monkeypatch, capsys):
-    def no_credentials(path=None):
+    def no_credentials(path):
         raise RuntimeError("missing credentials: DATABASE_URL, R2_ENDPOINT_URL")
 
+    monkeypatch.setattr(vic, "main_checkout_dir", lambda: Path("unused-checkout"))
     monkeypatch.setattr(vic, "load_credentials", no_credentials)
     assert run_main([]) == 2
     err = capsys.readouterr().err
@@ -672,6 +874,7 @@ def test_main_refuses_ndx_before_reading_anything(monkeypatch, capsys):
     def must_not_run(*args, **kwargs):
         raise AssertionError("read something for a refused symbol")
 
+    monkeypatch.setattr(vic, "main_checkout_dir", must_not_run)
     monkeypatch.setattr(vic, "load_credentials", must_not_run)
     monkeypatch.setattr(vic, "fetch_index_and_etf", must_not_run)
     monkeypatch.setattr(vic, "fetch_tape_spots", must_not_run)
