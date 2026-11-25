@@ -181,13 +181,19 @@ export function isMarketHoursCt() {
  * without --allow-market-hours, else null. Same window and reason as
  * isMarketHoursCt: these UW calls skip the shared Redis semaphore, so they
  * compete with the live crons for the key's concurrency cap.
+ *
+ * `offerFlag` (default true) says whether the text tells the reader they may
+ * pass --allow-market-hours. A script with no such flag passes false, so it
+ * never points at a flag it rejects. The default text is unchanged.
  */
-export function marketHoursRefusal({ allowMarketHours }) {
+export function marketHoursRefusal({ allowMarketHours, offerFlag = true }) {
   if (allowMarketHours || !isMarketHoursCt()) return null;
   return (
     'Refusing to run 08:15–15:30 CT on a weekday: the backfill would compete ' +
-    "with the live crons for UW's concurrency cap. Run after the close, or " +
-    'pass --allow-market-hours (e.g. on a market holiday).'
+    "with the live crons for UW's concurrency cap. " +
+    (offerFlag
+      ? 'Run after the close, or pass --allow-market-hours (e.g. on a market holiday).'
+      : 'Run after the close.')
   );
 }
 
@@ -558,11 +564,18 @@ export async function runTickerDays(
  * `secrets` is `{ uwKey, databaseUrl }`; every failure detail is redacted
  * with them before it is stored, so it is safe to print.
  *
+ * `offerFlag` goes to marketHoursRefusal: a script with no
+ * --allow-market-hours flag passes false, so its `stoppedBy` names none.
+ *
  * Returns `{ days, stoppedBy, notRun }` where each day is
  *   { date, ok: true, value } | { date, ok: false, failure: { kind, detail } }
  * Feed it to summarizeRun for the counts and the exit code.
  */
-export async function runDays(dates, { allowMarketHours, secrets }, worker) {
+export async function runDays(
+  dates,
+  { allowMarketHours, offerFlag, secrets },
+  worker,
+) {
   if (secrets == null) {
     throw new Error(
       'runDays needs the secrets to redact from failure details: ' +
@@ -572,7 +585,7 @@ export async function runDays(dates, { allowMarketHours, secrets }, worker) {
   const days = [];
   let stoppedBy = null;
   for (const date of dates) {
-    stoppedBy = marketHoursRefusal({ allowMarketHours });
+    stoppedBy = marketHoursRefusal({ allowMarketHours, offerFlag });
     if (stoppedBy != null) break;
     days.push(await runOneDay(date, worker, secrets));
   }

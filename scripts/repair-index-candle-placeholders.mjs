@@ -27,9 +27,13 @@
  *      (ON CONFLICT (symbol, date, timestamp) DO NOTHING);
  *   4. the manifest is rewritten with the inserted ids, committed: true.
  * A date whose UW answer is an error, empty, short or at the row cap, that has
- * no ratio, or whose last regular close is not within 4 pt of outcomes.settlement
- * (SPX) or 15 pt of the Schwab $NDX close (NDX), is skipped untouched with the
- * reason, and the run ends with exit code 1.
+ * no ratio, whose last regular close is not within 4 pt of outcomes.settlement
+ * (SPX) or 15 pt of the Schwab $NDX close (NDX), or whose new rows would leave
+ * a stored regular minute empty, is skipped untouched with the reason, and the
+ * run ends with exit code 1. Each date's line also prints `dropped` (UW bars
+ * left out as malformed) and `uncovered` (stored pre- or post-market minutes
+ * no new row replaces: they are deleted, not skipped, since the placeholder
+ * there held a wrong value anyway).
  *
  * `--undo <manifest>` restores one run: it removes what the run inserted and
  * puts the backed-up rows back with their own id and created_at. It is a dry
@@ -41,7 +45,8 @@
  * it has run out, refreshed in place with a compare-and-set, so the repair
  * refuses to start on a weekday 13:00-22:59 UTC, when the Schwab crons run.
  * Like the backfills it also refuses 08:15-15:30 CT and stops taking dates when
- * that window opens mid-run (exit 3). A dry run still calls Schwab and UW.
+ * that window opens mid-run (exit 3). There is no flag to lift either, so the
+ * refusals name none. A dry run still calls Schwab and UW.
  * Runs against whatever DATABASE_URL points at (.env.local = PRODUCTION).
  *
  * Usage (from the repo root; the keys are never printed):
@@ -83,7 +88,6 @@ import {
   UW_REQUESTS_PER_MINUTE,
   createRequestThrottle,
   formatRunSummary,
-  marketHoursRefusal,
   redact,
   runDays,
   summarizeRun,
@@ -95,9 +99,10 @@ import {
   describeUndo,
   parseRepairArgs,
   processRepairDay,
+  repairGuardRefusal,
   undoRepair,
 } from './_lib/index-candle-repair.mjs';
-import { readSchwabEnv, schwabCronsBusyRefusal } from './_lib/schwab-local.mjs';
+import { readSchwabEnv } from './_lib/schwab-local.mjs';
 
 let plan;
 try {
@@ -153,8 +158,7 @@ function backupDirFromGit() {
 /** The repair, one date at a time. Returns the exit code. */
 async function runRepair() {
   const { symbol, list, dates, apply } = plan;
-  const refusal =
-    marketHoursRefusal({ allowMarketHours: false }) ?? schwabCronsBusyRefusal();
+  const refusal = repairGuardRefusal();
   if (refusal) {
     console.error(refusal);
     return EXIT_GUARD_STOP;
@@ -197,9 +201,10 @@ async function runRepair() {
 
   const sql = neon(DATABASE_URL);
   const waitForSlot = createRequestThrottle(UW_REQUESTS_PER_MINUTE);
+  // offerFlag: false, so a mid-run `stopped:` line names no flag (there is none).
   const run = await runDays(
     dates,
-    { allowMarketHours: false, secrets },
+    { allowMarketHours: false, offerFlag: false, secrets },
     (date) =>
       processRepairDay(sql, {
         symbol,
@@ -214,6 +219,10 @@ async function runRepair() {
   );
   const summary = summarizeRun(run);
   for (const line of formatRunSummary(summary)) say(line);
+  say(
+    '(dropped: UW bars left out as malformed. uncovered: stored pre- or ' +
+      'post-market minutes no new row replaces; they are deleted. Read both.)',
+  );
   if (!apply) {
     say(
       '(dry run: stored is 0 by design; wouldDelete and wouldInsert are what ' +

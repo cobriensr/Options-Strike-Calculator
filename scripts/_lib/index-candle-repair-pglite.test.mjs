@@ -42,14 +42,43 @@ import {
   applyMigration,
   neonOverPglite,
 } from '../../api/__tests__/pglite-migrations';
-import { DayFailure } from './backfill-cli.mjs';
+import { DayFailure, formatRunSummary, summarizeRun } from './backfill-cli.mjs';
 
-const mocks = vi.hoisted(() => ({ fetchUwCandles: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  fetchUwCandles: vi.fn(),
+  // The nth write of a *.manifest.json that fails (0: none fails), and how many
+  // such writes the test has seen. The lib writes the manifest twice per run:
+  // before the transaction, and again after the commit.
+  failManifestWrite: 0,
+  manifestWrites: 0,
+}));
 
 vi.mock('./candles-backfill.mjs', async (importOriginal) => ({
   ...(await importOriginal()),
   fetchUwCandles: mocks.fetchUwCandles,
 }));
+
+// Real writes, except the one a test asks to fail: the only way to make the
+// write after a real commit fail.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    writeFile: (file, ...rest) => {
+      if (String(file).endsWith('.manifest.json')) {
+        mocks.manifestWrites += 1;
+        if (mocks.manifestWrites === mocks.failManifestWrite) {
+          return Promise.reject(
+            Object.assign(new Error('ENOSPC: no space left on device, write'), {
+              code: 'ENOSPC',
+            }),
+          );
+        }
+      }
+      return actual.writeFile(file, ...rest);
+    },
+  };
+});
 
 import {
   LIST_SYMBOLS,
@@ -63,6 +92,7 @@ import {
   prepareDay,
   processRepairDay,
   repairDay,
+  repairGuardRefusal,
   undoRepair,
 } from './index-candle-repair.mjs';
 
@@ -87,6 +117,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   mocks.fetchUwCandles.mockReset();
+  mocks.failManifestWrite = 0;
+  mocks.manifestWrites = 0;
   await pg.query(`SET TimeZone = 'UTC'`);
   await pg.query('TRUNCATE index_candles_1m RESTART IDENTITY');
   await pg.query('TRUNCATE outcomes');
@@ -367,11 +399,11 @@ describe('what a repair selects (real SQL)', () => {
   });
 
   it('never selects a row written after the cut', async () => {
-    const lateSpx = await seed({
+    await seed({
       at: '2026-03-26T13:30:00Z',
       created: '2026-11-25T14:00:00Z',
     });
-    const lateNdx = await seed({
+    await seed({
       symbol: 'NDX',
       date: '2026-04-20',
       at: '2026-04-20T13:30:00Z',
@@ -398,7 +430,6 @@ describe('what a repair selects (real SQL)', () => {
     expect(spx).toMatchObject({ deleted: 0, inserted: 0 });
     expect(ndx).toMatchObject({ deleted: 0, inserted: 0 });
     expect(await snapshot()).toEqual(before);
-    expect(lateSpx).not.toBe(lateNdx);
     expect(filesIn(backupDirOf())).toEqual([]);
   });
 
@@ -429,14 +460,19 @@ describe('what a repair selects (real SQL)', () => {
       at: '2026-04-20T13:30:00Z',
       created: batch,
     });
-    const rows = [newRow('NDX', date, '2026-04-20T13:30:00.000Z', 23000)];
+    // A bar for each stored minute that is deleted (13:30 and 13:32), so no
+    // regular minute is left empty.
+    const rows = [
+      newRow('NDX', date, '2026-04-20T13:30:00.000Z', 23000),
+      newRow('NDX', date, '2026-04-20T13:32:00.000Z', 23001),
+    ];
 
     const res = await repairDay(
       makeSql(),
       repairArgs({ symbol: 'NDX', date, list: 'ndx-repair', rows }),
     );
 
-    expect(res).toMatchObject({ deleted: 2, inserted: 1 });
+    expect(res).toMatchObject({ deleted: 2, inserted: 2 });
     const left = (await snapshot()).map((r) => r.id);
     expect(left).toContain(String(ndxEarly));
     expect(left).toContain(String(spxSame));
@@ -772,29 +808,56 @@ describe('prepareDay', () => {
     expect(out.reason).toMatch(/cut short/);
   });
 
-  it('skips a short day, a wrong close and a missing settlement', async () => {
-    mocks.fetchUwCandles.mockResolvedValue({
-      kind: 'ok',
-      rows: uwBars(SPX_DATE, { regular: 389 }),
-    });
+  it.each(['malformed', 'network', 'timeout'])(
+    'passes a UW %s failure through as its kind, with the reason',
+    async (status) => {
+      mocks.fetchUwCandles.mockResolvedValueOnce({
+        kind: 'error',
+        status,
+        detail: `boom ${status}`,
+      });
+
+      const out = await prepareDay(makeSql(), prepareArgs());
+
+      expect(out).toMatchObject({ ok: false, kind: status });
+      expect(out.reason).toBe(
+        `UW SPY bars for ${SPX_DATE}: ${status} boom ${status}`,
+      );
+    },
+  );
+
+  it('names the bars it left out as malformed when the day then fails the count', async () => {
     await seedSettlement(SPX_DATE, '6500.00');
-    const short = await prepareDay(makeSql(), prepareArgs());
-    expect(short).toMatchObject({ ok: false });
-    expect(short.reason).toMatch(/389 regular bars, expected 390/);
+    const answer = uwBars(SPX_DATE);
+    // Index 0-2 are pre-market; 100 and 101 are regular minutes.
+    answer[100] = { ...answer[100], close: 'n/a' };
+    mocks.fetchUwCandles.mockResolvedValueOnce({ kind: 'ok', rows: answer });
+    const one = await prepareDay(makeSql(), prepareArgs());
+    expect(one.ok).toBe(false);
+    expect(one.reason).toBe(
+      '389 regular bars, expected 390 for 2026-03-26 ' +
+        '(1 bar dropped as malformed)',
+    );
 
-    mocks.fetchUwCandles.mockResolvedValue({
-      kind: 'ok',
-      rows: uwBars(SPX_DATE),
-    });
-    await pg.query('UPDATE outcomes SET settlement = 6504.01');
-    const off = await prepareDay(makeSql(), prepareArgs());
-    expect(off.ok).toBe(false);
-    expect(off.reason).toMatch(/4\.01 pt/);
+    answer[101] = { ...answer[101], close: 'n/a' };
+    mocks.fetchUwCandles.mockResolvedValueOnce({ kind: 'ok', rows: answer });
+    const two = await prepareDay(makeSql(), prepareArgs());
+    expect(two.reason).toBe(
+      '388 regular bars, expected 390 for 2026-03-26 ' +
+        '(2 bars dropped as malformed)',
+    );
+  });
 
-    await pg.query('DELETE FROM outcomes');
-    const none = await prepareDay(makeSql(), prepareArgs());
-    expect(none.ok).toBe(false);
-    expect(none.reason).toMatch(/no outcomes\.settlement for 2026-03-26/);
+  it('counts a malformed extended-hours bar as dropped and still passes the day', async () => {
+    await seedSettlement(SPX_DATE, '6500.00');
+    const answer = uwBars(SPX_DATE);
+    answer[0] = { ...answer[0], close: 'n/a' };
+    mocks.fetchUwCandles.mockResolvedValueOnce({ kind: 'ok', rows: answer });
+
+    const out = await prepareDay(makeSql(), prepareArgs());
+
+    expect(out).toMatchObject({ ok: true, dropped: 1 });
+    expect(out.rows).toHaveLength(395);
   });
 
   it('propagates a database failure instead of reporting a skipped day', async () => {
@@ -901,6 +964,7 @@ describe('repairDay', () => {
       ratio: 10.040707,
       deleted: 4,
       inserted: 5,
+      uncovered: 0,
     });
     expect(sql.transaction).not.toHaveBeenCalled();
     expect(await snapshot()).toEqual(before);
@@ -922,9 +986,10 @@ describe('repairDay', () => {
     writeFileSync(blocker, 'a file where the backup folder should be');
     const sql = makeSql();
 
+    // mkdir on a path that is a file: EEXIST (Windows, Linux) or ENOTDIR.
     await expect(
       repairDay(sql, repairArgs({ backupDir: blocker })),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/EEXIST|ENOTDIR|not a directory/i);
 
     expect(sql.transaction).not.toHaveBeenCalled();
     expect(await snapshot()).toEqual(before);
@@ -961,6 +1026,44 @@ describe('repairDay', () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it('says so by name when the manifest cannot be rewritten after the commit, and the leftover manifest still undoes the run', async () => {
+    await seedPlaceholderDay();
+    const original = await snapshot();
+    // Write 1 is the manifest before the transaction; write 2 is the rewrite
+    // after the commit.
+    mocks.failManifestWrite = 2;
+
+    const error = await repairDay(makeSql(), repairArgs()).catch((e) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(
+      /^SPX 2026-03-26: committed \(4 deleted, 5 inserted\) but the manifest .+\.manifest\.json could not be rewritten \(ENOSPC: no space left on device, write\); it still says committed: false, and --undo falls back to the run marker$/,
+    );
+    expect(error.cause).toMatchObject({ code: 'ENOSPC' });
+    // The transaction did commit: the five new rows are in.
+    const after = await snapshot();
+    expect(after).not.toEqual(original);
+    expect(
+      after.filter((r) => r.symbol === 'SPX' && r.date === SPX_DATE),
+    ).toHaveLength(5);
+    // The manifest on disk is the one from before the transaction.
+    const manifestFile = path.join(
+      backupDirOf(),
+      filesIn(backupDirOf()).find((f) => f.endsWith('.manifest.json')),
+    );
+    expect(readManifest(manifestFile)).toMatchObject({
+      committed: false,
+      insertedIds: null,
+    });
+
+    mocks.failManifestWrite = 0;
+    await expect(undoRepair(makeSql(), manifestFile)).resolves.toEqual({
+      restored: 4,
+      removed: 5,
+    });
+    expect(await snapshot()).toEqual(original);
+  });
+
   it('a second apply changes nothing', async () => {
     await seedPlaceholderDay();
     await repairDay(makeSql(), repairArgs());
@@ -973,6 +1076,70 @@ describe('repairDay', () => {
     expect(second.manifest).toBeUndefined();
     expect(await snapshot()).toEqual(afterFirst);
     expect(filesIn(backupDirOf())).toEqual(filesAfterFirst);
+  });
+
+  it.each([
+    ['one regular minute', ['13:31'], /would leave 1 regular minute empty/, 0],
+    [
+      'two regular minutes',
+      ['13:30', '13:31'],
+      /would leave 2 regular minutes empty/,
+      0,
+    ],
+    [
+      'a regular and a pre-market minute',
+      ['13:31', '12:00'],
+      /would leave 1 regular minute empty/,
+      1,
+    ],
+  ])(
+    'refuses, before any write, mapped rows that would leave %s empty',
+    async (_label, missing, reason, uncovered) => {
+      await seedPlaceholderDay(); // pr 12:00, r 13:30 and 13:31, po 20:05
+      const before = await snapshot();
+      const dropped = missing.map((hhmm) => `2026-03-26T${hhmm}:00.000Z`);
+      const rows = replacementRows().filter(
+        (r) => !dropped.includes(r.timestamp),
+      );
+
+      for (const apply of [false, true]) {
+        const sql = makeSql();
+        const res = await repairDay(sql, repairArgs({ rows, apply }));
+
+        expect(res.skipped).toMatch(reason);
+        expect(res.skipped).toContain(`first ${dropped[0]}`);
+        expect(res).toMatchObject({ deleted: 0, inserted: 0, uncovered });
+        expect(res.manifest).toBeUndefined();
+        expect(sql.transaction).not.toHaveBeenCalled();
+      }
+      expect(await snapshot()).toEqual(before);
+      expect(filesIn(backupDirOf())).toEqual([]);
+    },
+  );
+
+  it('counts the stored pre- and post-market minutes with no mapped row as uncovered, and still repairs', async () => {
+    await seedPlaceholderDay(); // pr 12:00 and po 20:05 are stored
+    // UW sent no 12:00 pre-market bar.
+    const rows = replacementRows().filter(
+      (r) => r.timestamp !== '2026-03-26T12:00:00.000Z',
+    );
+
+    const dry = await repairDay(makeSql(), repairArgs({ rows, apply: false }));
+    expect(dry).toMatchObject({ deleted: 4, inserted: 4, uncovered: 1 });
+    expect(dry.skipped).toBeUndefined();
+
+    const res = await repairDay(makeSql(), repairArgs({ rows }));
+    expect(res).toMatchObject({ deleted: 4, inserted: 4, uncovered: 1 });
+    expect(res.skipped).toBeUndefined();
+    const day = (await snapshot()).filter(
+      (r) => r.symbol === 'SPX' && r.date === SPX_DATE,
+    );
+    expect(day.map((r) => r.timestamp)).toEqual([
+      '2026-03-26 13:30:00+00',
+      '2026-03-26 13:31:00+00',
+      '2026-03-26 13:32:00+00',
+      '2026-03-26 20:05:00+00',
+    ]);
   });
 
   it('fills only the missing minutes of an insert-only list, deleting nothing', async () => {
@@ -1359,6 +1526,9 @@ describe('processRepairDay', () => {
       deleted: 4,
       ratio: 10.046368,
       dropped: 0,
+      // The stored 12:00 pre-market and 20:05 post-market minutes have no
+      // bar in the UW answer; they are deleted, and counted.
+      uncovered: 2,
     });
     expect(typeof out.manifest).toBe('string');
     const day = (await snapshot()).filter((r) => r.symbol === 'SPX');
@@ -1381,9 +1551,22 @@ describe('processRepairDay', () => {
       stored: 0,
       wouldDelete: 4,
       wouldInsert: 396,
+      uncovered: 2,
     });
     expect(await snapshot()).toEqual(before);
     expect(filesIn(backupDirOf())).toEqual([]);
+
+    // The run loop's per-date line carries both, side by side.
+    const lines = formatRunSummary(
+      summarizeRun({
+        days: [{ date: SPX_DATE, ok: true, value: out }],
+        stoppedBy: null,
+        notRun: [],
+      }),
+    );
+    expect(lines).toContain(
+      `  ${SPX_DATE}  fetched 396  stored 0  ratio 10.046368  dropped 0  uncovered 2  wouldDelete 4  wouldInsert 396`,
+    );
   });
 
   it('a partial UW answer skips the date untouched, never delete then half-refill', async () => {
@@ -1462,6 +1645,53 @@ describe('mainCheckoutDir', () => {
     expect(defaultBackupDir('/home/me/repo/.git')).toBe(
       path.join('/home/me/repo', 'docs', 'tmp', 'spx-candle-repair'),
     );
+  });
+});
+
+// ── The guards ─────────────────────────────────────────────
+
+describe('repairGuardRefusal', () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** Only Date is faked; none of these tests touches pglite. */
+  function atTime(iso) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(iso));
+  }
+
+  it.each([
+    // 2026-10-29 is a Thursday, CDT (UTC-5).
+    [
+      '08:15 CT, as the market window opens',
+      '2026-10-29T13:15:00Z',
+      /08:15–15:30 CT/,
+    ],
+    ['12:00 CT, mid-session', '2026-10-29T17:00:00Z', /08:15–15:30 CT/],
+    [
+      '17:00 CT, past the close but inside the Schwab crons window',
+      '2026-10-29T22:00:00Z',
+      /13:00–22:59 UTC/,
+    ],
+  ])(
+    'refuses at %s, and names no flag this CLI rejects',
+    (_label, iso, window) => {
+      atTime(iso);
+
+      const refusal = repairGuardRefusal();
+
+      expect(refusal).toMatch(window);
+      expect(refusal).not.toContain('--');
+      expect(refusal).not.toContain('allow-market-hours');
+    },
+  );
+
+  it.each([
+    ['07:30 CT Thursday, before both windows', '2026-10-29T12:30:00Z'],
+    ['18:00 CT Thursday, past both windows', '2026-10-29T23:00:00Z'],
+    ['10:00 CT Saturday', '2026-10-31T15:00:00Z'],
+  ])('lets a run start at %s', (_label, iso) => {
+    atTime(iso);
+    expect(repairGuardRefusal()).toBeNull();
   });
 });
 

@@ -39,6 +39,7 @@ import {
   WRITE_BATCH,
   chunk,
   classifyFailure,
+  marketHoursRefusal,
   retryTransientDb,
   tradingDaysInRange,
 } from './backfill-cli.mjs';
@@ -49,6 +50,7 @@ import {
   ratioFor,
   toIndexRows,
 } from './candles-backfill.mjs';
+import { schwabCronsBusyRefusal } from './schwab-local.mjs';
 
 // ── The lists ──────────────────────────────────────────────
 
@@ -264,7 +266,9 @@ export async function prepareDay(
     ndxClose: symbol === 'NDX' ? basis.indexClose : null,
   });
   if (!check.ok) {
-    const lost = dropped > 0 ? ` (${dropped} bars dropped as malformed)` : '';
+    const noun = dropped === 1 ? 'bar' : 'bars';
+    const lost =
+      dropped > 0 ? ` (${dropped} ${noun} dropped as malformed)` : '';
     return skip('other', `${check.reason}${lost}`);
   }
   return { ok: true, rows, ratio: basis.ratio, dropped };
@@ -550,11 +554,23 @@ function stampOf(now) {
  * already there). `rows` are prepareDay's, `ratio` its ratio, `list` the list
  * the date was picked from.
  *
- * Returns `{ date, symbol, ratio, deleted, inserted }` (the ratio to 6
- * decimals), plus `manifest` (its path) after an apply that wrote anything, or
- * `skipped: reason` when the request does not belong to its list, has no rows
- * or a bad ratio (nothing is read or written then). Without `apply` it only
- * reads: `deleted` and `inserted` are what an apply would change.
+ * Returns `{ date, symbol, ratio, deleted, inserted, uncovered }` (the ratio
+ * to 6 decimals), plus `manifest` (its path) after an apply that wrote
+ * anything, or `skipped: reason` when the request does not belong to its
+ * list, has no rows or a bad ratio (nothing is read or written then), or when
+ * the rows would leave a regular minute empty (see below; read-only so far).
+ * Without `apply` it only reads: `deleted` and `inserted` are what an apply
+ * would change.
+ *
+ * Coverage of what is deleted. The day check (prepareDay) gates the mapped
+ * regular bars, but a stored row is deleted whether or not a mapped row
+ * replaces it. So, before any write:
+ *   - a selected regular (`market_time = 'r'`) minute with no mapped row
+ *     refuses the date (`skipped: would leave N regular minutes empty`):
+ *     repairDay does not trust its caller to have checked;
+ *   - a selected pre- or post-market minute with no mapped row does not: the
+ *     placeholder there held a wrong value anyway. It is counted in
+ *     `uncovered`, in the dry run and the apply result alike.
  *
  * Failure ordering, so that nothing is lost:
  *   - the backup is written and read back before the manifest, and the
@@ -607,7 +623,30 @@ export async function repairDay(
   const toInsert = rows.filter(
     (r) => !keptMinutes.has(String(Date.parse(r.timestamp))),
   );
-  const counts = { date, symbol, ratio: shown };
+  // Selected minutes no mapped row replaces. Regular ones refuse the date.
+  const mappedMinutes = new Set(
+    rows.map((r) => String(Date.parse(r.timestamp))),
+  );
+  const unreplaced = selected.filter((r) => !mappedMinutes.has(r.epoch_ms));
+  const regularHoles = unreplaced.filter((r) => r.market_time === 'r');
+  const counts = {
+    date,
+    symbol,
+    ratio: shown,
+    uncovered: unreplaced.length - regularHoles.length,
+  };
+  if (regularHoles.length > 0) {
+    const noun = regularHoles.length === 1 ? 'minute' : 'minutes';
+    const first = new Date(Number(regularHoles[0].epoch_ms)).toISOString();
+    return {
+      ...counts,
+      deleted: 0,
+      inserted: 0,
+      skipped:
+        `would leave ${regularHoles.length} regular ${noun} empty ` +
+        `(first ${first}): stored rows no mapped row replaces`,
+    };
+  }
 
   if (!apply) {
     return { ...counts, deleted: selected.length, inserted: toInsert.length };
@@ -778,8 +817,10 @@ export async function describeUndo(manifestFile) {
  * (kind from the failure, `other` for a refusal), so runDays records it
  * against the date and the run ends with exit code 1. Returns the counts
  * runDays wants: `fetched` and `stored` (0 on a dry run), with `deleted`,
- * `ratio`, `dropped` and `manifest`, or `wouldDelete` and `wouldInsert` on a
- * dry run.
+ * `ratio`, `dropped`, `uncovered` and `manifest`, or `wouldDelete` and
+ * `wouldInsert` on a dry run. `dropped` is the UW bars left out as malformed,
+ * `uncovered` the stored pre- and post-market minutes no mapped row replaces;
+ * runDays prints both on the date's line.
  */
 export async function processRepairDay(
   sql,
@@ -807,6 +848,7 @@ export async function processRepairDay(
     fetched: day.rows.length,
     ratio: result.ratio,
     dropped: day.dropped,
+    uncovered: result.uncovered,
   };
   if (!apply) {
     return {
@@ -822,6 +864,32 @@ export async function processRepairDay(
     deleted: result.deleted,
     ...(result.manifest == null ? {} : { manifest: result.manifest }),
   };
+}
+
+// ── The guards ─────────────────────────────────────────────
+
+/**
+ * What the CLI prints when the Schwab window refuses the run. The window and
+ * the hours are schwabCronsBusyRefusal's; its own text offers
+ * --allow-market-hours, a flag this CLI rejects, so only its yes or no is used.
+ */
+const SCHWAB_WINDOW_REFUSAL =
+  'Refusing to run on a weekday 13:00–22:59 UTC: the Schwab crons are ' +
+  'active, and a token refresh here could race theirs. Run outside that ' +
+  'window.';
+
+/**
+ * The refusal to print when the run may not start now, or null: the
+ * 08:15–15:30 CT weekday window (UW's concurrency cap) first, then the
+ * 13:00–22:59 UTC weekday window (the Schwab crons). Neither text names a
+ * flag: this CLI has no --allow-market-hours. `runDays` is given the same
+ * choice (`offerFlag: false`) for its mid-run `stopped:` line.
+ */
+export function repairGuardRefusal() {
+  return (
+    marketHoursRefusal({ allowMarketHours: false, offerFlag: false }) ??
+    (schwabCronsBusyRefusal() == null ? null : SCHWAB_WINDOW_REFUSAL)
+  );
 }
 
 // ── The backup folder ──────────────────────────────────────

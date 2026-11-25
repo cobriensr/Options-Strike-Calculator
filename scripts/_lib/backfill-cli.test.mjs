@@ -244,6 +244,44 @@ describe('isMarketHoursCt and marketHoursRefusal', () => {
     atTime(MID_SESSION);
     expect(marketHoursRefusal({ allowMarketHours: true })).toBeNull();
   });
+
+  // Every script that has the flag prints this text. It is pinned whole: the
+  // `offerFlag` option below must not change a word of it.
+  it('keeps the default refusal text, which tells the reader about the flag', () => {
+    atTime(MID_SESSION);
+    const text =
+      'Refusing to run 08:15–15:30 CT on a weekday: the backfill would compete ' +
+      "with the live crons for UW's concurrency cap. Run after the close, or " +
+      'pass --allow-market-hours (e.g. on a market holiday).';
+    expect(marketHoursRefusal({ allowMarketHours: false })).toBe(text);
+    expect(
+      marketHoursRefusal({ allowMarketHours: false, offerFlag: true }),
+    ).toBe(text);
+  });
+
+  it('names no flag when offerFlag is false (a script that has none)', () => {
+    atTime(MID_SESSION);
+    const refusal = marketHoursRefusal({
+      allowMarketHours: false,
+      offerFlag: false,
+    });
+    expect(refusal).toBe(
+      'Refusing to run 08:15–15:30 CT on a weekday: the backfill would compete ' +
+        "with the live crons for UW's concurrency cap. Run after the close.",
+    );
+    expect(refusal).not.toContain('--');
+  });
+
+  it('is still null outside the window, and still null with the flag, whatever offerFlag says', () => {
+    atTime(AFTER_CLOSE);
+    expect(
+      marketHoursRefusal({ allowMarketHours: false, offerFlag: false }),
+    ).toBeNull();
+    atTime(MID_SESSION);
+    expect(
+      marketHoursRefusal({ allowMarketHours: true, offerFlag: false }),
+    ).toBeNull();
+  });
 });
 
 // ── dates ──────────────────────────────────────────────────
@@ -1033,6 +1071,24 @@ describe('runDays', () => {
       stoppedBy: expect.stringContaining(GUARD_MESSAGE),
       notRun: DATES,
     });
+  });
+
+  it('stops with the default text, flag hint included, unless offerFlag is false', async () => {
+    atTime(MID_SESSION);
+    const worker = vi.fn(async () => 'never');
+
+    const withHint = await runDays(DATES, after, worker);
+    const noHint = await runDays(
+      DATES,
+      { allowMarketHours: false, offerFlag: false, secrets },
+      worker,
+    );
+
+    expect(worker).not.toHaveBeenCalled();
+    expect(withHint.stoppedBy).toContain('--allow-market-hours');
+    expect(noHint.stoppedBy).toContain(GUARD_MESSAGE);
+    expect(noHint.stoppedBy).not.toContain('--');
+    expect(noHint.notRun).toEqual(DATES);
   });
 
   it('runs straight through with --allow-market-hours', async () => {
