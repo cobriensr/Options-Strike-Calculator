@@ -810,3 +810,13 @@ The plan's own review read the plan against this doc.
 - **Two health phrases were added:** "tape fired no alerts" and "live and tape rows disagree" (6.6).
 - **Live-row collisions on the 05-13 and 07-22 edge days** are skipped and listed, not stopped on (6.5).
 - **The migration id** is the next free one.
+
+## As built (2026-11-25)
+
+What the build changed from the text above. Everything else stands as written.
+
+- **6.4 step 4: an acknowledged replay row is kept.** The remove carries `AND NOT a.acknowledged`, so `heal_day` never deletes a stale replay row someone acknowledged. It counts the row in `acknowledged_kept`, and the tool flags the day (exit 1).
+- **6.4 and 8.1: `--assume-default-settings`.** It supplies the code defaults only on a day that has no covering settings row. A day that has one is not refused: the tool uses the row, and the plan records each day's settings source. This replaces the "is refused for a day that has a settings row" test in 8.1.
+- **6.5: the tool is two files.** `scripts/interval_ba_tape.py` holds the command line and the modes. `scripts/interval_ba_tape_runs.py` holds the shared machinery: connections, refusal windows, run folders, the backup, verified R2 puts and the apply driver. The tool connects to Neon's direct host, never the pooler, and runs its read-only work in `BEGIN READ ONLY` transactions rolled back after each read.
+- **6.6: the day's counts are in a Sentry context.** The health message carries them in the `interval_ba_day` context, not in extras, because the SDK keeps only the first 10 extras and the day has 13 counts.
+- **9: `INTERVAL_BA_DUCKDB_MEMORY` is `"2GB"`.** Railway's memory limit for the service read 8,000,000,000 bytes on 2026-11-25. A quarter is 2,000,000,000 bytes, under the 2000MiB cap (2,097,152,000 bytes), and DuckDB reads `GB` as 10^9 bytes. Re-derive it when the limit changes.

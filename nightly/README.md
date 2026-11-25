@@ -3,9 +3,9 @@
 Railway cron service (`nightly`) that lands the Unusual Whales options Full Tape
 in Cloudflare R2: one Parquet object per trading day. After the tape it fills the
 Lottery Finder and Silent Boom outcomes in Neon from that tape, checks that
-recent sessions have them, refits the Lottery Finder score weights from them, and
-keeps the research state, reports and logs in the same bucket under `research/`.
-It runs once and exits.
+recent sessions have them, corrects the live Interval B/A rows from it, refits the
+Lottery Finder score weights from the outcomes, and keeps the research state,
+reports and logs in the same bucket under `research/`. It runs once and exits.
 
 ## What it does
 
@@ -15,9 +15,11 @@ Each run:
    days of catch-up (`CATCHUP_MAX_DAYS`). The calendar starts at 2026-01-02
    (`TAPE_START`). A planned day starts only inside the window under "How much of
    the run the tape gets". At the measured pace (204 s a day at the median, 324 s
-   the slowest) its 6,900 s start about 34 days a night, 22 at the slowest, so
-   the 30 fit at the median pace and not at the slowest: a night lands up to 30
-   days, and a longer backlog or the slowest pace takes more nights.
+   the slowest) its 6,000 s start about 30 days a night, 19 at the slowest, so
+   the 30 just fit at the median pace and not at the slowest: a night lands up to
+   30 days, and a longer backlog or the slowest pace takes more nights. With the
+   enrich budget at its cap the window is 5,100 s and a night starts about 25
+   days at the median pace, so a 30-day catch-up no longer fits one night.
 2. For each planned day, newest first: downloads the zip from UW, converts it to
    Parquet with polars (zstd level 3), checks it (see "Row and day checks"), and
    uploads it to R2. The upload is checked against the local byte count. A
@@ -37,6 +39,9 @@ Each run:
      `silent_boom_alerts` from the tape in R2 (see "Enrichment").
    - `outcome-check` alerts when the fires of a recent session have no outcomes
      (see "Alert meanings").
+   - `interval-ba-tape` corrects the live Interval B/A rows (`interval_ba_alerts`) of
+     each session from the tape in R2, adds the alerts live missed, and alerts on a
+     day live looks wrong for (see "Interval B/A tape").
    - `lottery-refit` moves one candidate version of the Lottery Finder score weights
      one step through its lifecycle, on tonight's outcomes (see "Refit").
    - `research-derive` keeps the per-day state the research reports read: the chains
@@ -82,38 +87,45 @@ and, in the last column, at its 1,800 s cap:
 | Quantity                                           | Seconds (enrich 900) | Seconds (enrich at its 1,800 cap) |
 | -------------------------------------------------- | -------------------- | --------------------------------- |
 | Run deadline (`RUN_DEADLINE_SECONDS`)              | 18,000 (5 h)         | 18,000 (5 h)                      |
-| Steps' reserve (the sum below)                     | 7,500                | 8,400                             |
-| Tape stop: 18,000 − reserve                        | 10,500 (2 h 55 min)  | 9,600 (2 h 40 min)                |
+| Steps' reserve (the sum below)                     | 8,400                | 9,300                             |
+| Tape stop: 18,000 − reserve                        | 9,600 (2 h 40 min)   | 8,700 (2 h 25 min)                |
 | Minimum left to start a day (`DAY_BUDGET_SECONDS`) | 3,600                | 3,600                             |
-| Window in which a day may start: tape stop − 3,600 | 6,900 (1 h 55 min)   | 6,000 (1 h 40 min)                |
+| Window in which a day may start: tape stop − 3,600 | 6,000 (1 h 40 min)   | 5,100 (1 h 25 min)                |
 
-The reserve is the sum of the fourteen steps' `min_seconds`: `enrich-outcomes` 900
+The reserve is the sum of the fifteen steps' `min_seconds`: `enrich-outcomes` 900
 (`ENRICH_DAY_BUDGET_SECONDS`), `outcome-check` 300 (`OUTCOME_CHECK_BUDGET_SECONDS`),
-`lottery-refit` 1,800 (`REFIT_BUDGET_SECONDS`), `research-derive` 900
-(`RESEARCH_DAY_BUDGET_SECONDS`), eight report steps at 300 (`REPORT_BUDGET_SECONDS`) and
-`exit-policy-report` and `flow-timing-report` at 600 (`LARGE_REPORT_BUDGET_SECONDS`):
-900 + 300 + 1,800 + 900 + 8 × 300 + 2 × 600 = 7,500. The cap's 8,400 is 7,500 − 900 +
-1,800. Every step added to `STEPS` takes its `min_seconds` out of the window.
+`interval-ba-tape` 900 (`INTERVAL_BA_DAY_BUDGET_SECONDS`), `lottery-refit` 1,800
+(`REFIT_BUDGET_SECONDS`), `research-derive` 900 (`RESEARCH_DAY_BUDGET_SECONDS`), eight
+report steps at 300 (`REPORT_BUDGET_SECONDS`) and `exit-policy-report` and
+`flow-timing-report` at 600 (`LARGE_REPORT_BUDGET_SECONDS`):
+900 + 300 + 900 + 1,800 + 900 + 8 × 300 + 2 × 600 = 8,400. The cap's 9,300 is 8,400 − 900 +
+1,800. Every step added to `STEPS` takes its `min_seconds` out of the window:
+`interval-ba-tape` took 900 s, which cut the window from 6,900 s to 6,000 s (and at the
+cap from 6,000 s to 5,100 s).
 
 A night starts about the window divided by the seconds one day takes, rounded up: the
 first day starts at once, so a window of W seconds admits the starts at 0, p, 2p, ...
 below W. On Railway a day takes 204 s to land at the median (86 days, 2026-10-29 to
 11-12; 245 s at the 90th percentile, 324 s the slowest), and the two 30-day catch-up
-nights took 5,956 s and 6,110 s in all, so each fit inside 6,900 s. Worked that way
-from those pace figures, the 6,900 s window starts about 34 days at the median pace
-(6,900 ÷ 204 = 33.8) and about 22 at the slowest (6,900 ÷ 324 = 21.3). At the cap's
-6,000 s it is about 30 (29.4) and 19 (18.5). So at the median pace the 30-day cap
-(`CATCHUP_MAX_DAYS`) and the window are about equal at the cap's 6,000 s, and the cap
-is the lower limit at 6,900 s. At the slowest pace a full 30-day backlog takes two
+nights took 5,956 s and 6,110 s in all. The window bounds when a day starts, not when
+the night ends: the 30th day of each started about one day earlier, at about 5,750 s
+and 5,900 s, inside the 6,000 s window with little to spare. Worked from those pace
+figures, the 6,000 s window starts about 30 days at the median pace (6,000 ÷ 204 =
+29.4) and about 19 at the slowest (6,000 ÷ 324 = 18.5). At the cap's 5,100 s it is
+about 25 (5,100 ÷ 204 = 25.0: the starts run 0 to 4,896 s, and a 26th would be at
+5,100 s, not below it) and 16 (15.7). So at the median pace the 30-day cap
+(`CATCHUP_MAX_DAYS`) and the window are about equal at the shipped 900 s, and at the
+enrich cap a 30-day catch-up no longer fits one night: about 25 days land the first
+night and the rest the next. At the slowest pace a full 30-day backlog takes two
 nights either way. These are calculated from the earlier pace, not measured on a night
-with the research steps in; Task 16, Step 4 of
+with the research steps and `interval-ba-tape` in; Task 16, Step 4 of
 `docs/superpowers/plans/2026-11-05-nightly-pipeline-phase3.md` adds the measured days
 per night.
 
 `test_pipeline_order_and_reserve` (`tests/test_pipeline.py`) pins the step order and
 each step's reserve, and `test_deadline_constants_bound_the_run`
 (`tests/test_main.py`) fails if the reserve leaves less than two
-`DAY_BUDGET_SECONDS` of the run for the tape (at the cap, 8,400 + 2 × 3,600 = 15,600 is
+`DAY_BUDGET_SECONDS` of the run for the tape (at the cap, 9,300 + 2 × 3,600 = 16,500 is
 within the 18,000 s run).
 
 Constants (deadlines, retries, thresholds) live in `src/constants.py`, not in
@@ -219,7 +231,12 @@ read `DATABASE_URL`.
 `DATABASE_URL` is a Railway reference to uw-stream's variable
 (`${{uw-stream.DATABASE_URL}}`), so a rotation reaches both services. The steps
 use it: `enrich-outcomes` updates rows in `lottery_finder_fires` and
-`silent_boom_alerts`, `outcome-check` reads them, and `lottery-refit` reads
+`silent_boom_alerts`, `outcome-check` reads them, `interval-ba-tape` writes
+`interval_ba_alerts` (it updates the sweep and floor flags and a blank SPXW
+`underlying_price` on live rows, inserts the alerts live missed as
+`source = 'replay'` rows, and deletes stale unacknowledged replay rows) and
+`interval_ba_tape_days` (it upserts a day's row and deletes a re-landed day's) and
+reads `interval_ba_live_settings`, and `lottery-refit` reads
 `lottery_finder_fires`, `lottery_ticker_stats` and the weights store
 (`lottery_score_versions`, `lottery_score_pointers`) and writes a candidate's row
 in `lottery_score_versions`. A promotion, which ships off, also rewrites `score`
@@ -557,6 +574,110 @@ ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --r2 --select all
 
 Without `--dry-run` the same command writes to the database. Without `--date` the
 newest landed day is used.
+
+## Interval B/A tape
+
+The `interval-ba-tape` step corrects the live Interval B/A rows (`interval_ba_alerts`,
+which uw-stream writes during the session) from the tape in R2. The tape is the one
+definition of the alert: `src/interval_ba_replay.py` replays today's detector over it,
+and a drift test pins the replay's constants to uw-stream's. It runs right after
+`outcome-check`, because it writes Neon and carries live's outage alert, so it should not
+be the step squeezed when time runs short. Design:
+`docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md` (6.4 and 6.6).
+
+**Each night.** It lists every trading day from 2026-10-29 (`INSERT_MISSED_FROM`) through
+the last session that has no row in `interval_ba_tape_days`, and works them newest first.
+
+- A day with no tape in R2 yet waits (`days_waiting_tape`, no alert); the step works it
+  once the tape lands.
+- For a landed day it downloads the tape to `/tmp/nightly/interval-ba`
+  (`INTERVAL_BA_CACHE_DIR`, emptied when the step opens its reader, one day on disk at a
+  time, each download held to 600 s by `FETCH_DEADLINE_SECONDS`, or to the step's deadline
+  if nearer). It then opens DuckDB on the file with 2 GB of memory
+  (`INTERVAL_BA_DUCKDB_MEMORY`) and 2 threads (`INTERVAL_BA_DUCKDB_THREADS`), and a fresh
+  Neon connection, and runs `heal_day` (below). Both connections close before the file is
+  released.
+- It stops for the night, leaving the rest as `days_left` (the step ends `partial`), when
+  less than `INTERVAL_BA_DAY_BUDGET_SECONDS` (900 s) of its time is left, or when
+  `INTERVAL_BA_MAX_DAY_FAILURES` (3) days have failed (the step ends `failed`).
+- A day that raises (its download, a tape R2 no longer has, a connection, the settings
+  read, `heal_day`) is counted in `days_failed` and sent to Sentry once as an exception
+  tagged `step` and `day`; the loop goes on. A tape with no 0DTE rows raises too, as a
+  broken tape, never as a day with no alerts. `heal_day` runs in one transaction, so a
+  failed day leaves nothing and no marker, and the next night retries it.
+- A failure of the step's own setup (its connection, the marker delete or read, the
+  reader, the tape listing) raises out of the step: it is `failed`, and no day was tried.
+
+**What `heal_day` writes**, for the day, in one transaction in batches of 500 rows:
+
+- On live rows (`source = 'live'`): `top_trade_is_sweep` and `top_trade_is_floor`, where
+  the tape names the row's top trade and the flags differ, and `underlying_price` of an
+  SPXW row that has none (a spot already there is never replaced).
+- New rows: the tape's alerts that live missed, as `source = 'replay'`
+  (`ON CONFLICT DO NOTHING`), for the tickers live had on and unless the day's inserts are
+  held (below).
+- Deleted rows: `source = 'replay'` rows whose key the replay no longer fires, which only
+  a re-landed tape makes. A row someone acknowledged is kept and counted
+  (`acknowledged_kept`), and nothing is deleted when the replay fired no alerts at all,
+  because that means the tape read broke.
+- The day's `interval_ba_tape_days` row (migration #212): the done marker, with the day's
+  counts and why its inserts were held, if they were. A redone day replaces the counts.
+
+It never deletes a live row, never changes another column of one, and never changes
+`acknowledged`. The comparison counts and the inserts are over the tickers live had on
+that day, the ones on in every settings row that covers it; the removals, flags and spots
+cover every row of the day.
+
+**When the inserts are held.** The day's inserts are held, and its marker says why
+(`inserts_held`), unless live's settings show it ran today's rule. Flags, spot and
+removals still run. The settings are the `interval_ba_live_settings` rows uw-stream writes
+at each start. A row covers a day when it is the latest one booted before the day's 00:00
+CT, or booted before 16:00 CT that day: SPXW 0DTE prints end at 15:59 CT, so a change
+deployed after the close belongs to the next session. The three reasons, in this order:
+
+- `no live settings record`: no row covers the day.
+- `live settings differ from the tape rule`: a covering row's ratio, premium floor,
+  window, multi-leg share, codes or confluence window is not the replay module's.
+- `live detector off`: `enabled` is false in any covering row, one that was replaced
+  later the same day included. Live fired nothing while it was off.
+
+A held day keeps its marker, because a retry would hold again. The health alert for it
+asks for a decision (below); after that, delete the marker and the next night redoes it.
+
+**Markers.** `interval_ba_tape_days` has one row per worked day, and the step works only
+days with none.
+
+- **A day landed or re-landed tonight** (`landed` or `relanded` in the tape job's
+  outcome) has its marker deleted first, on the setup connection, so it is redone on the
+  new tape, and the redo removes replay rows the new tape no longer fires. A deleted
+  object that lands again counts as `landed`. A first land has no marker, so for it the
+  delete changes nothing. Days before 2026-10-29 are never cleared: the step never works
+  them, so the delete would only lose the record the one-off tool wrote.
+- **A re-landed day keeps its old marker if the step does not run that night** (the same
+  gap as `enrich-outcomes`' marker reset): the step is skipped for its deadline, raises
+  before the delete, or the run is killed after the land. The next night's tape job no
+  longer reports the day, so its marker stays and the day keeps the old tape's
+  corrections until someone deletes the marker by hand.
+- **To redo a day by hand**, delete its marker, then the next night's step works it (the
+  day must be landed in R2, or it waits):
+
+  ```sql
+  DELETE FROM interval_ba_tape_days WHERE day = '<day>';
+  ```
+
+**Counts and logs.** The counts are in the log line `step interval-ba-tape ...` and in the
+`counts` extra of the step alerts: `days_done`, `days_failed`, `days_left`,
+`days_waiting_tape`, `inserted`, `flags_changed`, `spot_filled`, `root_label_mismatch` and
+`health_alerts` (days that sent a health alert, below). The log has one line per day,
+`interval-ba <day> <status> <non-zero counts> in <seconds>s`, where the status is
+`failed (<ExceptionClass>)`, else the health phrase, else `ok`. It never carries an
+exception's text or row data. The step ends `failed` if a day failed, else `partial` if
+days are left, else `ok`; a health alert does not change that.
+
+The same pass runs by hand with `scripts/interval_ba_tape.py heal` (a dry run, then
+`--apply` against the plan with its expected totals), and that tool also rebuilds the
+stretches live never covered; its docstring is the reference. It refuses weekdays 08:15 to
+16:00 CT and every day 07:15 to 12:30 UTC, and it needs `ml/.venv`.
 
 ## Refit
 
@@ -1243,7 +1364,7 @@ Otherwise it is empty. It never changes the grouping.
 | `nightly tape day relanded`                     | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.                                                                                                                                                                                                                         |
 | `nightly re-land identical content`             | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day.                                                                                                                                                                                                                        |
 | `nightly rewrite check unavailable`             | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                                                                                                                                                                                                                                        |
-| `nightly step failed`                           | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. `lottery-refit` never ends `failed`: it raises (exception row below). Read the alerts below and the run log.                                                         |
+| `nightly step failed`                           | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. `interval-ba-tape`: a day failed. `lottery-refit` never ends `failed`: it raises (exception row below). Read the alerts below and the run log.                       |
 | `nightly step partial`                          | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists. `lottery-refit`: a promotion was deferred (`promotion_deferred`); the shadow stays and the next night judges it again (the third night in a row also sends `promotion deferred repeatedly`). |
 | `nightly step skipped_deadline`                 | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                                                                                                                                               |
 | `nightly step failed` with a research `detail`  | error   | A research step ended `failed`. The `detail` is one of the fixed phrases in "Research step alerts", each with its meaning and fix.                                                                                                                                                                                                            |
@@ -1251,6 +1372,7 @@ Otherwise it is empty. It never changes the grouping.
 | `nightly research day set aside`                | warning | `research-derive`: a day failed its third session (or a killed run left its third marker) and is set aside, then retried later. Tags `step`, `day`; extra `cause` (the exception class, or `run died`). One issue per day; it auto-resolves after 12 quiet hours. See "The derive failure memory".                                               |
 | `nightly outcomes all null`                     | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below.                                                                                                                              |
 | `nightly outcomes mostly null`                  | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").                                                                                                                                 |
+| `nightly interval-ba live health: <phrase>`     | error   | `interval-ba-tape`: live looks wrong for a day, or its inserts were held. Sent once per day, whatever the step ends as; the phrase is one of seven, each with its fix in "Interval B/A health alerts". Tags `step`, `day`; the day's counts are in the `interval_ba_day` context, not extras. One issue per day.                              |
 | `nightly refit promoted`                        | warning | `lottery-refit`: a shadow passed its gates and was promoted: the live scores were rewritten and `active` moved. One issue per version. See "Refit".                                                                                                                                                                                           |
 | `nightly refit passed; promotion disabled`      | warning | `lottery-refit`: a shadow passed its gates; promotion is off, so it is marked `passed` and no live score changed. One issue per version. See "Refit".                                                                                                                                                                                         |
 | `nightly refit rejected`                        | error   | `lottery-refit`: a shadow failed its gates or starved; `reasons` lists them. One issue per version. See "Refit".                                                                                                                                                                                                                              |
@@ -1258,7 +1380,7 @@ Otherwise it is empty. It never changes the grouping.
 | `nightly refit fires scored by another version` | warning | `lottery-refit`: `fires_off_version` is above 0 (the count is in the extras): fires carry a `score_version` other than the active version's. A repair for you, not a failure; the step's status is unchanged. One issue per active version. Repair: "Vercel side" in "Refit".                                                                 |
 | `nightly refit promotion deferred repeatedly`   | error   | `lottery-refit`: a passing shadow's promotion was deferred on its third night (`deferred_nights` in extras). It does not fit its window; the next night defers it again. One issue per version. See "Refit".                                                                                                                                  |
 | exception tagged `step`                         | error   | A step raised (a database error, an import error). The step is `failed` and the log names the exception class; no `nightly step failed` event follows. `lottery-refit` also raises on invalid stored weights, a judged session with no feed rows, a second shadow, or a pointer or score that moved under a promotion.                        |
-| exception tagged `step` and `day`               | error   | One day of `enrich-outcomes` raised (its download, its connection, either script's pass). Counted in `days_failed`; the step goes on with the next day and retries this one next night.                                                                                                                                                       |
+| exception tagged `step` and `day`               | error   | One day of `enrich-outcomes` raised (its download, its connection, either script's pass), or of `interval-ba-tape` (its download, a connection, the settings read, `heal_day`). Counted in `days_failed`; the step goes on with the next day and retries this one next night.                                                                 |
 | `nightly config invalid`                        | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                                                                                                                                                                                                                                          |
 | `NYSE holiday table ends in {year}; ...`        | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.                                                                                                                                                                                                                                      |
 
@@ -1307,6 +1429,33 @@ A `priced none` day need not raise an `all null` alert. When its fires hold a va
 from another writer (the feed's), the shares stay near 100%, so `nightly outcomes all
 null` stays quiet and the step's own `nightly step failed` event and the `priced none`
 log line are the only signs.
+
+**Interval B/A health alerts.** After each day it commits, `interval-ba-tape` sends at
+most one error, `nightly interval-ba live health: <phrase>`, whatever the step's own
+status ends as (a failed or partial step still sends it; a day that raised sends its
+exception instead). Its tags are `service=nightly`, `step=interval-ba-tape` and `day`.
+The fingerprint names the day, so each day opens its own issue and Sentry's new-issue
+rule (6262727) mails it. A day is worked once, so the same day mails again only if it
+is redone. The day's 13 counts are in the event's `interval_ba_day` **context**, not
+in the extras (the SDK keeps only the first 10 extras): `tape_alerts`, `live_rows`,
+`live_missed`, `live_only`, `matched`, `value_mismatched`, `inserted`, `removed`,
+`acknowledged_kept`, `flags_changed`, `flags_unmatched`, `spot_filled` and
+`root_label_mismatch`. The first six are over the tickers live had on that day, and so
+is `inserted`.
+
+When more than one phrase applies, the first below is sent: the three hold reasons
+(see "Interval B/A tape"), then the four checks of live against the tape. Below, "the
+tool" is `scripts/interval_ba_tape.py` and `<day>` is the alert's `day` tag.
+
+| `<phrase>`                                | When (counts are over the tickers live had on)                                                                                                                                                                                                         | Meaning and what to do                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `no live settings record`                 | No `interval_ba_live_settings` row covers the day.                                                                                                                                                                                                     | The inserts were held: nothing says which rule live ran, so none of the tape's alerts were added. Flags, spot and removals ran. uw-stream writes a row at each start, so for a new session this means the table lost its rows or the writer never ran: check it. Then either restore the row and delete the day's marker, or, if live ran the code's defaults, run the tool's `heal --assume-default-settings` for the day (it replaces the marker). |
+| `live settings differ from the tape rule` | A covering row's ratio, premium floor, window, multi-leg share, codes or confluence window is not the replay module's.                                                                                                                                 | Held: live ran another rule, so the tape's alerts are not live's and none were added. The owner decides. If the new rule is the one to keep, change the replay module's constants and the drift test that pins them to uw-stream's, then delete the marker. If the deploy was a mistake, fix uw-stream and leave the day held.                                                                                                                       |
+| `live detector off`                       | `enabled` is false in any covering row.                                                                                                                                                                                                                | Held: live fired nothing while it was off, so the tape must not add alerts. Expected if you switched it off. Otherwise find why a start came up with it off (uw-stream's env and start log). The day stays held.                                                                                                                                                                                                                                     |
+| `tape fired no alerts`                    | `tape_alerts` is 0 and `live_rows` is above 0.                                                                                                                                                                                                         | The replay or the tape read broke; the alerts did not go away. Nothing was removed, because an empty replay removes nothing. Look at the day's tape in R2 and run the tool's `verify --from <day> --to <day>`, fix the cause, then delete the marker.                                                                                                                                                                                                |
+| `live wrote no alerts`                    | `tape_alerts` is above 0 and `live_rows` is 0.                                                                                                                                                                                                         | uw-stream wrote none that session (an outage or a failed detector). The step added the tape's alerts as `source = 'replay'` rows (`inserted`). Nothing to repair; read uw-stream's logs for the session.                                                                                                                                                                                                                                             |
+| `live missed alerts`                      | `live_missed` is at least 5 and above 10% of `tape_alerts`.                                                                                                                                                                                            | Live skipped many alerts the tape fires, and the step added them as replay rows. A handful is normal: when the thresholds were set, live had missed 2 keys in 13 sessions since 2026-10-29, and 34 of 108 on 2026-05-20. Nothing to repair; look for an uw-stream disconnect or restart that session.                                                                                                                                                |
+| `live and tape rows disagree`             | `matched` is at least 20 and more than 5% of those keys differ in `ratio_pct`, `ask_premium`, `total_premium`, `trade_count`, `top_trade_premium` or `top_trade_size` (`value_mismatched`); or `live_only` is at least 5 and above 10% of `live_rows`. | Live and the replay disagree on the rule in a way the settings record does not show: a live code change that left no settings row, or a replay bug. The day's usual writes ran. Run the tool's `verify --from <day> --to <day>` to list the differing rows and decide which side is wrong. If live is right, fix the replay and its drift test, then delete the marker.                                                                              |
 
 **Research step alerts.** A research step's `nightly step failed` or `nightly step
 partial` event carries one of these fixed `detail` phrases (they are part of the
@@ -1388,6 +1537,13 @@ process: it uses DuckDB with a 4 GB memory limit (`connect` in `scripts/_eod_flo
 builds pandas frames for the largest day. After the first night with the research steps,
 record Railway's peak memory from its metrics here, beside the 3.66 GB figure.
 
+`interval-ba-tape` runs DuckDB on one day's local tape with a 2 GB memory limit and 2
+threads (`INTERVAL_BA_DUCKDB_MEMORY`, `INTERVAL_BA_DUCKDB_THREADS`), spilling under
+`/tmp/nightly/interval-ba`. The limit is a quarter of the service's memory limit, which
+read 8,000,000,000 bytes on Railway on 2026-11-25 (DuckDB reads `GB` as 10^9 bytes); a
+quarter is 2,000,000,000 bytes, under the 2000MiB cap (2,097,152,000 bytes) the spec sets.
+Re-derive it when the service's memory limit changes.
+
 ## Run it locally once
 
 Set the env vars above in your shell (not a file in the repo), then:
@@ -1402,7 +1558,8 @@ The modules import each other flat, so `src/`, the repo's `scripts/` and its `ml
 must be on the path: the Dockerfile sets `PYTHONPATH=/app/src:/app/scripts:/app/ml/src`,
 and a local shell run from `nightly/` needs `PYTHONPATH=src:../scripts:../ml/src`.
 A local run uses the real R2 bucket, the real UW key and the database `DATABASE_URL`
-names, which `enrich-outcomes` updates, and `lottery-refit` and `takeit-drift` write to.
+names, which `enrich-outcomes` and `interval-ba-tape` update, and `lottery-refit` and
+`takeit-drift` write to.
 It uses `/tmp/nightly` as its work dir, which is a Unix path. The one-time seed has its own
 command, under "Seeding `research/` once".
 

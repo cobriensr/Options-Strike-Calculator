@@ -664,3 +664,15 @@ Tasks run one implementer at a time, in this order. Each task gets a task review
 - **The export schema** is named for Task 13.
 - **The migration id** is now "the next free one".
 - **R6.** The safe `booted_at` key is noted.
+
+## As built (2026-11-25)
+
+What the build changed from the tasks above. Everything else stands as written.
+
+- **Task 6, `heal_day`'s signature.** It gained `expect_sha256: str | None = None` and raises `PlanChanged` (a `ValueError`) before any write when a fresh plan's sha256 differs from it, on a dry run too. The tool passes the plan's sha256 on apply (Task 7).
+- **Task 6, the settings cover.** `read_covering_settings` returns the latest row booted before the day's 00:00 CT plus every row booted before 16:00 CT that day, not "every row during the day": SPXW 0DTE prints end at 15:59 CT, so a change deployed after the close belongs to the next session.
+- **Task 6, the detector-off hold.** `'live detector off'` holds the inserts when `enabled` is false in any covering row, so a row that was replaced later the same day still holds the day. The held reasons are checked in this order: no record, another rule, detector off.
+- **Task 6, removals.** The remove keeps a replay row someone acknowledged (`NOT a.acknowledged`), counted in `acknowledged_kept`.
+- **Task 10, the image import checks.** `interval_ba_step` and `interval_ba_replay` joined the built-image import in `.github/workflows/ci.yml` and `IMAGE_IMPORT_CHECK` in `nightly/tests/test_image_layout.py` in Task 10, not later: `lazy_step` defers the import, so a bad one would otherwise show only at 07:15.
+- **Task 10, the health counts.** They go in the `interval_ba_day` Sentry context, not extras: the SDK keeps only the first 10 extras, and the day has 13 counts.
+- **Task 11, the reserve at the enrich cap.** The step takes the reserve to 8,400 s and the tape window to 6,000 s, as planned. The plan and the spec give only that case. At the enrich budget's 1,800 s cap they are 9,300 s and 5,100 s, so a 30-day catch-up no longer fits one night at the median pace (about 25 days). `nightly/README.md` has the arithmetic.

@@ -1,6 +1,6 @@
 # 0DTE SPX Strike Calculator
 
-Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2, then fills fire outcomes in Neon from it and refits the lottery score weights). Multi-leg trades are flagged from the exchange's own trade code on the anchor print (`api/_lib/anchor-legs.ts`); the Railway multileg classifier is retired.
+Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2, then fills fire outcomes and corrects live Interval B/A rows in Neon from it, and refits the lottery score weights). Multi-leg trades are flagged from the exchange's own trade code on the anchor print (`api/_lib/anchor-legs.ts`); the Railway multileg classifier is retired.
 
 ## Architecture
 
@@ -55,10 +55,12 @@ nightly/          Full Tape lander and post-tape steps (Python, Railway cron ser
                   (a cron set on the Railway service, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
                   to Parquet with polars and uploads one object per day to Cloudflare R2
                   (fulltape/{date}-fulltape.parquet), newest missing day first. Plans up to 30 days, starts a day only inside the window the
-                  steps' reserve leaves (6,900 s of the 5 h run, 6,000 s at the enrich budget's cap; nightly/README.md). Re-lands a recent day whose UW ETag changed, and marks a day unavailable only
+                  steps' reserve leaves (6,000 s of the 5 h run, 5,100 s at the enrich budget's cap; nightly/README.md). Re-lands a recent day whose UW ETag changed, and marks a day unavailable only
                   on UW's own evidence. Then `enrich-outcomes` fills the outcome, provenance and marker columns of lottery_finder_fires and
-                  silent_boom_alerts from the tape (that step's only Neon writes), `outcome-check` alerts on sessions with no outcomes, and
-                  `lottery-refit` builds and judges a shadow candidate of the lottery weights in `lottery_score_versions` (promotion, which
+                  silent_boom_alerts from the tape (that step's only Neon writes), `outcome-check` alerts on sessions with no outcomes,
+                  `interval-ba-tape` corrects each session's live interval_ba_alerts rows from the tape (sweep/floor flags, a blank SPXW spot; adds
+                  the alerts live missed as source='replay'; deletes stale unacknowledged replay rows) and keeps interval_ba_tape_days, its only
+                  Neon writes, with one Sentry alert per day live looks wrong for, and `lottery-refit` builds and judges a shadow candidate of the lottery weights in `lottery_score_versions` (promotion, which
                   rewrites live scores, stays off until the owner's go-ahead).
                   Then eleven research steps: `research-derive` keeps per-day derived state, and ten report steps (the EOD-flow rollup, whale plots,
                   the exit-policy, flow-timing, feature-audit, outcome-mining and score-lineage reports, the lottery tracking CSV, the quality sim and
@@ -67,7 +69,8 @@ nightly/          Full Tape lander and post-tape steps (Python, Railway cron ser
                   Runs once and exits: 0 ok, 1 a day did not land or a step failed or was skipped, 2 bad config, 3 watchdog, 143 SIGTERM.
                   Sentry server_name=nightly plus the `nightly-tape` cron monitor. Env: UW_API_KEY, R2_*, DATABASE_URL, SENTRY_DSN.
                   Own Dockerfile, README.md (runbook and alert meanings), requirements.txt + requirements-dev.txt,
-                  conftest.py — own pytest suite under tests/. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md.
+                  conftest.py — own pytest suite under tests/. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md
+                  (interval-ba-tape: 2026-11-24-interval-ba-rebuild-design.md).
 
 scripts/          Backfill, probe and analysis scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.),
                   plus build/coverage tooling (check-build-output.mjs, check-coverage-floor.mjs, _lib/)
