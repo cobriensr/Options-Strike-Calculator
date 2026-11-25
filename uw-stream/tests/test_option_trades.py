@@ -420,7 +420,10 @@ class TestFlushOrder:
         inserts: list[list[tuple]] = []
 
         async def _record(*, table, columns, rows, conflict_cols) -> int:
-            inserts.append(rows)
+            # Only the raw-tick write: an Interval B/A handler's first flush in a
+            # process also writes its live-settings row to another table.
+            if table == "ws_option_trades":
+                inserts.append(rows)
             return len(rows)
 
         monkeypatch.setattr("handlers.option_trades.db.bulk_insert_ignore_conflict", _record)

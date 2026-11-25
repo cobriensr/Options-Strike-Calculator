@@ -21,6 +21,8 @@ from uuid import uuid4
 import pytest
 
 import memory_stats
+from config import settings
+from handlers import interval_ba as interval_ba_mod
 from handlers.interval_ba import (
     _ALERT_COLUMNS,
     _MULTI_LEG_CODES,
@@ -46,6 +48,15 @@ def _reset_recent_fires():
     recent_fires._reset_for_tests()
     yield
     recent_fires._reset_for_tests()
+
+
+# The two live-settings flags are module state that lasts for the process, so
+# without a reset the first test to flush would decide whether every later
+# test sees the settings write. Each test starts as a freshly booted process.
+@pytest.fixture(autouse=True)
+def _reset_live_settings_flags(monkeypatch):
+    monkeypatch.setattr(interval_ba_mod, "_settings_recorded", False)
+    monkeypatch.setattr(interval_ba_mod, "_settings_failure_reported", False)
 
 
 # Bucket containing 17:06 UTC (2026-05-12 12:05-12:10 CT). All "same
@@ -1151,7 +1162,8 @@ class TestFlush:
         # handlers.option_trades.db and handlers.interval_ba.db are the
         # SAME module object (both ``import db``), so a single dispatch
         # mock keyed on ``table`` distinguishes the raw-tick write
-        # (ws_option_trades) from the alert write (interval_ba_alerts).
+        # (ws_option_trades) from the alert write (interval_ba_alerts); the
+        # first flush also writes the live-settings row, which is not an alert.
         # The raw-tick insert raises on the FIRST flush, then succeeds —
         # models a transient Neon outage that recovers by the next batch.
         raw_calls = {"n": 0}
@@ -1163,7 +1175,8 @@ class TestFlush:
                 if raw_calls["n"] == 1:
                     raise RuntimeError("transient Neon outage")
                 return len(rows)
-            alert_inserts.append(list(rows))
+            if table == "interval_ba_alerts":
+                alert_inserts.append(list(rows))
             return len(rows)
 
         monkeypatch.setattr(
@@ -1189,6 +1202,220 @@ class TestFlush:
         assert handler._pending_alerts == []
         assert len(alert_inserts) == 1
         assert alert_inserts[0] == staged
+
+
+# ----------------------------------------------------------------------
+# Live settings record — each process writes the detector settings it ran
+# with to interval_ba_live_settings, once, from the first flush that can.
+# The nightly tape step reads that row to decide whether a day's live
+# alerts used the tape rule and which tickers live had switched on.
+# ----------------------------------------------------------------------
+
+_SETTINGS_TABLE = "interval_ba_live_settings"
+_SETTINGS_COLUMNS = [
+    "booted_at",
+    "enabled",
+    "tickers",
+    "ratio_threshold",
+    "premium_floor",
+    "window_sec",
+    "multi_leg_share_max",
+    "multi_leg_codes",
+    "confluence_window_sec",
+]
+_ALL_THREE_CHANNELS = "option_trades:SPY,option_trades:SPXW,option_trades:QQQ,flow-alerts"
+
+
+def _configure_detector(
+    monkeypatch,
+    *,
+    enabled: bool = True,
+    tickers_csv: str = "SPY,SPXW,QQQ",
+    channels: str = _ALL_THREE_CHANNELS,
+) -> None:
+    """Settings the live-settings row reads, with values that differ from the defaults."""
+    monkeypatch.setattr(settings, "interval_ba_enabled", enabled)
+    monkeypatch.setattr(settings, "interval_ba_tickers_csv", tickers_csv)
+    monkeypatch.setattr(settings, "ws_channels", channels)
+    monkeypatch.setattr(settings, "interval_ba_ratio_threshold", 0.8)
+    monkeypatch.setattr(settings, "interval_ba_premium_floor", 300_000)
+    monkeypatch.setattr(settings, "interval_ba_window_sec", 600)
+    monkeypatch.setattr(settings, "interval_ba_multi_leg_share_max", 0.4)
+
+
+class _FakeDb:
+    """Stands in for ``db.bulk_insert_ignore_conflict``.
+
+    Records every call, and fails the first ``settings_failures`` writes to the
+    live-settings table so a test can model a table that is not there yet or a
+    Neon outage that clears.
+    """
+
+    def __init__(self, monkeypatch, *, settings_failures: int = 0) -> None:
+        self.calls: list[dict] = []
+        self._settings_failures_left = settings_failures
+        # handlers.interval_ba.db and handlers.option_trades.db are one module.
+        monkeypatch.setattr("handlers.interval_ba.db.bulk_insert_ignore_conflict", self)
+
+    async def __call__(self, *, table, columns, rows, conflict_cols):
+        self.calls.append(
+            {
+                "table": table,
+                "columns": columns,
+                "rows": list(rows),
+                "conflict_cols": conflict_cols,
+            },
+        )
+        if table == _SETTINGS_TABLE and self._settings_failures_left > 0:
+            self._settings_failures_left -= 1
+            raise RuntimeError("simulated settings write failure")
+        return len(rows)
+
+    def to(self, table: str) -> list[dict]:
+        return [c for c in self.calls if c["table"] == table]
+
+
+class TestLiveSettingsRecord:
+    @pytest.mark.asyncio
+    async def test_first_flush_records_live_settings_once(self, monkeypatch):
+        """Two handlers, two flushes each: one insert, carrying the settings in force."""
+        _configure_detector(monkeypatch)
+        db_calls = _FakeDb(monkeypatch)
+        spxw = SPXWIntervalBAHandler()
+        spy = SPYIntervalBAHandler()
+
+        await spxw._flush([])
+        await spy._flush([])
+        await spxw._flush([])
+        await spy._flush([])
+
+        writes = db_calls.to(_SETTINGS_TABLE)
+        assert len(writes) == 1
+        assert writes[0]["columns"] == _SETTINGS_COLUMNS
+        assert writes[0]["conflict_cols"] == ["booted_at"]
+        assert writes[0]["rows"] == [
+            (
+                interval_ba_mod._PROCESS_STARTED_AT,
+                True,
+                ["QQQ", "SPXW", "SPY"],
+                Decimal("0.8"),
+                Decimal(300_000),
+                600,
+                Decimal("0.4"),
+                ["cbmo", "masl", "mctp", "mesl", "mfsl", "mlat", "mlct", "mlet", "mlft"],
+                90,
+            ),
+        ]
+        assert interval_ba_mod._settings_recorded is True
+        # The raw-tick write is untouched by it: one per flush, four flushes.
+        assert len(db_calls.to("ws_option_trades")) == 4
+
+    def test_booted_at_is_one_timezone_aware_instant_for_the_process(self, monkeypatch):
+        """R6: the conflict key does not change between attempts."""
+        _configure_detector(monkeypatch)
+        first = interval_ba_mod._live_settings_row(settings)
+        second = interval_ba_mod._live_settings_row(settings)
+
+        assert first[0] == second[0] == interval_ba_mod._PROCESS_STARTED_AT
+        assert interval_ba_mod._PROCESS_STARTED_AT.utcoffset() == timedelta(0)
+
+    @pytest.mark.parametrize(
+        ("tickers_csv", "channels", "expected"),
+        [
+            # QQQ is on in the list but its channel is not subscribed: no handler, so off.
+            (
+                "SPY,SPXW,QQQ",
+                "option_trades:SPY,option_trades:SPXW,flow-alerts",
+                ["SPXW", "SPY"],
+            ),
+            # Every channel is subscribed, but the list switches two tickers off.
+            ("SPY", _ALL_THREE_CHANNELS, ["SPY"]),
+            # Only the option_trades channel of the ticker counts, not any channel naming it.
+            (
+                "SPY,SPXW,QQQ",
+                "net_flow:SPY,gex_strike_expiry:SPXW,option_trades:QQQ",
+                ["QQQ"],
+            ),
+            ("SPY,SPXW,QQQ", "flow-alerts", []),
+        ],
+        ids=["channel-missing", "list-narrower", "option-trades-only", "no-channels"],
+    )
+    def test_tickers_are_the_sorted_subscribed_enabled_ones(
+        self,
+        monkeypatch,
+        tickers_csv,
+        channels,
+        expected,
+    ):
+        _configure_detector(monkeypatch, tickers_csv=tickers_csv, channels=channels)
+
+        row = interval_ba_mod._live_settings_row(settings)
+
+        assert row[_SETTINGS_COLUMNS.index("tickers")] == expected
+
+    @pytest.mark.asyncio
+    async def test_settings_are_recorded_even_when_the_detector_is_off(self, monkeypatch):
+        """enabled False still gets a row: the nightly job must see the off period too."""
+        _configure_detector(monkeypatch, enabled=False)
+        db_calls = _FakeDb(monkeypatch)
+
+        await SPXWIntervalBAHandler()._flush([])
+
+        writes = db_calls.to(_SETTINGS_TABLE)
+        assert len(writes) == 1
+        assert writes[0]["rows"][0][_SETTINGS_COLUMNS.index("enabled")] is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_settings_write_is_reported_once_and_retried_quietly(
+        self,
+        monkeypatch,
+        base_payload,
+    ):
+        """Three failed writes: one Sentry report, and the detector keeps writing."""
+        _configure_detector(monkeypatch)
+        db_calls = _FakeDb(monkeypatch, settings_failures=3)
+        captured: list[tuple[BaseException, dict]] = []
+        monkeypatch.setattr(
+            interval_ba_mod,
+            "capture_exception",
+            lambda exc, **kw: captured.append((exc, kw)),
+        )
+        handler = SPXWIntervalBAHandler()
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+            ),
+        )
+        assert len(handler._pending_alerts) == 1
+
+        # Flush 1 carries the alert; flushes 2 and 3 only try the settings again.
+        await handler._flush([])
+        assert len(db_calls.to("interval_ba_alerts")) == 1
+        assert handler._pending_alerts == []
+        await handler._flush([])
+        await handler._flush([])
+
+        assert len(db_calls.to(_SETTINGS_TABLE)) == 3
+        assert interval_ba_mod._settings_recorded is False
+        assert len(captured) == 1
+        exc, kwargs = captured[0]
+        assert isinstance(exc, RuntimeError)
+        assert "simulated settings write failure" in str(exc)
+        assert kwargs["tags"]["stage"] == "interval_ba_live_settings"
+        # Raw ticks and alerts went through on every one of those flushes.
+        assert len(db_calls.to("ws_option_trades")) == 3
+
+        # Flush 4: the write works, so the flag is set; flush 5 does not try again.
+        await handler._flush([])
+        assert interval_ba_mod._settings_recorded is True
+        await handler._flush([])
+        assert len(db_calls.to(_SETTINGS_TABLE)) == 4
+        assert len(captured) == 1
+        # Every attempt carried the same conflict key.
+        assert len({c["rows"][0][0] for c in db_calls.to(_SETTINGS_TABLE)}) == 1
 
 
 # ----------------------------------------------------------------------
