@@ -70,6 +70,12 @@ export function redactBody(body) {
 const BUSY_FIRST_UTC_HOUR = 13;
 const BUSY_LAST_UTC_HOUR = 22;
 
+/** The window as the refusal prints it, built from the two hours above. */
+const hourText = (hour) => String(hour).padStart(2, '0');
+const BUSY_WINDOW_TEXT =
+  `${hourText(BUSY_FIRST_UTC_HOUR)}:00–` +
+  `${hourText(BUSY_LAST_UTC_HOUR)}:59 UTC`;
+
 /**
  * The refusal to print when a script that refreshes the Schwab token would
  * start on a weekday from 13:00 to 22:59 UTC, else null. A refresh from here
@@ -94,7 +100,7 @@ export function schwabCronsBusyRefusal({ offerFlag = true } = {}) {
     hour <= BUSY_LAST_UTC_HOUR;
   if (!busy) return null;
   return (
-    'Refusing to run on a weekday 13:00–22:59 UTC: the Schwab crons are ' +
+    `Refusing to run on a weekday ${BUSY_WINDOW_TEXT}: the Schwab crons are ` +
     'active, and a token refresh here could race theirs. Run outside that ' +
     (offerFlag
       ? 'window, or pass --allow-market-hours (e.g. on a market holiday, when ' +

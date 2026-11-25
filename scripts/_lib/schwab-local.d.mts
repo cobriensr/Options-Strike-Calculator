@@ -13,8 +13,14 @@ export class SchwabAuthError extends Error {}
 /** Mask token-like runs, then cap the length (api/_lib/redact-upstream-body.ts). */
 export function redactBody(body: string): string;
 
-/** The refusal to print on a weekday 13:00-21:59 UTC, else null. */
-export function schwabCronsBusyRefusal(): string | null;
+/**
+ * The refusal to print on a weekday 13:00-22:59 UTC, else null. `offerFlag`
+ * (default true) says whether the text offers --allow-market-hours; a script
+ * with no such flag passes false.
+ */
+export function schwabCronsBusyRefusal(options?: {
+  offerFlag?: boolean;
+}): string | null;
 
 export interface SchwabEnv {
   /** The line to print when something is missing, else null. */

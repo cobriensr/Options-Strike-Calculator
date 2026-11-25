@@ -32,9 +32,14 @@ export function selectDates(
   lookbackDays?: number,
 ): { mode: 'lookback' | 'range'; dates: string[] };
 
-/** The refusal to print 08:15-15:30 CT on a weekday without the flag, else null. */
+/**
+ * The refusal to print 08:15-15:30 CT on a weekday without the flag, else
+ * null. `offerFlag` (default true) says whether the text offers
+ * --allow-market-hours; a script with no such flag passes false.
+ */
 export function marketHoursRefusal(args: {
   allowMarketHours: boolean;
+  offerFlag?: boolean;
 }): string | null;
 
 /** Scrub the UW key, the database URL and its password from text before it is printed. */
