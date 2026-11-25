@@ -132,7 +132,7 @@ const MAX_GAP_PCT = 1e4;
  * `previousCloseOf` already requires `previousDay.date` to be the target's
  * prior trading day, which is what guards the session itself.
  */
-const SETTLEMENT_TOLERANCE_CENTS = 300;
+export const SETTLEMENT_TOLERANCE_CENTS = 300;
 /**
  * The dry run lists a planned date whose previous close is more than this
  * (0.05) from the settlement, so a backfilled settlement stays visible.
@@ -339,7 +339,7 @@ function expectedCandles(date: string): number {
  * did not report that session: a Schwab window with a hole holds an older
  * session, whose close would pass as yesterday's (the wrong-week bug).
  */
-function previousCloseOf(
+export function previousCloseOf(
   date: string,
   previousDay: DateHistory['previousDay'],
 ): number | null {
@@ -742,7 +742,7 @@ export function readHistoryResponse(
 }
 
 /** Where to fetch history from, and the owner cookie value. Never printed. */
-interface HistoryAccess {
+export interface HistoryAccess {
   origin: string;
   secret: string;
 }
@@ -752,7 +752,7 @@ interface HistoryAccess {
  * messages name the variables, never a value. The cookie goes over https, or
  * to a local dev server over http, and nowhere else.
  */
-function historyAccess(
+export function historyAccess(
   env: Readonly<Record<string, string | undefined>>,
 ): HistoryAccess {
   const secret = env.OWNER_SECRET?.trim();
@@ -799,7 +799,7 @@ function describeError(err: unknown): string {
   return `${err.message}${cause}`;
 }
 
-async function fetchHistory(
+export async function fetchHistory(
   access: HistoryAccess,
   date: string,
 ): Promise<HistoryFetch> {
