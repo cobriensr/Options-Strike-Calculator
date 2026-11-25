@@ -274,10 +274,12 @@ export interface HistorySnapshot {
   /** SPX previous close */
   previousClose: number;
   /**
-   * Identifies the as-of position, for React keys and labels. It is the last
-   * bar ended by the slot, or the first bar at the open. At the open its high,
-   * low and close are not yet known, so never read its prices: use `spot`,
-   * `runningOHLC` and `openingRange`.
+   * Identifies the as-of position, for React keys. It is the last bar ended by
+   * the slot, or the first bar at the open. Its `time` is that bar's start, a
+   * bar before the slot (the 10:00 ET slot reads the 9:55 bar), so it is not
+   * the entry time: label the entry with the slot's own text. At the open its
+   * high, low and close are not yet known, so never read its prices: use
+   * `spot`, `runningOHLC` and `openingRange`.
    */
   candle: HistoryCandle;
   /** Index of the last bar ended by the slot; -1 at the open. */

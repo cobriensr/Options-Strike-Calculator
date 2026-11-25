@@ -28,7 +28,11 @@ interface Props {
       }
     | { error: string }
   >;
-  readonly entryTimeLabel?: string;
+  /**
+   * The entry's time as the time picker shows it. Required: the snapshot's
+   * candle is the last bar ended by the slot, so its own time is one bar early.
+   */
+  readonly entryTimeLabel: string;
 }
 
 export default function SettlementCheck({
@@ -86,7 +90,6 @@ export default function SettlementCheck({
     (r) => !r.survived && r.settledSafe,
   ).length;
   const total = results.length;
-  const displayTime = entryTimeLabel ?? snapshot.candle.time;
 
   // Tightness analysis across all rows
   const TIGHT_PTS = 25;
@@ -163,8 +166,8 @@ export default function SettlementCheck({
         </div>
 
         <div className="text-secondary font-sans text-[11px] leading-relaxed">
-          Entry at {displayTime} with SPX at {entryPrice.toFixed(0)}. SPX ranged{' '}
-          {actualRange.toFixed(0)} pts ({remainingLow.toFixed(0)}
+          Entry at {entryTimeLabel} with SPX at {entryPrice.toFixed(0)}. SPX
+          ranged {actualRange.toFixed(0)} pts ({remainingLow.toFixed(0)}
           {' \u2013 '}
           {remainingHigh.toFixed(0)}) and settled at {settlement.toFixed(0)} (
           {settleMove >= 0 ? '+' : ''}

@@ -259,7 +259,11 @@ export default function MarketRegimeSection({
                   </div>
                 )}
 
+                {/* The check names its entry by the slot label, which App
+                    passes with every history snapshot: the snapshot's own
+                    candle is the bar before the slot. */}
                 {historySnapshot &&
+                  entryTimeLabel != null &&
                   historyCandles &&
                   historyCandles.length > 0 &&
                   results.allDeltas && (

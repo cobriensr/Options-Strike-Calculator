@@ -355,7 +355,8 @@ describe('MarketRegimeSection', () => {
     expect(screen.getByText('Market Regime')).toBeInTheDocument();
   });
 
-  it('renders with historySnapshot for backtest mode', () => {
+  /** A backtest view: a history snapshot, its day's candles, and a slot label. */
+  function renderBacktest(entryTimeLabel: string | undefined) {
     const snapshot: HistorySnapshot = {
       spot: 5700,
       spy: 570,
@@ -437,14 +438,28 @@ describe('MarketRegimeSection', () => {
         cluster={noCluster}
         historySnapshot={snapshot}
         historyCandles={candles}
-        entryTimeLabel="10:00 AM ET"
+        entryTimeLabel={entryTimeLabel}
         signals={defaultSignals}
         chain={null}
       />,
     );
+  }
+
+  it('renders with historySnapshot for backtest mode', () => {
+    renderBacktest('10:00 AM ET');
     expect(screen.getByText('Market Regime')).toBeInTheDocument();
     // SettlementCheck should render since historySnapshot + candles + allDeltas exist
     expect(screen.getByText('Settlement Check')).toBeInTheDocument();
+  });
+
+  // The check names its entry by the slot label, which App passes with every
+  // history snapshot. The snapshot's own candle is the bar before the slot, so
+  // its time would label the entry one bar early: with no label the check is
+  // left out, not shown under the wrong time.
+  it('does not render SettlementCheck without a slot label', () => {
+    renderBacktest(undefined);
+    expect(screen.getByText('Market Regime')).toBeInTheDocument();
+    expect(screen.queryByText('Settlement Check')).not.toBeInTheDocument();
   });
 
   it('Hide/Show Analysis button has type="button"', () => {

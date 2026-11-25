@@ -29,6 +29,9 @@ function makeCandles(): HistoryCandle[] {
   ];
 }
 
+/** The slot label App passes with every history snapshot (the time picker's). */
+const ENTRY_LABEL = '8:45 AM CT';
+
 function makeSnapshot(
   overrides: Partial<HistorySnapshot> = {},
 ): HistorySnapshot {
@@ -134,6 +137,7 @@ describe('SettlementCheck', () => {
   it('renders nothing when no valid deltas match target deltas', () => {
     const { container } = render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={[{ error: 'IV too low' }]}
@@ -146,6 +150,7 @@ describe('SettlementCheck', () => {
     const candles = makeCandles();
     const { container } = render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot({ candleIndex: candles.length - 1 })}
         allCandles={candles}
         allDeltas={makeAllDeltas()}
@@ -157,6 +162,7 @@ describe('SettlementCheck', () => {
   it('renders the Settlement Check heading', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -168,6 +174,7 @@ describe('SettlementCheck', () => {
   it('shows all survived verdict when all strikes hold', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -179,10 +186,10 @@ describe('SettlementCheck', () => {
   it('shows entry context in summary', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
-        entryTimeLabel="8:45 AM CT"
       />,
     );
     expect(screen.getByText(/Entry at 8:45 AM CT/)).toBeInTheDocument();
@@ -190,9 +197,28 @@ describe('SettlementCheck', () => {
     expect(screen.getByText(/settled at 5818/)).toBeInTheDocument();
   });
 
+  // Under the as-of rule the snapshot's candle is the last bar ended by the
+  // slot, which started 5 minutes before it: at 10:00 ET it is the 9:55 bar. Its
+  // own time is an hour label one bar early, so the entry is the slot's label.
+  it("names the entry by the slot's label, not the start of the bar it reads", () => {
+    render(
+      <SettlementCheck
+        entryTimeLabel="10:00 AM ET"
+        snapshot={makeSnapshot({
+          candle: makeCandle('9:55 AM', 5805, 5815, 5800, 5810),
+        })}
+        allCandles={makeCandles()}
+        allDeltas={makeAllDeltas()}
+      />,
+    );
+    expect(screen.getByText(/Entry at 10:00 AM ET/)).toBeInTheDocument();
+    expect(screen.queryByText(/9:55 AM/)).not.toBeInTheDocument();
+  });
+
   it('shows actual SPX range in summary', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -212,6 +238,7 @@ describe('SettlementCheck', () => {
   it('shows "Safe by X pts" for survived rows', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -229,6 +256,7 @@ describe('SettlementCheck', () => {
   it('shows call breach with settled-at text when call is breached and settlement outside strikes', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -251,6 +279,7 @@ describe('SettlementCheck', () => {
   it('shows put breach with settled-at text when put is breached and settlement outside strikes', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -275,6 +304,7 @@ describe('SettlementCheck', () => {
   it('shows partial survival verdict', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -305,6 +335,7 @@ describe('SettlementCheck', () => {
   it('shows all settled beyond strikes verdict when none settle safe', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -348,6 +379,7 @@ describe('SettlementCheck', () => {
   it('only renders rows for deltas in the target list', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={[
@@ -363,6 +395,7 @@ describe('SettlementCheck', () => {
   it('filters out error entries from allDeltas', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={[
@@ -378,6 +411,7 @@ describe('SettlementCheck', () => {
   it('shows directional cushion values: negative on put side, positive on call side', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -395,6 +429,7 @@ describe('SettlementCheck', () => {
   it('shows legend for the bar visualization', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -410,6 +445,7 @@ describe('SettlementCheck', () => {
     // So callSnapped >= 5880 and putSnapped <= 5755
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -455,6 +491,7 @@ describe('SettlementCheck', () => {
     // All must settle safe but not all survive
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -505,6 +542,7 @@ describe('SettlementCheck', () => {
   it('shows tooltip on bar hover and hides on mouse leave', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -531,6 +569,7 @@ describe('SettlementCheck', () => {
   it('shows tooltip on focus and hides on blur', () => {
     render(
       <SettlementCheck
+        entryTimeLabel={ENTRY_LABEL}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -548,6 +587,7 @@ describe('SettlementCheck', () => {
 
   it('renders in both themes without crashing', () => {
     const props = {
+      entryTimeLabel: ENTRY_LABEL,
       snapshot: makeSnapshot(),
       allCandles: makeCandles(),
       allDeltas: makeAllDeltas(),
