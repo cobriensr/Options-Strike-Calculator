@@ -6,9 +6,12 @@
  * Uses Schwab priceHistory: $SPX, daily candles, 1 month lookback.
  * Extracts the most recent completed trading day.
  *
- * Cache:
+ * Cache (edge, s-maxage), never past the next 00:00 ET:
  *   Market hours: 3600s (1 hour) — yesterday doesn't change
  *   After hours:  86400s (1 day) — won't change until next trading day
+ * Each is cut to the time left until midnight ET, and the stale-while-
+ * revalidate window (3600s) to what is left after that: from the next ET
+ * midnight the body names the wrong session, so it must not be served.
  *
  * Response:
  * {
@@ -26,7 +29,7 @@ import {
   isMarketOpen,
 } from './_lib/api-helpers.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
-import { getETDateStr } from '../src/utils/timezone.js';
+import { getETDateStr, etWallClockToUtcIso } from '../src/utils/timezone.js';
 
 // ============================================================
 // TYPES
@@ -89,6 +92,25 @@ function toDaySummary(candle: SchwabDailyCandle): DaySummary {
  */
 function todayET(): string {
   return getETDateStr(new Date());
+}
+
+/** The calendar date after `date` (YYYY-MM-DD). */
+function nextDate(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Whole seconds from `now` to the next 00:00 ET. Exact on a DST day, whose
+ * midnight to midnight is 23 or 25 hours, because it asks for the instant of
+ * the next ET midnight instead of counting 24 hours off the wall clock. 0 when
+ * that instant can't be worked out, so the caller caches nothing.
+ */
+function secondsUntilNextETMidnight(now: Date): number {
+  const iso = etWallClockToUtcIso(nextDate(getETDateStr(now)), 0);
+  if (iso == null) return 0;
+  return Math.max(0, Math.floor((Date.parse(iso) - now.getTime()) / 1000));
 }
 
 // ============================================================
@@ -154,8 +176,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const marketOpen = isMarketOpen();
 
-      // Yesterday's data never changes once the day is over
-      setCacheHeaders(res, marketOpen ? 3600 : 86400, 3600);
+      // Yesterday's data never changes once the day is over, but which day is
+      // "yesterday" does: from the next ET midnight this body names the wrong
+      // session. So no cache entry outlives the day it was made in. s-maxage
+      // is the usual lifetime or the time left until midnight, whichever is
+      // less, and the stale-while-revalidate window is cut so the two together
+      // cannot cross it.
+      const toMidnight = secondsUntilNextETMidnight(new Date());
+      const edgeSec = Math.min(marketOpen ? 3600 : 86400, toMidnight);
+      const swr = Math.min(3600, toMidnight - edgeSec);
+      setCacheHeaders(res, edgeSec, swr);
 
       done({ status: 200 });
       res.status(200).json({
