@@ -3,7 +3,7 @@ psycopg2>=2.9.9
 # src/sentry_setup.py passes to init ("Unknown option"). The init is wrapped in
 # try/except, so a rebuild on 3.x would run with no Sentry. Move to 3.x
 # deliberately, after changing that call.
-sentry-sdk>=2.0.0,<3
+sentry-sdk>=2.75.0,<3
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 python-dotenv>=1.0.0
