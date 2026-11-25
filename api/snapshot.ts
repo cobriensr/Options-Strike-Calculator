@@ -64,8 +64,9 @@
  * failed) it saves a null rvAnnualized and clusterMult. The row is saved as
  * sent, so the slot keeps a row; build-features does not pick it for the day's
  * features (featureSnapshotRejection, `missing-yesterday`), and the save is
- * counted (snapshot.missing_yesterday_fields) and raises a Sentry warning
- * tagged snapshot_gap, one issue per date. A backtest save is not alerted: the
+ * counted (snapshot.missing_yesterday_fields) and raises a Sentry error
+ * tagged snapshot_gap, one issue per date (the owner is emailed by the
+ * existing high-priority rule). A backtest save is not alerted: the
  * replay driver checks those. The pre-market row is not written here, and a
  * live post under that label is refused by the quote check above.
  *
@@ -152,9 +153,10 @@ async function resolveEventFlags(
 /**
  * Report a live row that was saved with no RV or no cluster multiplier: the
  * app had no current yesterday. A count for every such save, and a Sentry
- * warning under one fingerprint per date, so a gap that spans several slots is
- * one issue (and one email, once the alert rule routes it). A row with both
- * present is not reported.
+ * error event under one fingerprint per date: Sentry groups the events into
+ * one issue per date, so a gap that spans several slots is one issue and one
+ * email. Nothing here remembers which dates were reported (R1). A row with
+ * both present is not reported.
  */
 function reportMissingYesterdayFields(
   date: string,
@@ -172,7 +174,10 @@ function reportMissingYesterdayFields(
   );
   metrics.increment('snapshot.missing_yesterday_fields');
   Sentry.captureMessage('snapshot.missing_yesterday_fields', {
-    level: 'warning',
+    // `error`, not `warning`: the project's high-priority issue rule emails the
+    // owner on a new error issue and skips warnings, so each date's first
+    // event is the email and no Sentry rule is needed.
+    level: 'error',
     tags: { snapshot_gap: 'missing_yesterday_fields' },
     fingerprint: ['snapshot-missing-yesterday-fields', date],
     extra: context,

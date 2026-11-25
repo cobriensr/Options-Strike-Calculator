@@ -1457,7 +1457,10 @@ describe('POST /api/snapshot', () => {
       expect(missingCounted()).toEqual([]);
     });
 
-    it('keeps a row with both fields null: saved as sent, counted, and one warning for the date', async () => {
+    // At `error`, not `warning`: the project's high-priority issue rule emails
+    // the owner on a new error issue and skips warnings (as the feature build's
+    // no-pick report relies on), so this needs no Sentry rule of its own.
+    it('keeps a row with both fields null: saved as sent, counted, and reported at error under one issue per date', async () => {
       vi.mocked(saveSnapshot).mockResolvedValue(22);
       const body = { ...complete, rvAnnualized: null, clusterMult: null };
 
@@ -1479,7 +1482,7 @@ describe('POST /api/snapshot', () => {
         [
           MISSING,
           {
-            level: 'warning',
+            level: 'error',
             tags: { snapshot_gap: 'missing_yesterday_fields' },
             // One issue per date, however many slots the gap spans.
             fingerprint: ['snapshot-missing-yesterday-fields', TODAY],
