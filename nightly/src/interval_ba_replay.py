@@ -3,12 +3,17 @@
 One implementation of the rule uw-stream runs live (uw-stream/src/handlers/interval_ba.py),
 for two callers: the nightly `interval-ba-tape` step, on the day it downloaded, and the one-off
 tool scripts/interval_ba_tape.py, over R2 with httpfs. Spec:
-docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md, section 6.3. The validated
-reference query it follows matched live on 1,053 of 1,053 rows over six sessions.
+docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md, sections 6.3 and 6.4. The
+validated reference query it follows matched live on 1,053 of 1,053 rows over six sessions.
+
+`heal_day` is one live day's pass (6.4): it corrects the sweep and floor flags and a blank SPXW
+spot on the live rows from the tape, and from 2026-10-29 adds the alerts live missed, when the
+live settings that cover the day ran this rule.
 
 What it never does:
 - open R2 or Neon. The caller hands in a DuckDB connection, a tape location (a local path or an
-  s3:// URL) and, for the insert, a psycopg2 cursor; the caller commits;
+  s3:// URL) and a psycopg2 cursor or connection. `insert_alerts` leaves the commit to its
+  caller; `heal_day` owns one transaction on the connection it is given;
 - set DuckDB limits. The caller sets memory_limit, threads and temp_directory;
 - fetch a TIMESTAMP or TIMESTAMPTZ column. Every time leaves DuckDB as an epoch_us integer and
   becomes an aware UTC datetime here: DuckDB needs pytz to hand over a TIMESTAMPTZ, and the
@@ -51,12 +56,18 @@ Where the replay differs from what live writes, by design (spec 6.3):
 from __future__ import annotations
 
 import bisect
-from collections.abc import Sequence
+import contextlib
+import hashlib
+import json
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, fields, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Context, Decimal
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import duckdb
+import psycopg2
 import psycopg2.extras
 
 # The live detector's rule. tests/test_interval_ba_drift.py pins each against uw-stream.
@@ -134,7 +145,7 @@ class Replay:
 
 @dataclass(frozen=True)
 class LiveRow:
-    """An `interval_ba_alerts` row as the tape pass reads it."""
+    """An `interval_ba_alerts` row as the tape pass reads it, of either source."""
 
     id: int
     option_chain: str
@@ -151,7 +162,13 @@ class LiveRow:
     top_trade_is_sweep: bool | None
     top_trade_is_floor: bool | None
     underlying_price: Decimal | None
-    source: str
+    source: str  # 'live' or 'replay'
+
+    @property
+    def key(self) -> tuple[str, datetime]:
+        """The table's unique key. An aware datetime hashes by its instant, so a row read in any
+        session time zone meets the tape alert at the same key."""
+        return (self.option_chain, self.bucket_start)
 
 
 def _sql_list(values: Sequence[str]) -> str:
@@ -478,3 +495,583 @@ def insert_alerts(cur: psycopg2.extensions.cursor, alerts: Sequence[TapeAlert]) 
         fetch=True,
     )
     return len(inserted)
+
+
+# --- One live day's pass (spec 6.4) -------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LiveSettings:
+    """An `interval_ba_live_settings` row: what one uw-stream process ran with (spec 6.1b).
+
+    `tickers` are the ones that process had a detector for. `enabled` is its master switch, so
+    a row with it off had no ticker on, whatever `tickers` lists.
+    """
+
+    booted_at: datetime | None  # None only in default_settings()
+    enabled: bool
+    tickers: tuple[str, ...]
+    ratio_threshold: Decimal
+    premium_floor: Decimal
+    window_sec: int
+    multi_leg_share_max: Decimal
+    multi_leg_codes: frozenset[str]
+    confluence_window_sec: int
+
+
+def default_settings() -> LiveSettings:
+    """This module's rule with the detector on for all three tickers, and no boot time: for a
+    day before the first settings row (the tool's --assume-default-settings)."""
+    return LiveSettings(
+        booted_at=None,
+        enabled=True,
+        tickers=tuple(sorted(TICKERS)),
+        ratio_threshold=RATIO_THRESHOLD,
+        premium_floor=Decimal(PREMIUM_FLOOR_DOLLARS),
+        window_sec=WINDOW_SEC,
+        multi_leg_share_max=MULTI_LEG_SHARE_MAX,
+        multi_leg_codes=MULTI_LEG_CODES,
+        confluence_window_sec=CONFLUENCE_WINDOW_SEC,
+    )
+
+
+def _runs_tape_rule(settings: LiveSettings) -> bool:
+    """Whether a live process ran this module's rule. Decimals compare by value, so the scale a
+    NUMERIC column returns (0.7500, 250000.00) does not matter."""
+    return (
+        settings.ratio_threshold == RATIO_THRESHOLD
+        and settings.premium_floor == PREMIUM_FLOOR_DOLLARS
+        and settings.window_sec == WINDOW_SEC
+        and settings.multi_leg_share_max == MULTI_LEG_SHARE_MAX
+        and settings.multi_leg_codes == MULTI_LEG_CODES
+        and settings.confluence_window_sec == CONFLUENCE_WINDOW_SEC
+    )
+
+
+_SETTINGS_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(LiveSettings))
+# The latest row that booted before the day's 00:00 CT, which covers the day's start, and every
+# row that booted during the day. With no earlier row the lower bound is the day's start.
+_COVERING_SETTINGS_SQL = (
+    f"SELECT {', '.join(_SETTINGS_COLUMNS)} FROM interval_ba_live_settings"
+    " WHERE booted_at >= coalesce("
+    "(SELECT max(booted_at) FROM interval_ba_live_settings WHERE booted_at < %(start)s),"
+    " %(start)s)"
+    " AND booted_at < %(end)s"
+    " ORDER BY booted_at"
+)
+
+
+def read_covering_settings(conn: psycopg2.extensions.connection, day: date) -> list[LiveSettings]:
+    """The settings rows that cover `day`, oldest first: the latest that booted before the day's
+    00:00 CT, and every one that booted during the CT day.
+
+    The bounds are CT midnights from zoneinfo, so a DST day is 23 or 25 hours long. It returns
+    [] only for a day before the first row ever written.
+    """
+    ct = ZoneInfo("America/Chicago")
+    bounds = {
+        "start": datetime.combine(day, time(), tzinfo=ct),
+        "end": datetime.combine(day + timedelta(days=1), time(), tzinfo=ct),
+    }
+    with conn.cursor() as cur:
+        cur.execute(_COVERING_SETTINGS_SQL, bounds)
+        rows = cur.fetchall()
+    return [
+        LiveSettings(
+            booted_at=booted_at,
+            enabled=enabled,
+            tickers=tuple(tickers),
+            ratio_threshold=ratio,
+            premium_floor=floor,
+            window_sec=window,
+            multi_leg_share_max=share,
+            multi_leg_codes=frozenset(codes),
+            confluence_window_sec=confluence,
+        )
+        for booted_at, enabled, tickers, ratio, floor, window, share, codes, confluence in rows
+    ]
+
+
+_LIVE_ROW_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(LiveRow))
+_LIVE_ROWS_SQL = (
+    f"SELECT {', '.join(_LIVE_ROW_COLUMNS)} FROM interval_ba_alerts WHERE expiry = %(day)s"
+    " ORDER BY id"
+)
+
+
+def read_live_rows(conn: psycopg2.extensions.connection, day: date) -> list[LiveRow]:
+    """Every `interval_ba_alerts` row on `day`, live and replay, by id. The rows are 0DTE, so a
+    row's expiry is its session."""
+    with conn.cursor() as cur:
+        cur.execute(_LIVE_ROWS_SQL, {"day": day})
+        return [LiveRow(*row) for row in cur.fetchall()]
+
+
+# The spot at each SPXW live row's crossing tick (spec 6.3), with no detector rule: tick number
+# trade_count of the row's bucket, in tape order with canceled ticks counted, which is where live
+# fired whenever it saw every tick. With no spot on that tick, the first kept SPXW print with one
+# after it (the opening seconds); when the bucket has fewer ticks, the last kept SPXW print with a
+# spot at or before the row's fired_at.
+_LIVE_SPOT_SQL = f"""
+WITH wanted AS (
+    SELECT unnest($ids) AS id, unnest($chains) AS chain, unnest($buckets) AS bucket,
+        unnest($counts) AS seq, unnest($fired_us) AS fired_us
+),
+ticks AS MATERIALIZED (
+    SELECT *,
+        row_number() OVER (PARTITION BY chain, bucket ORDER BY us, frn) AS seq,
+        first_value(spot IGNORE NULLS) OVER (
+            ORDER BY us, frn ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
+        ) AS next_spot
+    FROM (
+        SELECT
+            option_chain_id AS chain,
+            epoch_us(executed_at) AS us,
+            file_row_number AS frn,
+            epoch_us(executed_at) // $window_us * $window_sec AS bucket,
+            CAST(underlying_price AS DOUBLE) AS spot
+        FROM read_parquet($tape, file_row_number = true)
+        WHERE {_KEPT} AND {_ROOT} = 'SPXW'
+    )
+),
+-- Each row's fired_at joins the print stream after every print of its microsecond (kind 1).
+as_of AS (
+    SELECT id,
+        last_value(spot IGNORE NULLS) OVER (
+            ORDER BY us, kind, frn ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS spot
+    FROM (
+        SELECT CAST(NULL AS BIGINT) AS id, us, 0 AS kind, frn, spot FROM ticks
+        UNION ALL
+        SELECT id, fired_us, 1, NULL, NULL FROM wanted
+    )
+    QUALIFY id IS NOT NULL
+)
+SELECT w.id, CASE WHEN t.seq IS NULL THEN as_of.spot ELSE coalesce(t.spot, t.next_spot) END
+FROM wanted w
+LEFT JOIN ticks t ON t.chain = w.chain AND t.bucket = w.bucket AND t.seq = w.seq
+LEFT JOIN as_of ON as_of.id = w.id
+"""
+
+
+def live_spot(
+    con: duckdb.DuckDBPyConnection, tape: str, day: date, rows: Sequence[LiveRow]
+) -> dict[int, Decimal | None]:
+    """The tape spot at each SPXW live row's crossing tick, by row id; None where the tape has
+    none to give. Rows of other tickers are left out: live writes their spot.
+
+    No detector rule is used, so it serves a live day of any rule. With no SPXW row the tape is
+    not read.
+    """
+    spxw = [row for row in rows if row.ticker == "SPXW"]
+    if not spxw:
+        return {}
+    found = con.execute(
+        _LIVE_SPOT_SQL,
+        {
+            "tape": tape,
+            "day": day,
+            "window_us": WINDOW_SEC * 1_000_000,
+            "window_sec": WINDOW_SEC,
+            "ids": [row.id for row in spxw],
+            "chains": [row.option_chain for row in spxw],
+            "buckets": [(row.bucket_start - _EPOCH) // timedelta(seconds=1) for row in spxw],
+            "counts": [row.trade_count for row in spxw],
+            "fired_us": [(row.fired_at - _EPOCH) // timedelta(microseconds=1) for row in spxw],
+        },
+    ).fetchall()
+    return {row_id: _spot(spot) for row_id, spot in found}
+
+
+@dataclass(frozen=True)
+class DayPlan:
+    """One live day's pass (spec 6.4): what it found, and the exact write set.
+
+    The comparison counts (tape_alerts, live_rows, live_missed, live_only, value_mismatched,
+    matched) and the inserts cover the on tickers: those on in every covering settings row, or
+    all three when insert_missed is False or no row covers the day. The removals, flags and
+    spots cover every row of the day. The write counts (inserted, removed, flags_changed,
+    spot_filled) are the rows planned in a dry run and the rows the database reports on apply.
+    sha256 is over the four write lists, so a stored plan can be checked against a fresh one.
+    """
+
+    day: date
+    root_label_mismatch: int
+    tape_alerts: int
+    live_rows: int
+    live_missed: int
+    live_only: int
+    value_mismatched: int
+    inserted: int
+    inserts_held: str | None
+    removed: int
+    flags_changed: int
+    flags_unmatched: int
+    spot_filled: int
+    matched: int
+    inserts: tuple[TapeAlert, ...]
+    removes: tuple[int, ...]
+    flag_updates: tuple[tuple[int, bool, bool], ...]
+    spot_updates: tuple[tuple[int, Decimal], ...]
+    sha256: str
+
+    def to_json(self) -> dict[str, Any]:
+        """The plan as JSON values: the day and times in ISO form, Decimals as strings."""
+        return {
+            "day": self.day.isoformat(),
+            **{name: getattr(self, name) for name in _PLAN_COUNTS},
+            **_write_set_json(self.inserts, self.removes, self.flag_updates, self.spot_updates),
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> DayPlan:
+        """The plan `to_json` gave. Raises ValueError when its write lists do not hash to its
+        sha256: an edited or damaged plan file is refused."""
+        inserts = tuple(_alert_from_json(alert) for alert in d["inserts"])
+        removes = tuple(d["removes"])
+        flag_updates = tuple((row_id, sweep, floor) for row_id, sweep, floor in d["flag_updates"])
+        spot_updates = tuple((row_id, Decimal(price)) for row_id, price in d["spot_updates"])
+        sha256 = _write_set_sha(inserts, removes, flag_updates, spot_updates)
+        if sha256 != d["sha256"]:
+            raise ValueError(f"DayPlan {d['day']}: the write lists do not match its sha256")
+        return cls(
+            day=date.fromisoformat(d["day"]),
+            **{name: d[name] for name in _PLAN_COUNTS},
+            inserts=inserts,
+            removes=removes,
+            flag_updates=flag_updates,
+            spot_updates=spot_updates,
+            sha256=sha256,
+        )
+
+
+# A DayPlan's count fields: all but the day, the four write lists and the sha.
+_PLAN_COUNTS: tuple[str, ...] = tuple(
+    f.name
+    for f in fields(DayPlan)
+    if f.name not in {"day", "inserts", "removes", "flag_updates", "spot_updates", "sha256"}
+)
+
+
+def _alert_json(alert: TapeAlert) -> dict[str, Any]:
+    """A TapeAlert as JSON values: Decimals as strings (exact, scale kept), times as UTC ISO."""
+    out: dict[str, Any] = {}
+    for f in fields(TapeAlert):
+        value = getattr(alert, f.name)
+        if isinstance(value, Decimal):
+            value = str(value)
+        elif isinstance(value, datetime):
+            value = value.astimezone(UTC).isoformat()
+        elif isinstance(value, date):
+            value = value.isoformat()
+        elif isinstance(value, tuple):
+            value = list(value)
+        out[f.name] = value
+    return out
+
+
+# How a TapeAlert field comes back from JSON, by its annotation, which is a string under
+# `from __future__ import annotations`. A field of a new type fails the round trip with KeyError.
+_FROM_JSON: dict[str, Callable[[Any], Any]] = {
+    "str": str,
+    "int": int,
+    "bool": bool,
+    "Decimal": Decimal,
+    "Decimal | None": lambda value: None if value is None else Decimal(value),
+    "date": date.fromisoformat,
+    "datetime": datetime.fromisoformat,
+    "tuple[str, ...]": tuple,
+}
+
+
+def _alert_from_json(d: dict[str, Any]) -> TapeAlert:
+    return TapeAlert(**{f.name: _FROM_JSON[str(f.type)](d[f.name]) for f in fields(TapeAlert)})
+
+
+def _write_set_json(
+    inserts: Sequence[TapeAlert],
+    removes: Sequence[int],
+    flag_updates: Sequence[tuple[int, bool, bool]],
+    spot_updates: Sequence[tuple[int, Decimal]],
+) -> dict[str, list[Any]]:
+    return {
+        "inserts": [_alert_json(alert) for alert in inserts],
+        "removes": list(removes),
+        "flag_updates": [list(update) for update in flag_updates],
+        "spot_updates": [[row_id, str(price)] for row_id, price in spot_updates],
+    }
+
+
+def _write_set_sha(
+    inserts: Sequence[TapeAlert],
+    removes: Sequence[int],
+    flag_updates: Sequence[tuple[int, bool, bool]],
+    spot_updates: Sequence[tuple[int, Decimal]],
+) -> str:
+    """sha256 of the four write lists' canonical JSON: sorted keys, no spaces."""
+    text = json.dumps(
+        _write_set_json(inserts, removes, flag_updates, spot_updates),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _on_tickers(settings: Sequence[LiveSettings]) -> frozenset[str]:
+    """The tickers on in every covering row; a row with the detector off has none on. All three
+    when no row covers the day, which holds the inserts anyway."""
+    on = frozenset(TICKERS)
+    for row in settings:
+        on &= frozenset(row.tickers) if row.enabled else frozenset()
+    return on
+
+
+def _hold_reason(settings: Sequence[LiveSettings]) -> str | None:
+    """Why the day's inserts are held (spec 6.4 step 2), the first that applies, or None."""
+    if not settings:
+        return "no live settings record"
+    if not all(_runs_tape_rule(row) for row in settings):
+        return "live settings differ from the tape rule"
+    if not any(row.enabled for row in settings):
+        return "live detector off"
+    return None
+
+
+# Step 1's diagnostic: a matched key whose live row differs from the tape in any of these.
+_COMPARED_COLUMNS = (
+    "ratio_pct",
+    "ask_premium",
+    "total_premium",
+    "trade_count",
+    "top_trade_premium",
+    "top_trade_size",
+)
+
+# Step 4. Only a replay row is ever deleted.
+_REMOVE_SQL = (
+    "DELETE FROM interval_ba_alerts AS a USING (VALUES %s) AS v(id)"
+    " WHERE a.id = v.id AND a.source = 'replay'"
+    " RETURNING a.id"
+)
+# Step 5. The two flags on a live row, only where they change.
+_FLAGS_UPDATE_SQL = (
+    "UPDATE interval_ba_alerts AS a"
+    " SET top_trade_is_sweep = v.sweep, top_trade_is_floor = v.floor"
+    " FROM (VALUES %s) AS v(id, sweep, floor)"
+    " WHERE a.id = v.id AND a.source = 'live'"
+    " AND (a.top_trade_is_sweep, a.top_trade_is_floor) IS DISTINCT FROM (v.sweep, v.floor)"
+    " RETURNING a.id"
+)
+# Step 6. A blank SPXW spot on a live row; a spot already there is never replaced.
+_SPOT_UPDATE_SQL = (
+    "UPDATE interval_ba_alerts AS a"
+    " SET underlying_price = v.price"
+    " FROM (VALUES %s) AS v(id, price)"
+    " WHERE a.id = v.id AND a.source = 'live' AND a.ticker = 'SPXW'"
+    " AND a.underlying_price IS NULL"
+    " RETURNING a.id"
+)
+# Step 7. The day's done marker and health record; a redone day replaces its counts.
+_TAPE_DAY_COLUMNS: tuple[str, ...] = (
+    "day",
+    "tape_alerts",
+    "live_rows",
+    "live_missed",
+    "live_only",
+    "value_mismatched",
+    "inserted",
+    "inserts_held",
+    "removed",
+    "flags_changed",
+    "flags_unmatched",
+    "spot_filled",
+)
+_MARK_DAY_SQL = (
+    f"INSERT INTO interval_ba_tape_days ({', '.join(_TAPE_DAY_COLUMNS)}) VALUES ("
+    + ", ".join(f"%({column})s" for column in _TAPE_DAY_COLUMNS)
+    + ") ON CONFLICT (day) DO UPDATE SET done_at = now(), "
+    + ", ".join(f"{column} = EXCLUDED.{column}" for column in _TAPE_DAY_COLUMNS[1:])
+)
+
+
+def _plan_day(
+    conn: psycopg2.extensions.connection,
+    con: duckdb.DuckDBPyConnection,
+    tape: str,
+    day: date,
+    settings: Sequence[LiveSettings],
+    *,
+    insert_missed: bool,
+) -> DayPlan:
+    """Steps 1 to 6 as a plan: the counts and what each write would send."""
+    replay = replay_day(con, tape, day)
+    rows = read_live_rows(conn, day)
+    live = [row for row in rows if row.source == "live"]
+    if insert_missed:
+        on, held = _on_tickers(settings), _hold_reason(settings)
+    else:
+        on, held = frozenset(TICKERS), None
+
+    # Step 1: compare on the key, over the on tickers.
+    tape_on = {alert.key: alert for alert in replay.alerts if alert.ticker in on}
+    live_on = {row.key: row for row in live if row.ticker in on}
+    matched = tape_on.keys() & live_on.keys()
+    mismatched = sum(
+        1
+        for key in matched
+        if any(getattr(tape_on[key], c) != getattr(live_on[key], c) for c in _COMPARED_COLUMNS)
+    )
+
+    # Step 3: the on tickers' tape alerts at keys with no row of either source.
+    taken = {row.key for row in rows}
+    inserts: tuple[TapeAlert, ...] = ()
+    if insert_missed and held is None:
+        inserts = tuple(alert for alert in tape_on.values() if alert.key not in taken)
+
+    # Step 4: replay rows the replay no longer fires. An empty replay with rows present means
+    # the tape read broke, not that the alerts went away, so it removes nothing.
+    fired = {alert.key for alert in replay.alerts}
+    removes: tuple[int, ...] = ()
+    if fired:
+        removes = tuple(
+            sorted(row.id for row in rows if row.source == "replay" and row.key not in fired)
+        )
+
+    # Step 5: the flags of every live row whose top trade the tape names, where they change.
+    flags = top_trade_flags(con, tape, day, live)
+    changed: list[tuple[int, bool, bool]] = []
+    for row in live:
+        found = flags[row.id]
+        if found is not None and found != (row.top_trade_is_sweep, row.top_trade_is_floor):
+            changed.append((row.id, found[0], found[1]))
+    flag_updates = tuple(sorted(changed))
+
+    # Step 6: a blank SPXW spot.
+    spots = live_spot(con, tape, day, [row for row in live if row.underlying_price is None])
+    spot_updates = tuple(
+        sorted((row_id, spot) for row_id, spot in spots.items() if spot is not None)
+    )
+
+    return DayPlan(
+        day=day,
+        root_label_mismatch=replay.root_label_mismatch,
+        tape_alerts=len(tape_on),
+        live_rows=len(live_on),
+        live_missed=len(tape_on.keys() - live_on.keys()),
+        live_only=len(live_on.keys() - tape_on.keys()),
+        value_mismatched=mismatched,
+        inserted=len(inserts),
+        inserts_held=held,
+        removed=len(removes),
+        flags_changed=len(flag_updates),
+        flags_unmatched=sum(1 for row in live if flags[row.id] is None),
+        spot_filled=len(spot_updates),
+        matched=len(matched),
+        inserts=inserts,
+        removes=removes,
+        flag_updates=flag_updates,
+        spot_updates=spot_updates,
+        sha256=_write_set_sha(inserts, removes, flag_updates, spot_updates),
+    )
+
+
+def _write_ids(
+    cur: psycopg2.extensions.cursor,
+    sql: str,
+    template: str,
+    rows: Sequence[tuple[object, ...]],
+) -> int:
+    """Run a batched write whose RETURNING gives one id per row it touched; return the count."""
+    touched = psycopg2.extras.execute_values(
+        cur, sql, rows, template=template, page_size=_PAGE_ROWS, fetch=True
+    )
+    return len(touched)
+
+
+def _write_day(conn: psycopg2.extensions.connection, plan: DayPlan) -> DayPlan:
+    """Steps 3 to 7 in the open transaction. The write counts become what the database reports:
+    a row another writer changed first is not counted."""
+    with conn.cursor() as cur:
+        inserted = insert_alerts(cur, plan.inserts)
+        removed = _write_ids(
+            cur, _REMOVE_SQL, "(%s::bigint)", [(row_id,) for row_id in plan.removes]
+        )
+        flags_changed = _write_ids(
+            cur, _FLAGS_UPDATE_SQL, "(%s::bigint, %s::boolean, %s::boolean)", plan.flag_updates
+        )
+        spot_filled = _write_ids(
+            cur, _SPOT_UPDATE_SQL, "(%s::bigint, %s::numeric)", plan.spot_updates
+        )
+        done = replace(
+            plan,
+            inserted=inserted,
+            removed=removed,
+            flags_changed=flags_changed,
+            spot_filled=spot_filled,
+        )
+        cur.execute(_MARK_DAY_SQL, {column: getattr(done, column) for column in _TAPE_DAY_COLUMNS})
+    return done
+
+
+def heal_day(
+    conn: psycopg2.extensions.connection,
+    con: duckdb.DuckDBPyConnection,
+    tape: str,
+    day: date,
+    settings: Sequence[LiveSettings],
+    *,
+    insert_missed: bool,
+    apply: bool,
+) -> DayPlan:
+    """One live day's pass over its rows (spec 6.4), in one transaction.
+
+    1. Replay the day, read its rows, and compare the two on the key over the on tickers.
+    2. With insert_missed, hold the inserts when no settings row covers the day, a covering row
+       ran another rule, or every covering row had the detector off.
+    3. With insert_missed and nothing held, insert the on tickers' tape alerts at keys with no
+       row of either source, as source 'replay'.
+    4. Delete the replay rows whose key the replay no longer fires (a re-landed tape), unless
+       the replay fired nothing.
+    5. Correct the sweep and floor flags on live rows from their top trade on the tape.
+    6. Fill a blank SPXW spot on live rows (live_spot).
+    7. Upsert the day's interval_ba_tape_days row.
+
+    `settings` are what read_covering_settings gives for the day; with insert_missed False they
+    are not consulted and all three tickers count. A live row is never deleted, and the only
+    columns written on one are the two flags and a NULL SPXW underlying_price.
+
+    With apply False nothing is written. With apply True steps 3 to 7 commit together, and any
+    error rolls the whole day back, marker included, and propagates, so the day is retried.
+    The connection's autocommit is off for the call and restored after.
+
+    Raises ValueError for a day before LIVE_START, for insert_missed before INSERT_MISSED_FROM
+    (live ran another rule then), and, from replay_day, for a tape with no row for the day: a
+    failed day, never a day with no alerts.
+    """
+    if day < LIVE_START:
+        raise ValueError(f"{day} is before the first live day {LIVE_START}: no live rows to heal")
+    if insert_missed and day < INSERT_MISSED_FROM:
+        raise ValueError(
+            f"insert_missed on {day}: {day} is before {INSERT_MISSED_FROM}, the first session"
+            " live ran this rule"
+        )
+    previous = conn.autocommit
+    conn.autocommit = False
+    try:
+        plan = _plan_day(conn, con, tape, day, settings, insert_missed=insert_missed)
+        if apply:
+            plan = _write_day(conn, plan)
+            conn.commit()
+        else:
+            conn.rollback()  # ends the transaction the reads opened
+        return plan
+    except BaseException:
+        # A rollback that fails as well (a dead connection) must not hide the error that got
+        # here; the server drops the transaction with the connection.
+        with contextlib.suppress(psycopg2.Error):
+            conn.rollback()
+        raise
+    finally:
+        if not conn.closed:
+            conn.autocommit = previous
