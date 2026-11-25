@@ -24,6 +24,13 @@ vi.mock('../../src/utils/timezone.js', async (importOriginal) => {
   };
 });
 
+// The real Sentry and request metrics run; only the one-off counter is
+// replaced, so a test can assert what the handler counted.
+vi.mock('../_lib/sentry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/sentry.js')>();
+  return { ...actual, metrics: { ...actual.metrics, increment: vi.fn() } };
+});
+
 import handler from '../yesterday.js';
 import {
   schwabFetch,
@@ -31,6 +38,7 @@ import {
   isMarketOpen,
 } from '../_lib/api-helpers.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
+import { metrics } from '../_lib/sentry.js';
 import { etWallClockToUtcIso, getETDateStr } from '../../src/utils/timezone.js';
 import { priorTradingDay } from '../../src/data/marketHours.js';
 
@@ -209,13 +217,14 @@ describe('GET /api/yesterday: the cache ends by the next ET midnight', () => {
 
   /**
    * Call the handler at `now` and return the (s-maxage, swr) it set. The body
-   * is one daily candle: by default the last trading day before `now`'s ET
-   * date, which is the right yesterday; `candleDate` names another day.
+   * is one daily candle by default: the last trading day before `now`'s ET
+   * date, which is the right yesterday. `candleDates` names the candles to
+   * return instead, oldest first, as Schwab does.
    */
   async function cacheAt(
     now: number,
     marketOpen: boolean,
-    candleDate = priorTradingDay(getETDateStr(new Date(now))),
+    candleDates = [priorTradingDay(getETDateStr(new Date(now)))],
   ) {
     vi.mocked(setCacheHeaders).mockClear();
     vi.setSystemTime(now);
@@ -226,7 +235,9 @@ describe('GET /api/yesterday: the cache ends by the next ET midnight', () => {
       data: {
         symbol: '$SPX',
         empty: false,
-        candles: [makeDailyCandle(candleDate, 5470, 5520, 5460, 5510)],
+        candles: candleDates.map((date) =>
+          makeDailyCandle(date, 5470, 5520, 5460, 5510),
+        ),
       },
     });
     const res = mockResponse();
@@ -260,6 +271,25 @@ describe('GET /api/yesterday: the cache ends by the next ET midnight', () => {
       edgeSec: 7 * 3600,
       swr: 0,
     });
+  });
+
+  it('caches the prior session when Schwab also sends today, as it does after the close', async () => {
+    // The live shape: today's candle comes after the prior session's. The
+    // handler drops today's, so the last one left is Mon 11-23, the right
+    // yesterday. Reading the last candle as is would take Tue 11-24, find it
+    // is not the prior session, and cache every after-close response as (0, 0).
+    expect(
+      await cacheAt(at(17, 0), false, ['2026-11-23', '2026-11-24']),
+    ).toEqual({ edgeSec: 7 * 3600, swr: 0 });
+  });
+
+  it('takes the last trading day across a holiday, not the last weekday', async () => {
+    // Tue 2026-05-26 10:00 EDT (14:00Z), the day after Memorial Day: the prior
+    // session is Fri 05-22. Counting weekdays only would want Mon 05-25, call
+    // Friday's body the wrong day, and cache nothing all day.
+    expect(
+      await cacheAt(Date.UTC(2026, 4, 26, 14, 0, 0), true, ['2026-05-22']),
+    ).toEqual({ edgeSec: 3600, swr: 3600 });
   });
 
   it('ends by midnight for a response at 23:59 ET', async () => {
@@ -423,6 +453,7 @@ describe('GET /api/yesterday: only a body for the right day is cached', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.mocked(setCacheHeaders).mockClear();
+    vi.mocked(metrics.increment).mockClear();
   });
 
   afterEach(() => {
@@ -456,9 +487,13 @@ describe('GET /api/yesterday: only a body for the right day is cached', () => {
     const { args } = await call('2026-11-23');
 
     expect(args).toEqual([3600, 3600]);
+    expect(metrics.increment).not.toHaveBeenCalled();
   });
 
-  it('does not cache a body dated an older session, but still sends it', async () => {
+  // The client polls every 60 s, so a Schwab lag meets this branch once a
+  // minute. It is counted, not logged: a warn line per poll would bury the
+  // rest of the log, and the rate of the counter says how long the lag lasts.
+  it('does not cache a body dated an older session, but still sends it, and counts it', async () => {
     // Fri 11-20: Schwab has not published Monday's daily candle.
     const { res, args } = await call('2026-11-20');
 
@@ -466,13 +501,17 @@ describe('GET /api/yesterday: only a body for the right day is cached', () => {
     expect((res._json as { yesterday: { date: string } }).yesterday.date).toBe(
       '2026-11-20',
     );
+    expect(metrics.increment).toHaveBeenCalledTimes(1);
+    expect(metrics.increment).toHaveBeenCalledWith('yesterday.wrong_day');
   });
 
-  it('does not cache a body with no completed day at all', async () => {
+  it('does not cache a body with no completed day at all, and counts it', async () => {
     // Only today's partial candle came back, so yesterday is null.
     const { res, args } = await call('2026-11-24');
 
     expect(args).toEqual([0, 0]);
     expect((res._json as { yesterday: unknown }).yesterday).toBeNull();
+    expect(metrics.increment).toHaveBeenCalledTimes(1);
+    expect(metrics.increment).toHaveBeenCalledWith('yesterday.wrong_day');
   });
 });

@@ -13,7 +13,8 @@
  * revalidate window (3600s) to what is left after that: from the next ET
  * midnight the body names the wrong session, so it must not be served.
  * A body whose `yesterday.date` is not the last trading day before today is
- * not cached at all, so the client's next poll asks Schwab again.
+ * not cached at all, so the client's next poll asks Schwab again, and it is
+ * counted as `yesterday.wrong_day`.
  *
  * Response:
  * {
@@ -197,6 +198,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const swr = Math.min(3600, toMidnight - edgeSec);
         setCacheHeaders(res, edgeSec, swr);
       } else {
+        // Counted, not logged: the client polls every 60 s, so a Schwab lag
+        // would write one warn line a minute. The counter's rate shows how
+        // long the lag lasts, or a holiday-calendar gap that never clears.
+        metrics.increment('yesterday.wrong_day');
         setCacheHeaders(res, 0, 0);
       }
 
