@@ -81,6 +81,10 @@ jobs:
               # ml/tests/test_setups_backtest_zero_gamma_loader.py reads the
               # zero_gamma_levels table's CREATE out of this file.
               - 'api/_lib/db-migrations.ts'
+              # scripts/test_interval_ba_tape.py loads the tape replay module by
+              # path (scripts/interval_ba_tape.py runs in ml/.venv), so an edit
+              # to it must run this job (nightly/** alone starts only nightly).
+              - 'nightly/src/interval_ba_replay.py'
               # ml/tests/test_anchor_backfill_extract.py reads the multileg
               # trade codes out of this file.
               - 'api/_lib/multileg-codes.ts'
@@ -180,6 +184,12 @@ jobs:
               - 'api/__tests__/fixtures/lottery-score-parity-alt.json'
               - 'api/_lib/lottery-inversion-bonus.ts'
               - 'api/lottery-finder.ts'
+              # nightly/tests/test_interval_ba_drift.py reads the live Interval B/A
+              # rule out of these three uw-stream files, so a uw-stream-only change
+              # to one must run this job (uw-stream/** alone starts only uw_stream).
+              - 'uw-stream/src/config.py'
+              - 'uw-stream/src/handlers/interval_ba.py'
+              - 'uw-stream/src/handlers/recent_fires.py'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             # What the browser loads under test. api/** is left out: the specs
