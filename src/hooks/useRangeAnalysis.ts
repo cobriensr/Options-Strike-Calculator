@@ -10,7 +10,7 @@
 import { useMemo } from 'react';
 import { toETTime } from '../utils/calculator';
 import { SIGNALS, DEFAULTS } from '../constants';
-import { classifyOpeningRange } from '../utils/classifiers';
+import { openingRangeSignal } from '../utils/opening-range-signal';
 import { getEarlyCloseHourET } from '../data/marketHours';
 import type { EventItem, QuoteSlice } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
@@ -244,23 +244,16 @@ export function useRangeAnalysis(
     const orData = historySnapshot
       ? historySnapshot.openingRange
       : liveOpeningRange;
-    if (orData && orData.high > 0 && orData.low > 0) {
+    // The formula and its grade live in openingRangeSignal, which the repair of
+    // stored rows calls too. It reads null for a range that is not a price.
+    const reading = orData
+      ? openingRangeSignal(orData.high, orData.low, spot, medianHlPct)
+      : null;
+    if (orData && reading) {
       result.openingRangeHigh = orData.high;
       result.openingRangeLow = orData.low;
-      const rangePts = orData.high - orData.low;
-      const rangePct = (rangePts / spot) * 100;
-      const medHL = medianHlPct ?? 1;
-      const consumed = medHL > 0 ? rangePct / medHL : 0;
-      result.openingRangePctConsumed = consumed;
-      const orClassification = classifyOpeningRange(consumed);
-      // Map traffic signal to legacy label expected by DB / API / tests
-      const signalToLabel: Record<string, string> = {
-        green: 'GREEN',
-        yellow: 'MODERATE',
-        red: 'RED',
-      };
-      result.openingRangeSignal =
-        signalToLabel[orClassification.signal] ?? 'RED';
+      result.openingRangePctConsumed = reading.consumed;
+      result.openingRangeSignal = reading.signal;
     }
 
     // ── RV/IV ratio ──────────────────────────────────────────
