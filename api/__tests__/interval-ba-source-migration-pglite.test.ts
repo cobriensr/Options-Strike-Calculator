@@ -237,6 +237,28 @@ describe('migration #212 (interval_ba source, live settings, tape days)', () => 
     });
   });
 
+  describe('lock bound', () => {
+    it('sets a 5 s lock_timeout for the transaction, so a queued lock fails fast', async () => {
+      // SET LOCAL lasts to the end of the transaction, so read it before
+      // ROLLBACK. Without the bound the ALTER would queue every uw-stream
+      // insert behind a reader's transaction.
+      await pg.exec('BEGIN');
+      try {
+        await applyMigration(pg, 212);
+        const { rows } = await pg.query<{ lock_timeout: string }>(
+          'SHOW lock_timeout',
+        );
+        expect(rows).toEqual([{ lock_timeout: '5s' }]);
+      } finally {
+        await pg.exec('ROLLBACK');
+      }
+      const after = await pg.query<{ lock_timeout: string }>(
+        'SHOW lock_timeout',
+      );
+      expect(after.rows).toEqual([{ lock_timeout: '0' }]);
+    });
+  });
+
   describe('atomicity', () => {
     it('rolls the column, the CHECK and the UPDATE back when a table already exists', async () => {
       await insertAlert(pg, 'old', '2026-01-02');

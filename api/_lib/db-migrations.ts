@@ -6147,6 +6147,11 @@ export const MIGRATIONS: Migration[] = [
     description:
       'interval_ba source column, live settings and tape days tables',
     statements: (sql) => [
+      // Apply outside market hours: uw-stream inserts into interval_ba_alerts
+      // while the session runs, and the ALTER below holds ACCESS EXCLUSIVE on
+      // it through the UPDATE (about 18k rows) to the end of the transaction.
+      // Fail fast instead of queueing writers behind the ACCESS EXCLUSIVE lock.
+      sql`SET LOCAL lock_timeout = '5s'`,
       // Spec: docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md,
       // 6.2. `source` says who wrote a row: live (uw-stream, fired_at is wall
       // clock at detection) or replay (the Full Tape, fired_at is the
@@ -6181,14 +6186,14 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE TABLE interval_ba_tape_days (
             day              DATE PRIMARY KEY,
             done_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-            tape_alerts      INTEGER NOT NULL,
+            tape_alerts      INTEGER NOT NULL, -- counts are over the tickers live had on
             live_rows        INTEGER NOT NULL,
-            live_missed      INTEGER NOT NULL,
-            live_only        INTEGER NOT NULL,
-            value_mismatched INTEGER NOT NULL,
+            live_missed      INTEGER NOT NULL, -- tape keys with no live row
+            live_only        INTEGER NOT NULL, -- live keys the tape does not fire
+            value_mismatched INTEGER NOT NULL, -- same key, a detector column differs (diagnostic)
             inserted         INTEGER NOT NULL,
-            inserts_held     TEXT,
-            removed          INTEGER NOT NULL,
+            inserts_held     TEXT, -- NULL, or why the inserts were held
+            removed          INTEGER NOT NULL, -- stale replay rows deleted on a re-landed tape
             flags_changed    INTEGER NOT NULL,
             flags_unmatched  INTEGER NOT NULL,
             spot_filled      INTEGER NOT NULL
