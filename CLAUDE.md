@@ -144,7 +144,7 @@ When in doubt, write the plan. A plan doc is ~10 minutes; rediscovering scope is
 
 **Adversarial review (owner rule, 2026-11-20).** Every spec in `docs/superpowers/specs/` and every plan in `docs/superpowers/plans/` gets a hostile read by a fresh agent before the owner sees it. Why: the author checks their own doc against their own beliefs, so a wrong premise survives until someone who doesn't share them reads the code.
 
-- After writing a spec or plan, dispatch the `spec-reviewer` agent (`.claude/agents/spec-reviewer.md`, local-only) with `model: "opus"`. A PostToolUse hook (`spec-review-reminder.sh`) reminds you after each Write there.
+- After writing a spec or plan, dispatch the `spec-reviewer` agent (`.claude/agents/spec-reviewer.md`, local-only) with `model: "opus"`. Hooks enforce it: a turn can't end while a spec or plan written in the session has no spec-reviewer run, and a Claude commit that adds one is blocked. To skip a review, the owner types `waive review <specs/… or plans/….md>` on one line at the start of a prompt. Design and limits: `docs/superpowers/specs/2026-11-21-spec-review-gate-design.md`.
 - The brief gives only the doc's path; for a plan, also the path of the spec it implements. Leave out your reasoning, so the review isn't anchored on it.
 - Settle the findings marked `author` yourself, in the doc.
 - Bring the owner only the findings marked `owner`, in one message, most important first.

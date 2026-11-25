@@ -1,8 +1,34 @@
 #!/bin/sh
-# Commit gate: blocks a Claude Code commit whose staged content the last
-# passing `npm run review` in this worktree didn't see. Claude Code sets
-# CLAUDECODE=1 in its tool shells; every other commit passes untouched.
+# Claude Code commit gates. Claude Code sets CLAUDECODE=1 in its tool shells;
+# every other commit passes untouched.
+#  1. Spec review: blocks a commit that adds a spec or plan under
+#     docs/superpowers/ with no spec-reviewer run or owner waiver on record
+#     (scripts/spec-review-check.mjs). A commit that replays existing commits
+#     (merge, cherry-pick, revert, rebase) skips it: it would list docs that
+#     other sessions added. Spec: docs/superpowers/specs/2026-11-21-spec-review-gate-design.md
+#  2. Review gate: blocks a commit whose staged content the last passing
+#     `npm run review` in this worktree didn't see. Spec: docs/superpowers/specs/commit-gate-2026-10-28.md
 # Enable once per clone: git config core.hooksPath .githooks
-# Spec: docs/superpowers/specs/commit-gate-2026-10-28.md
 [ "$CLAUDECODE" = "1" ] || exit 0
+
+GIT_DIR=$(git rev-parse --git-dir) || exit 1
+replaying=
+for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+  if [ -e "$GIT_DIR/$marker" ]; then replaying=1; fi
+done
+if [ -z "$replaying" ]; then
+  # --no-renames: a doc moved in from elsewhere counts as added.
+  ADDED=$(git diff --cached --no-renames --name-only --diff-filter=A -- 'docs/superpowers/specs/*.md' 'docs/superpowers/plans/*.md') || exit 1
+  if [ -n "$ADDED" ]; then
+    # One path per line: split on newlines only, so a name with a space stays
+    # whole, and not on a glob character.
+    IFS='
+'
+    set -f
+    # $ADDED is unquoted on purpose: each line becomes one argument.
+    # shellcheck disable=SC2086
+    node "$(dirname "$0")/../scripts/spec-review-check.mjs" $ADDED || exit 1
+  fi
+fi
+
 exec node "$(dirname "$0")/../scripts/review-gate.mjs" check

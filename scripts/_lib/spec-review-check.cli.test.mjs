@@ -3,8 +3,9 @@
 /**
  * Tests for scripts/spec-review-check.mjs, the check .githooks/pre-commit runs
  * on the spec and plan docs a Claude commit adds: the real CLI, run with node
- * in throwaway repos that hold a hand-written review log. Pure parsing and
- * deciding are in spec-review-log.test.mjs. Shared helpers are in
+ * in throwaway repos that hold a hand-written review log, and the real hook
+ * that calls it, run through git (the "pre-commit hook" block). Pure parsing
+ * and deciding are in spec-review-log.test.mjs. Shared helpers are in
  * review-gate.fixtures.mjs. Design:
  * docs/superpowers/specs/2026-11-21-spec-review-gate-design.md.
  */
@@ -12,8 +13,20 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { git, initRepo, run, write } from './review-gate.fixtures.mjs';
-import { makeTempDir, setupScratchGit } from './scratch-git.fixtures.mjs';
+import {
+  claudeCommit,
+  git,
+  headSubject,
+  initRepo,
+  review,
+  run,
+  write,
+} from './review-gate.fixtures.mjs';
+import {
+  adminDir,
+  makeTempDir,
+  setupScratchGit,
+} from './scratch-git.fixtures.mjs';
 
 setupScratchGit();
 
@@ -188,10 +201,255 @@ describe('spec-review-check', () => {
   it('blocks outside a git repository, since any error blocks', () => {
     const outside = makeTempDir('spec-review-nogit-');
 
-    const result = check(outside, SPEC);
+    const result = run(outside, process.execPath, [CLI, SPEC], {
+      // Keep git from finding a repository above the temp dir.
+      GIT_CEILING_DIRECTORIES: path.dirname(outside),
+    });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('commit blocked, the check failed:');
     expect(result.stderr).toContain('git rev-parse --git-common-dir');
+  });
+
+  describe('pre-commit hook', () => {
+    /** The first line of the message every block of this gate starts with. */
+    const BLOCKED = 'spec-review gate: commit blocked';
+    const REVIEWED = [
+      entry('start', 'a1', 'specs/a.md'),
+      entry('done', 'a1', '-'),
+    ];
+
+    /** Add `file` to the index of `cwd`, its name read as it is, not as a glob. */
+    function stage(cwd, file, body = 'a doc\n') {
+      write(cwd, file, body);
+      git(cwd, '--literal-pathspecs', 'add', '--', file);
+    }
+
+    /**
+     * The hook on its own, with the staged files as they are: `git hook run`
+     * starts it the way a commit does but writes nothing, so a test can put a
+     * merge marker in the git dir without making the commit a merge. (`sh` is
+     * not on every shell's PATH on Windows; git finds its own.)
+     */
+    function claudeHook(cwd) {
+      return run(cwd, 'git', ['hook', 'run', 'pre-commit'], {
+        CLAUDECODE: '1',
+      });
+    }
+
+    it('blocks a commit that adds a spec with no review on record', () => {
+      writeLog(repo, [entry('start', 'a1', 'specs/a.md')]);
+      stage(repo, SPEC);
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(BLOCKED);
+      expect(result.stderr).toContain(`\n  ${SPEC}\n`);
+      expect(headSubject(repo)).toBe('base');
+    });
+
+    it('blocks a commit that adds a plan with no review on record', () => {
+      writeLog(repo, REVIEWED);
+      stage(repo, PLAN);
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(BLOCKED);
+      expect(result.stderr).toContain(`\n  ${PLAN}\n`);
+      expect(headSubject(repo)).toBe('base');
+    });
+
+    it('lets through a commit that adds a spec with a review on record', () => {
+      writeLog(repo, REVIEWED);
+      stage(repo, SPEC);
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(headSubject(repo)).toBe('claude');
+    });
+
+    it('lists only the added docs that lack a review, one argument each', () => {
+      // One reviewed doc and one not: a single argument holding both paths
+      // would be keyed by its first doc and pass.
+      writeLog(repo, REVIEWED);
+      stage(repo, SPEC);
+      stage(repo, PLAN);
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`\n  ${PLAN}\n`);
+      expect(result.stderr).not.toContain(`  ${SPEC}`);
+    });
+
+    it('names a doc whose file name has a space whole, and blocks it', () => {
+      const odd = 'docs/superpowers/specs/my spec.md';
+      writeLog(repo, REVIEWED);
+      stage(repo, odd);
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`\n  ${odd}\n`);
+      expect(result.stderr).toContain(`No review or waiver can name ${odd}:`);
+    });
+
+    it('hands the check a glob character in a doc name as it is', () => {
+      // a1.md has a review. The shell would read a[1].md as a pattern, and
+      // match a1.md, if the hook let it.
+      const reviewed = 'docs/superpowers/specs/a1.md';
+      const odd = 'docs/superpowers/specs/a[1].md';
+      writeLog(repo, [
+        entry('start', 'a1', 'specs/a1.md'),
+        entry('done', 'a1', '-'),
+      ]);
+      stage(repo, reviewed);
+      stage(repo, odd);
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`\n  ${odd}\n`);
+      expect(result.stderr).not.toContain(`  ${reviewed}`);
+    });
+
+    it('does not check a doc that was committed before and is changed now', () => {
+      // No log at all: had the check run, it would have blocked on that.
+      stage(repo, SPEC);
+      git(repo, 'commit', '-q', '-m', 'doc');
+      stage(repo, SPEC, 'an "As built" note\n');
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(headSubject(repo)).toBe('claude');
+    });
+
+    it('blocks a doc moved into the doc folder from elsewhere', () => {
+      stage(repo, 'docs/tmp/a.md');
+      git(repo, 'commit', '-q', '-m', 'draft');
+      mkdirSync(path.join(repo, 'docs', 'superpowers', 'specs'), {
+        recursive: true,
+      });
+      git(repo, 'mv', 'docs/tmp/a.md', SPEC);
+      writeLog(repo, [entry('start', 'a1', 'specs/other.md')]);
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(BLOCKED);
+      expect(result.stderr).toContain(`\n  ${SPEC}\n`);
+    });
+
+    it('blocks a doc renamed inside the doc folders, as a new doc', () => {
+      // Both sides of a move sit in the pathspec, so git would report one
+      // rename, which is not an addition, unless the hook turns that off.
+      writeLog(repo, REVIEWED);
+      stage(repo, SPEC);
+      git(repo, 'commit', '-q', '-m', 'doc');
+      git(repo, 'mv', SPEC, 'docs/superpowers/specs/c.md');
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(BLOCKED);
+      expect(result.stderr).toContain('\n  docs/superpowers/specs/c.md\n');
+      expect(headSubject(repo)).toBe('doc');
+    });
+
+    it('does not check a file under the doc folders that is not markdown', () => {
+      stage(repo, 'docs/superpowers/specs/notes.txt');
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+    });
+
+    it('checks nothing, and needs no log, when the commit adds no doc', () => {
+      stage(repo, 'a.txt', 'changed\n');
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(headSubject(repo)).toBe('claude');
+    });
+
+    it('leaves a commit that is not Claude Code to git, as before', () => {
+      stage(repo, SPEC);
+
+      const result = run(repo, 'git', ['commit', '-q', '-m', 'owner']);
+
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(headSubject(repo)).toBe('owner');
+    });
+
+    describe.each([
+      ['MERGE_HEAD', 'file'],
+      ['CHERRY_PICK_HEAD', 'file'],
+      ['REVERT_HEAD', 'file'],
+      ['rebase-merge', 'folder'],
+      ['rebase-apply', 'folder'],
+    ])('while %s is in the git dir', (name, kind) => {
+      /** Make `name` in the git dir of `cwd`, as git does mid-operation. */
+      function markReplay(cwd) {
+        const marker = path.join(adminDir(cwd), name);
+        if (kind === 'folder') mkdirSync(marker);
+        else writeFileSync(marker, `${git(cwd, 'rev-parse', 'HEAD')}\n`);
+      }
+
+      it('skips the check, which blocks the same staged doc without it', () => {
+        writeLog(repo, REVIEWED);
+        stage(repo, PLAN);
+        review(repo);
+        const before = claudeHook(repo);
+        markReplay(repo);
+
+        const during = claudeHook(repo);
+
+        expect(before.status).toBe(1);
+        expect(before.stderr).toContain(BLOCKED);
+        expect(during.stderr).not.toContain('spec-review gate');
+        expect(during.status).toBe(0);
+      });
+    });
+
+    it('reads the markers in the git dir of a linked worktree, not .git', () => {
+      const worktree = path.join(makeTempDir('spec-review-wt-'), 'wt');
+      git(repo, 'worktree', 'add', '-q', '-b', 'side', worktree);
+      writeLog(repo, REVIEWED);
+      stage(worktree, PLAN);
+      review(worktree);
+      const before = claudeHook(worktree);
+      writeFileSync(
+        path.join(adminDir(worktree), 'MERGE_HEAD'),
+        `${git(worktree, 'rev-parse', 'HEAD')}\n`,
+      );
+
+      const during = claudeHook(worktree);
+
+      expect(before.status).toBe(1);
+      expect(before.stderr).toContain(BLOCKED);
+      expect(during.stderr).not.toContain('spec-review gate');
+      expect(during.status).toBe(0);
+    });
   });
 });
