@@ -68,6 +68,24 @@ ENRICH_MAX_DAY_FAILURES = 3
 # re-listed for a few leftover fires stays under it; one re-listed for hundreds of them (the
 # inversion pass after another writer priced the rest) is not judged by it.
 ENRICH_UNPRICED_FLOOR = 20
+# The interval-ba-tape step (spec 2026-11-24-interval-ba-rebuild-design.md, section 6.6). Its tape
+# days land in a directory of its own, because `open_reader` empties the one it is given; DuckDB
+# spills one level under it (interval_ba_step), where that emptying clears a killed run's spill.
+INTERVAL_BA_CACHE_DIR = WORK_DIR / "interval-ba"
+# A day starts only with this much step time left: its download (held to the tape reader's
+# FETCH_DEADLINE_SECONDS, 600 s; the bound is checked between reads, so a stalled read can pass
+# it, and the watchdog bounds the run) plus heal_day's DuckDB scans of the day and its one Neon
+# transaction. The same as the other two per-day tape steps.
+INTERVAL_BA_DAY_BUDGET_SECONDS = 900
+# Failed days after which the step stops for the night. Each costs a download and a Sentry
+# exception, and a tape layout the replay cannot read breaks every day alike.
+INTERVAL_BA_MAX_DAY_FAILURES = 3
+# DuckDB's memory limit for one day: at most a quarter of the nightly service's memory limit and
+# at most 2000MiB (spec 6.6). Railway's limit for the service read 8,000,000,000 bytes on
+# 2026-11-25, so a quarter is 2,000,000,000 bytes, below 2000MiB (2,097,152,000 bytes). DuckDB
+# reads GB as 10**9 bytes. Re-derive this when the service's memory limit changes.
+INTERVAL_BA_DUCKDB_MEMORY = "2GB"
+INTERVAL_BA_DUCKDB_THREADS = 2
 # The refit step's name, in the step table, its logs and its Sentry notices (tag `step`).
 REFIT_STEP_NAME = "lottery-refit"
 # The refit step's row of the plan's D2 budget table: what a night reserves for it.

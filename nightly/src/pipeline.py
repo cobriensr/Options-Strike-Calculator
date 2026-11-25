@@ -20,6 +20,7 @@ import importlib
 
 from constants import (
     ENRICH_DAY_BUDGET_SECONDS,
+    INTERVAL_BA_DAY_BUDGET_SECONDS,
     LARGE_REPORT_BUDGET_SECONDS,
     OUTCOME_CHECK_BUDGET_SECONDS,
     REFIT_BUDGET_SECONDS,
@@ -52,6 +53,9 @@ def lazy_group_step(name: str, module: str, min_seconds: int) -> Step:
 STEPS: tuple[Step, ...] = (
     lazy_step("enrich-outcomes", "enrich_step", ENRICH_DAY_BUDGET_SECONDS),
     lazy_step("outcome-check", "outcome_check", OUTCOME_CHECK_BUDGET_SECONDS),
+    # It writes Neon (the live Interval B/A rows) and carries live's outage alert, so it runs
+    # ahead of the long steps rather than being the one squeezed when time runs short.
+    lazy_step("interval-ba-tape", "interval_ba_step", INTERVAL_BA_DAY_BUDGET_SECONDS),
     # After the enrichment, which fills the outcomes the refit trains on tonight.
     lazy_step(REFIT_STEP_NAME, "refit_step", REFIT_BUDGET_SECONDS),
     # Phase 3, the research steps (D2's budget table), after everything that writes outcomes

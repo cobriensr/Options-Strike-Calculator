@@ -22,6 +22,7 @@ import pytest
 import sentry_sdk
 
 import enrich_step
+import interval_ba_step
 import main
 import outcome_check
 import refit_step
@@ -31,6 +32,7 @@ import research_reports
 from config import Settings, load_settings
 from constants import (
     ENRICH_DAY_BUDGET_SECONDS,
+    INTERVAL_BA_DAY_BUDGET_SECONDS,
     LARGE_REPORT_BUDGET_SECONDS,
     OUTCOME_CHECK_BUDGET_SECONDS,
     PROMOTION_MIN_SECONDS,
@@ -95,12 +97,15 @@ def test_pipeline_order_and_reserve() -> None:
     # The names are literals on purpose: they pin the value of REFIT_STEP_NAME, which the
     # registry takes from constants. Each step's place is a data dependency: the check
     # reads what the enrichment just wrote (the other order alerts on yesterday's gaps),
-    # the refit trains on tonight's fresh outcomes, and the research steps come last: the
-    # derive step keeps the per-day state the reports read, so it runs before them, and
-    # all of them read the outcomes the enrichment just filled.
+    # the Interval B/A step writes Neon and carries live's outage alert, so it runs before
+    # the long steps that could squeeze it, the refit trains on tonight's fresh outcomes,
+    # and the research steps come last: the derive step keeps the per-day state the reports
+    # read, so it runs before them, and all of them read the outcomes the enrichment just
+    # filled.
     expected = [
         ("enrich-outcomes", ENRICH_DAY_BUDGET_SECONDS),
         ("outcome-check", OUTCOME_CHECK_BUDGET_SECONDS),
+        ("interval-ba-tape", INTERVAL_BA_DAY_BUDGET_SECONDS),
         ("lottery-refit", REFIT_BUDGET_SECONDS),
         ("research-derive", RESEARCH_DAY_BUDGET_SECONDS),
         ("eod-flow-rollup", REPORT_BUDGET_SECONDS),
@@ -116,11 +121,13 @@ def test_pipeline_order_and_reserve() -> None:
     ]
 
     assert [(step.name, step.min_seconds) for step in STEPS] == expected
-    # Phase 2's two, the refit's, the derive step's, eight steps at the report budget and two
-    # at the large one (D2's budget table). The sum is spelled out, never a literal total.
+    # Phase 2's two, the Interval B/A step's, the refit's, the derive step's, eight steps at the
+    # report budget and two at the large one (D2's budget table; 8,400 s today). The sum is
+    # spelled out, never a literal total.
     assert reserve_seconds(STEPS) == (
         ENRICH_DAY_BUDGET_SECONDS
         + OUTCOME_CHECK_BUDGET_SECONDS
+        + INTERVAL_BA_DAY_BUDGET_SECONDS
         + REFIT_BUDGET_SECONDS
         + RESEARCH_DAY_BUDGET_SECONDS
         + 8 * REPORT_BUDGET_SECONDS
@@ -138,6 +145,7 @@ def test_each_steps_minimum_is_read_from_its_named_constant() -> None:
     table = [
         ("enrich-outcomes", "ENRICH_DAY_BUDGET_SECONDS"),
         ("outcome-check", "OUTCOME_CHECK_BUDGET_SECONDS"),
+        ("interval-ba-tape", "INTERVAL_BA_DAY_BUDGET_SECONDS"),
         ("lottery-refit", "REFIT_BUDGET_SECONDS"),
         ("research-derive", "RESEARCH_DAY_BUDGET_SECONDS"),
         ("eod-flow-rollup", "REPORT_BUDGET_SECONDS"),
@@ -214,6 +222,21 @@ def test_the_registered_enrichment_runs_the_enrich_step_module(
     fake.assert_called_once_with(ctx)
 
 
+def test_the_registered_interval_ba_tape_runs_interval_ba_step(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    # The module is named by a string: a typo there would only fail at 07:15 UTC.
+    (step,) = (s for s in STEPS if s.name == "interval-ba-tape")
+    result = StepResult("ok", {"days_done": 1})
+    fake = create_autospec(interval_ba_step.run, return_value=result)
+    monkeypatch.setattr(interval_ba_step, "run", fake)
+    ctx = _ctx(settings)
+
+    assert step.run(ctx) is result
+
+    fake.assert_called_once_with(ctx)
+
+
 def test_the_registered_refit_runs_the_refit_step_module(
     monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
@@ -242,17 +265,20 @@ def test_pipeline_imports_no_step_module_at_load() -> None:
         ),
     }
     # The step modules and the shared files (scripts/, ml/src/) they pull in: every repo module
-    # that importing `refit_step`, `enrich_step`, `outcome_check` and the three research
-    # modules loads and `pipeline` itself does not. `monitoring` and `resources` are not here:
-    # they are nightly's own infrastructure, which `main` imports at load before any step
-    # runs, so keeping them out of `pipeline` would protect nothing. A step's module missing
-    # from this list could be pulled in at load without this test seeing it. The research
-    # list ends with the two packages the report scripts load first: duckdb and matplotlib.
+    # that importing `refit_step`, `enrich_step`, `outcome_check`, `interval_ba_step` and the
+    # three research modules loads and `pipeline` itself does not. `monitoring` and `resources`
+    # are not here: they are nightly's own infrastructure, which `main` imports at load before
+    # any step runs, so keeping them out of `pipeline` would protect nothing. A step's module
+    # missing from this list could be pulled in at load without this test seeing it. The
+    # research list ends with the two packages the report scripts load first: duckdb and
+    # matplotlib.
     loaded = (
         "outcome_check",
         "enrich_step",
         "enrich_lottery_outcomes",
         "enrich_silent_boom_outcomes",
+        "interval_ba_step",
+        "interval_ba_replay",
         "refit_step",
         "weights_store",
         "_tape_reader",
@@ -465,11 +491,16 @@ def test_every_group_step_name_is_registered() -> None:
     assert registered >= research_reports.STEP_NAMES
     assert registered >= research_db_steps.STEP_NAMES
     # And the other way: a registered research step that no module holds would raise KeyError
-    # at 07:15. The one step of its own module, research-derive, is registered by lazy_step.
-    phase_two_and_four = {"enrich-outcomes", "outcome-check", "lottery-refit", "research-derive"}
+    # at 07:15. The steps with a module of their own are registered by lazy_step.
+    own_module_steps = {
+        "enrich-outcomes",
+        "outcome-check",
+        "interval-ba-tape",
+        "lottery-refit",
+        "research-derive",
+    }
     assert (
-        registered - phase_two_and_four
-        == research_reports.STEP_NAMES | research_db_steps.STEP_NAMES
+        registered - own_module_steps == research_reports.STEP_NAMES | research_db_steps.STEP_NAMES
     )
     assert set(REPORT_STEP_NAMES) == research_reports.STEP_NAMES
     assert set(DB_STEP_NAMES) == research_db_steps.STEP_NAMES
