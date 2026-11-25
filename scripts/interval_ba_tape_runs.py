@@ -1,22 +1,25 @@
 """The mode-agnostic machinery of scripts/interval_ba_tape.py (spec 6.5).
 
-The tool's modes (verify and rebuild now; heal, export and undo later) share what is here:
+The tool's modes (verify, rebuild, heal, export and undo) share what is here:
 
 - loading the replay module nightly/src/interval_ba_replay.py by its path;
 - the refusal windows and the 2026 trading calendar;
 - output that never shows a secret, the env file, and the Neon, DuckDB and R2 connections;
-- run folders, plans, blob hashes and the per-day `.applied` markers;
-- the verified backup, local and in R2;
-- the apply driver: the start checks (windows, every code file's blob hash, each pending day
-  file against plan.json, the --expect totals over the days not yet applied), the backup once
-  per run, and the per-day loop with its markers. A mode hands in how to load and apply a day.
+- run folders, plans, blob hashes, the per-day `.applied` and `.undone` markers;
+- the verified backup, local and in R2, and a verified R2 put for any object;
+- the apply driver: the start checks (windows, an undone run, every code file's blob hash,
+  plan.json's per-ticker counts, each pending day file against plan.json, the --expect totals
+  over the days not yet applied), the backup once per run, and the per-day loop with its
+  markers. A mode hands in how to load and apply a day.
 
 Neon: every connection goes to the direct host. The pooler runs in transaction mode, so a
 session-level setting (psycopg2's `SET default_transaction_read_only` for an autocommit
 read-only session, for one) sticks to whichever pooled backend took it and reaches later
 writers there. Read-only work therefore runs in psycopg2 `BEGIN READ ONLY` transactions, rolled
-back after each read, and every transaction that writes, or that holds a snapshot, sets
-`SET LOCAL statement_timeout` and `lock_timeout` first.
+back after each read. Every connection starts with a 60 s statement_timeout as a startup option,
+as nightly's connect_db does (the pooler rejects one; the direct host takes it): that bounds the
+one transaction the tool does not open itself, heal_day's. Every transaction the tool opens that
+writes, or that holds a snapshot, also sets `SET LOCAL statement_timeout` and `lock_timeout`.
 """
 
 from __future__ import annotations
@@ -289,12 +292,20 @@ def direct_dsn(url: str) -> str:
     return _POOLED_FIRST_LABEL.sub(r"\1", url, count=1)
 
 
+_STATEMENT_TIMEOUT_MS = 60_000
+# A startup option, not a SET: the session is the direct host's own, never a pooled backend's.
+_SESSION_OPTIONS = f"-c statement_timeout={_STATEMENT_TIMEOUT_MS}"
+
+
 def connect(env: dict[str, str], *, readonly: bool) -> Any:
-    """A connection to Neon's direct host, never the pooler, autocommit off. With `readonly`,
-    psycopg2 opens each transaction with BEGIN READ ONLY; nothing is set on the session. The
-    caller rolls back after each read."""
+    """A connection to Neon's direct host, never the pooler, autocommit off, every statement
+    bounded at 60 s. With `readonly`, psycopg2 opens each transaction with BEGIN READ ONLY;
+    nothing is set on the session. The caller rolls back after each read."""
     conn = psycopg2.connect(
-        direct_dsn(env["DATABASE_URL"]), connect_timeout=30, application_name="interval-ba-tape"
+        direct_dsn(env["DATABASE_URL"]),
+        connect_timeout=30,
+        application_name="interval-ba-tape",
+        options=_SESSION_OPTIONS,
     )
     if readonly:
         conn.set_session(readonly=True, autocommit=False)
@@ -314,7 +325,7 @@ def rolled_back(conn: Any) -> Iterator[None]:
     conn.rollback()
 
 
-_STATEMENT_TIMEOUT_SQL = "SET LOCAL statement_timeout = '60s'"
+_STATEMENT_TIMEOUT_SQL = f"SET LOCAL statement_timeout = '{_STATEMENT_TIMEOUT_MS // 1000}s'"
 _LOCK_TIMEOUT_SQL = "SET LOCAL lock_timeout = '5s'"
 
 
@@ -442,11 +453,36 @@ def marker_path(run: Path, day: str) -> Path:
     return run / f"{day}.applied"
 
 
+def undone_path(run: Path, day: str) -> Path:
+    return run / f"{day}.undone"
+
+
 def mark(run: Path, day: date, how: str, counts: dict[str, int]) -> None:
     write_json(
         marker_path(run, day.isoformat()),
         {"day": day.isoformat(), "how": how, **counts, "at": utc_now().isoformat()},
     )
+
+
+def mark_undone(run: Path, day: date, counts: dict[str, int]) -> None:
+    write_json(
+        undone_path(run, day.isoformat()),
+        {"day": day.isoformat(), **counts, "at": utc_now().isoformat()},
+    )
+
+
+def planned_months(plan: dict[str, Any]) -> dict[tuple[str, str], tuple[int, int]]:
+    """(month, ticker) -> (rows before, rows after), summed over plan.json's per-day,
+    per-ticker counts. Raises KeyError or TypeError on counts that are not there."""
+    counts: dict[tuple[str, str], tuple[int, int]] = {}
+    for day, entry in plan["days"].items():
+        tickers = entry["tickers"]
+        if not isinstance(tickers, dict):
+            raise TypeError(f"{day}: tickers is not a mapping")
+        for ticker, c in tickers.items():
+            before, after = counts.get((day[:7], ticker), (0, 0))
+            counts[(day[:7], ticker)] = (before + c["before"], after + c["after"])
+    return counts
 
 
 # --- The backup -------------------------------------------------------------------------------
@@ -546,39 +582,60 @@ def _read_back(path: Path, table_rows: int, sha256: str) -> int:
 
 
 def _upload_backup(r2: R2Bucket, key: str, path: Path, rows: int, sha256: str) -> None:
-    """One single-part put, then a HEAD: the size, the ETag (the body's MD5 for a single-part
-    put) and the sha256 and rows metadata must all read back. A failed check leaves the object
-    in place (the owner decides on deletes in the bucket) and stops the run."""
     body = path.read_bytes()
     if hashlib.sha256(body).hexdigest() != sha256:
         raise BackupFailedError("backup: backup.jsonl changed between its read-back and the upload")
+    put_verified(
+        r2,
+        key,
+        body,
+        {"sha256": sha256, "rows": str(rows)},
+        content_type="application/x-ndjson",
+        what="backup",
+        error=BackupFailedError,
+    )
+
+
+def put_verified(
+    r2: R2Bucket,
+    key: str,
+    body: bytes,
+    metadata: dict[str, str],
+    *,
+    content_type: str,
+    what: str,
+    error: type[CheckFailedError] = CheckFailedError,
+) -> None:
+    """One single-part put, then a HEAD: the size, the ETag (the body's MD5 for a single-part
+    put) and every metadata value must read back. A failed check leaves the object in place
+    (the owner decides on deletes in the bucket) and raises `error`, naming each check."""
     r2.client.put_object(
-        Bucket=r2.name,
-        Key=key,
-        Body=body,
-        Metadata={"sha256": sha256, "rows": str(rows)},
-        ContentType="application/x-ndjson",
+        Bucket=r2.name, Key=key, Body=body, Metadata=metadata, ContentType=content_type
     )
     head = r2.client.head_object(Bucket=r2.name, Key=key)
-    metadata = head.get("Metadata", {})
-    problems = [
-        what
-        for what, ok in (
-            ("size", head.get("ContentLength") == len(body)),
-            (
-                "ETag",
-                head.get("ETag", "").strip('"')
-                == hashlib.md5(body, usedforsecurity=False).hexdigest(),
-            ),
-            ("sha256 metadata", metadata.get("sha256") == sha256),
-            ("rows metadata", metadata.get("rows") == str(rows)),
-        )
-        if not ok
+    stored = head.get("Metadata", {})
+    checks = [
+        ("size", head.get("ContentLength") == len(body)),
+        (
+            "ETag",
+            head.get("ETag", "").strip('"') == hashlib.md5(body, usedforsecurity=False).hexdigest(),
+        ),
+        *((f"{name} metadata", stored.get(name) == value) for name, value in metadata.items()),
     ]
+    problems = [name for name, ok in checks if not ok]
     if problems:
-        raise BackupFailedError(
-            f"backup: the R2 copy {key} does not verify ({', '.join(problems)})"
-        )
+        raise error(f"{what}: the R2 copy {key} does not verify ({', '.join(problems)})")
+
+
+def object_exists(r2: R2Bucket, key: str) -> bool:
+    """Whether the bucket holds `key`, by a HEAD. Any error but "not found" propagates."""
+    try:
+        r2.client.head_object(Bucket=r2.name, Key=key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise
+    return True
 
 
 def check_backup_kept(run: Path) -> None:
@@ -590,17 +647,37 @@ def check_backup_kept(run: Path) -> None:
         raise BackupFailedError("backup: backup.jsonl no longer matches backup.json; the run stops")
 
 
+def read_backup(run: Path) -> list[Any]:
+    """Every record of the run's backup.jsonl, from bytes that hash to backup.json's sha256 (one
+    read, so the check and the parse see the same file). BackupFailedError when they do not,
+    or when a line does not parse."""
+    record = json.loads((run / "backup.json").read_text(encoding="utf-8"))
+    data = (run / "backup.jsonl").read_bytes()
+    if hashlib.sha256(data).hexdigest() != record["sha256"]:
+        raise BackupFailedError("backup: backup.jsonl no longer matches backup.json; the run stops")
+    records = []
+    for n, line in enumerate(data.splitlines(), start=1):
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            raise BackupFailedError(f"backup: line {n} of backup.jsonl does not parse") from None
+    return records
+
+
 # --- The apply driver -------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class DayDone:
     """What a mode's apply_day did: how ("applied", or "end state" for a day already in it), the
-    counts the database reported (they go in the marker), and a line for the log."""
+    counts the database reported (they go in the marker), and a line for the log. `problem`
+    names a day that committed other than its plan: the driver marks it, since it committed,
+    and then stops the run."""
 
     how: str
     counts: dict[str, int]
     line: str
+    problem: str | None = None
 
 
 @dataclass(frozen=True)
@@ -634,17 +711,23 @@ def apply_run(
 ) -> int:
     """Apply a dry run's plan (spec 6.5, "Run folders, plans and applies").
 
-    Refuses (RefusedError) when a window is open, a code file's blob hash moved, plan.json or a
-    pending day file is damaged or disagrees with the other, or an --expect total is not the
-    plan's over the days with no marker. Then the backup on the run's first apply (or a check
-    that the kept one still matches), and each pending day in date order, marked once applied.
+    Refuses (RefusedError) when a window is open, the run was undone, a code file's blob hash
+    moved, plan.json or a pending day file is damaged or disagrees with the other, or an
+    --expect total is not the plan's over the days with no marker. Then the backup on the run's
+    first apply (or a check that the kept one still matches), and each pending day in date
+    order, marked once applied.
     """
     plan = load_plan(run)
     if plan.get("mode") != mode.name:
         raise UsageError(f"{run} holds a {plan.get('mode')} plan, not a {mode.name} plan")
     refuse_in_window(allow_market_hours)
+    if any(run.glob("*.undone")):
+        raise RefusedError(
+            f"{run.name} was undone: its backup is no longer the state before it. Run a new dry run"
+        )
     try:
         check_code_blobs(plan)
+        planned_months(plan)  # the measured report reads these after the writes
         pending = sorted(day for day in plan["days"] if not marker_path(run, day).exists())
         planned = {
             day: mode.load_day(run, date.fromisoformat(day), plan["days"][day]) for day in pending
@@ -686,6 +769,9 @@ def apply_run(
                     done = mode.apply_day(conn, con, when, planned[day], allow_market_hours)
                 mark(run, when, done.how, done.counts)
                 out.say(done.line)
+                if done.problem is not None:
+                    out.say(f"{when}: the run stops at this day", err=True)
+                    raise CheckFailedError(done.problem)
         finally:
             con.close()
         if mode.finish is not None:

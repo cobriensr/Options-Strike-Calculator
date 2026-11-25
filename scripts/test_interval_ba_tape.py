@@ -1,4 +1,5 @@
-"""scripts/interval_ba_tape.py, part 1: verify, run folders, the backup and rebuild (spec 6.5).
+"""scripts/interval_ba_tape.py: verify, run folders, the backup, rebuild, heal, export and undo
+(spec 6.5).
 
 Each test runs the real replay module over a small tape written in tmp_path. The boundaries are
 patched (R3):
@@ -31,6 +32,7 @@ import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -167,21 +169,25 @@ class Statement:
 
 
 class FakeDb:
-    """`interval_ba_alerts` in memory, behind fake psycopg2 connections.
+    """`interval_ba_alerts`, `interval_ba_live_settings` and `interval_ba_tape_days` in memory,
+    behind fake psycopg2 connections.
 
-    A statement with autocommit off opens a transaction; rollback restores the table as it was
-    when the transaction began. The DELETE applies only the predicates its SQL text names, so a
-    dropped `source = 'replay'` would show. `fail_on` makes the first statement whose SQL
-    contains it raise; `count_skew` makes the backup's count(*) disagree with its rows; and
-    `before_insert` runs just before an INSERT page lands (a concurrent writer).
+    A statement with autocommit off opens a transaction; rollback restores the tables as they
+    were when the transaction began. A DELETE or UPDATE applies only the predicates its SQL text
+    names, so a dropped `source = 'replay'` would show. `fail_on` makes the first statement
+    whose SQL contains it raise; `count_skew` makes the backup's count(*) disagree with its rows;
+    and `before_insert` runs just before an INSERT page lands (a concurrent writer).
     """
 
     def __init__(self) -> None:
         self.rows: dict[int, dict[str, Any]] = {}
         self.next_id = 1
+        self.settings: list[tuple[Any, ...]] = []  # in read_covering_settings' column order
+        self.tape_days: dict[date, dict[str, Any]] = {}
         self.statements: list[Statement] = []
         self.conns: list[FakeConn] = []
         self.dsns: list[str] = []
+        self.connect_kwargs: list[dict[str, Any]] = []
         self.fail_on: str | None = None
         self.count_skew = 0
         self.before_insert: Callable[[], None] | None = None
@@ -207,6 +213,7 @@ class FakeDb:
 
     def connect(self, dsn: str, **kwargs: Any) -> FakeConn:
         self.dsns.append(dsn)
+        self.connect_kwargs.append(kwargs)
         conn = FakeConn(self)
         self.conns.append(conn)
         return conn
@@ -236,7 +243,8 @@ class FakeConn:
         self._autocommit = False
         self.readonly = False
         self.in_transaction = False
-        self._snapshot: tuple[dict[int, dict[str, Any]], int] | None = None
+        self.txn: list[str] = []  # the open transaction's statements
+        self._snapshot: tuple[Any, ...] | None = None
         self.closed = 0
         self.commits = 0
         self.rollbacks = 0
@@ -271,18 +279,23 @@ class FakeConn:
     def begin(self) -> None:
         if not self._autocommit and not self.in_transaction:
             self.in_transaction = True
-            self._snapshot = (copy.deepcopy(self.db.rows), self.db.next_id)
+            self.txn = []
+            self._snapshot = copy.deepcopy(
+                (self.db.rows, self.db.next_id, self.db.settings, self.db.tape_days)
+            )
 
     def commit(self) -> None:
         self.commits += 1
         self.in_transaction = False
+        self.txn = []
         self._snapshot = None
 
     def rollback(self) -> None:
         self.rollbacks += 1
         if self._snapshot is not None:
-            self.db.rows, self.db.next_id = self._snapshot
+            self.db.rows, self.db.next_id, self.db.settings, self.db.tape_days = self._snapshot
         self.in_transaction = False
+        self.txn = []
         self._snapshot = None
 
     def close(self) -> None:
@@ -296,8 +309,44 @@ _MONTH_COUNTS = (
     "SELECT to_char(expiry, 'YYYY-MM'), ticker, count(*) FROM interval_ba_alerts"
     " WHERE expiry = ANY(%s) GROUP BY 1, 2"
 )
+
+
+def _covering(
+    rows: Sequence[tuple[Any, ...]], start: datetime, session_end: datetime
+) -> list[tuple[Any, ...]]:
+    """read_covering_settings' WHERE: booted_at from the latest boot before `start` (or
+    `start`) up to `session_end`, oldest first. booted_at is a row's first value."""
+    earlier = [row[0] for row in rows if row[0] < start]
+    lower = max(earlier) if earlier else start
+    return sorted((row for row in rows if lower <= row[0] < session_end), key=lambda row: row[0])
+
+
+_TAPE_DAY_SELECT = "SELECT day FROM interval_ba_tape_days WHERE day = %(day)s"
+_INSERT_COLUMNS = re.compile(r"^INSERT INTO interval_ba_alerts \((?P<columns>[^)]+)\) VALUES ")
+_UPDATE = re.compile(
+    r"^UPDATE interval_ba_alerts AS a SET (?P<set>.+?) FROM \(VALUES .+?\)"
+    r" AS v\((?P<names>[^)]*)\) WHERE (?P<where>.+) RETURNING a\.id$"
+)
 # What neither writes nor needs a writable transaction.
 _READS = ("SELECT", "SET TRANSACTION", "SET LOCAL")
+
+
+def _holds(predicate: str, row: dict[str, Any], v: dict[str, Any]) -> bool:
+    """One WHERE predicate of an UPDATE, over a row and its VALUES row. SQL the fake does not
+    know fails the test rather than pass by default."""
+    if m := re.fullmatch(r"a\.(\w+) = v\.(\w+)", predicate):
+        return row[m[1]] is not None and row[m[1]] == v[m[2]]
+    if m := re.fullmatch(r"a\.(\w+) = '(\w+)'", predicate):
+        return row[m[1]] == m[2]
+    if m := re.fullmatch(r"a\.(\w+) IS NULL", predicate):
+        return row[m[1]] is None
+    if m := re.fullmatch(r"a\.(\w+) IS NOT DISTINCT FROM v\.(\w+)", predicate):
+        return row[m[1]] == v[m[2]]
+    if m := re.fullmatch(
+        r"\(a\.(\w+), a\.(\w+)\) IS DISTINCT FROM \(v\.(\w+), v\.(\w+)\)", predicate
+    ):
+        return (row[m[1]], row[m[2]]) != (v[m[3]], v[m[4]])
+    raise AssertionError(f"the fake does not know the predicate: {predicate}")
 
 
 class FakeCursor:
@@ -330,10 +379,23 @@ class FakeCursor:
         if writes and conn.readonly:
             raise psycopg2.errors.ReadOnlySqlTransaction("cannot write in a read-only transaction")
         db.statements.append(Statement(text, params, conn.readonly))
+        conn.txn.append(text)
         self._result, self.description = [], None
         if text.startswith(("SET TRANSACTION", "SET LOCAL")):
             return
-        if text == _MONTH_COUNTS:
+        if text == ibr._COVERING_SETTINGS_SQL:
+            assert isinstance(params, dict)
+            self._result = _covering(db.settings, params["start"], params["session_end"])
+        elif text == _TAPE_DAY_SELECT:
+            assert isinstance(params, dict)
+            self._result = [(params["day"],)] if params["day"] in db.tape_days else []
+        elif text.startswith("INSERT INTO interval_ba_tape_days"):
+            assert isinstance(params, dict)
+            db.tape_days[params["day"]] = dict(params)
+        elif text.startswith("UPDATE interval_ba_alerts"):
+            assert isinstance(params, list)
+            self._result = self._update(text, params)
+        elif text == _MONTH_COUNTS:
             assert isinstance(params, tuple)
             (days,) = params
             counts: dict[tuple[str, str], int] = {}
@@ -360,18 +422,20 @@ class FakeCursor:
             self._result = self._delete(text, params)
         elif text.startswith("INSERT INTO interval_ba_alerts"):
             assert isinstance(params, list)
-            self._result = self._insert(params)
+            self._result = self._insert(text, params)
         else:
             raise AssertionError(f"unexpected SQL: {text}")
 
     def _delete(self, text: str, page: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
+        """A page of (id,) or (id, day) rows; only the predicates the SQL names apply."""
         db = self.connection.db
         gone: list[tuple[object, ...]] = []
-        for row_id, day in page:
+        for values in page:
+            row_id = values[0]
             row = db.rows.get(row_id)
             if row is None:
                 continue
-            if "a.expiry = v.day" in text and row["expiry"] != day:
+            if "a.expiry = v.day" in text and row["expiry"] != values[1]:
                 continue
             if "a.source = 'replay'" in text and row["source"] != "replay":
                 continue
@@ -381,21 +445,53 @@ class FakeCursor:
             gone.append((row_id,))
         return gone
 
-    def _insert(self, page: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
+    def _insert(self, text: str, page: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
+        """The columns the SQL names. A row with its own id keeps it; a conflict on the key or
+        the id is skipped (ON CONFLICT DO NOTHING) or, with only the key as the conflict
+        target, an id conflict raises, as Postgres would."""
         db = self.connection.db
         if db.before_insert is not None:
             db.before_insert()
+        match = _INSERT_COLUMNS.match(text)
+        assert match, text
+        columns = match["columns"].split(", ")
         landed: list[tuple[object, ...]] = []
         for values in page:
-            row = dict(zip(ibr.ALERT_INSERT_COLUMNS, values, strict=True))
+            row = dict(zip(columns, values, strict=True))
             key = (row["option_chain"], row["bucket_start"])
             if any((r["option_chain"], r["bucket_start"]) == key for r in db.rows.values()):
-                continue  # ON CONFLICT DO NOTHING
-            row.update(id=db.next_id, acknowledged=False)
-            db.rows[db.next_id] = row
-            landed.append((db.next_id,))
-            db.next_id += 1
+                continue
+            row_id = row.get("id", db.next_id)
+            if row_id in db.rows:
+                if "ON CONFLICT DO NOTHING" in text:
+                    continue
+                raise psycopg2.IntegrityError("duplicate key value violates unique constraint")
+            row.setdefault("acknowledged", False)
+            row.setdefault("source", "live")
+            row["id"] = row_id
+            db.rows[row_id] = row
+            landed.append((row_id,))
+            db.next_id = max(db.next_id, row_id + 1)
         return landed
+
+    def _update(self, text: str, page: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
+        db = self.connection.db
+        match = _UPDATE.match(text)
+        assert match, text
+        names = match["names"].split(", ")
+        sets = [assignment.split(" = v.") for assignment in match["set"].split(", ")]
+        predicates = match["where"].split(" AND ")
+        assert "a.id = v.id" in predicates, text
+        touched: list[tuple[object, ...]] = []
+        for values in page:
+            v = dict(zip(names, values, strict=True))
+            row = db.rows.get(v["id"])
+            if row is None or not all(_holds(p, row, v) for p in predicates):
+                continue
+            for column, name in sets:
+                row[column] = v[name]
+            touched.append((row["id"],))
+        return touched
 
     def fetchall(self) -> list[tuple[object, ...]]:
         result, self._result = self._result, []
@@ -419,6 +515,7 @@ class FakeS3:
         self.puts: list[str] = []
         self.tamper: dict[str, Any] = {}
         self.fail: dict[str, Exception] = {}
+        self.after_head: Callable[[], None] | None = None  # runs once, after the next HEAD
 
     def put_object(self, *, Bucket: str, Key: str, Body: bytes, Metadata: dict[str, str], **_: Any):  # noqa: N803
         if "put_object" in self.fail:
@@ -428,8 +525,18 @@ class FakeS3:
         return {}
 
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        try:
+            return self._head(Bucket, Key)
+        finally:
+            if self.after_head is not None:
+                hook, self.after_head = self.after_head, None
+                hook()
+
+    def _head(self, Bucket: str, Key: str):  # noqa: N803
         if "head_object" in self.fail:
             raise self.fail["head_object"]
+        if (Bucket, Key) not in self.objects:
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         body, metadata = self.objects[(Bucket, Key)]
         changes = dict(self.tamper)
         return {
@@ -476,54 +583,64 @@ class World:
         captured = self.capsys.readouterr()
         return code, captured.out + captured.err
 
-    def dry_run(self, start: date, end: date | None = None) -> tuple[int, str, Path]:
+    def dry_run(
+        self,
+        start: date,
+        end: date | None = None,
+        *,
+        command: str = "rebuild",
+        extra: Sequence[str] = (),
+    ) -> tuple[int, str, Path]:
+        """A dry run (or an export) and the run folder it made."""
         before = set(self.runs.glob("*")) if self.runs.exists() else set()
         code, out = self.run(
-            "rebuild", "--from", start.isoformat(), "--to", (end or start).isoformat()
+            command, "--from", start.isoformat(), "--to", (end or start).isoformat(), *extra
         )
         (run,) = set(self.runs.glob("*")) - before
         return code, out, run
 
-    def apply(
-        self, run: Path, *, delete: int | None = None, insert: int | None = None
-    ) -> tuple[int, str]:
-        """`rebuild --apply` with the plan's totals over the unapplied days, unless given."""
-        if delete is None or insert is None:
-            totals = plan_totals(run)
-            delete = totals["delete"] if delete is None else delete
-            insert = totals["insert"] if insert is None else insert
-        return self.run(
-            "rebuild",
-            "--apply",
-            "--run",
-            str(run),
-            "--expect-delete",
-            str(delete),
-            "--expect-insert",
-            str(insert),
-        )
+    def apply(self, run: Path, *, command: str = "rebuild", **expected: int) -> tuple[int, str]:
+        """`<command> --apply` with the plan's totals over the unapplied days, unless given."""
+        names = EXPECTS[command]
+        totals = {} if set(expected) >= set(names) else plan_totals(run, names)
+        args = ["--apply", "--run", str(run)]
+        for name in names:
+            args += [f"--expect-{name}", str(expected.get(name, totals.get(name)))]
+        return self.run(command, *args)
+
+    def undo(self, run: Path, *extra: str) -> tuple[int, str]:
+        return self.run("undo", "--run", str(run), *extra)
 
 
-def plan_totals(run: Path) -> dict[str, int]:
-    """The plan's delete and insert totals over the days with no marker yet."""
+# Each writing mode's --expect totals, as plan.json counts them per day.
+EXPECTS = {"rebuild": ("delete", "insert"), "heal": ("insert", "remove", "flags", "spot")}
+
+
+def plan_totals(run: Path, names: Sequence[str] = EXPECTS["rebuild"]) -> dict[str, int]:
+    """The plan's totals over the days with no marker yet."""
     plan = runs.load_plan(run)
-    days = [entry for day, entry in plan["days"].items() if not (run / f"{day}.applied").exists()]
-    return {
-        "delete": sum(entry["delete"] for entry in days),
-        "insert": sum(entry["insert"] for entry in days),
-    }
+    days = [e for day, e in plan["days"].items() if not (run / f"{day}.applied").exists()]
+    return {name: sum(entry[name] for entry in days) for name in names}
 
 
 class CheckedDuck:
     """A local DuckDB connection that fails the test when any database transaction is open while
-    DuckDB works: a replay takes seconds, and no transaction may idle through one."""
+    DuckDB works: a replay takes seconds, and no transaction may idle through one.
+
+    The one exception is heal_day's own (Task 6): it reads the day's rows and then finds their
+    flags and spots on the tape inside the transaction it writes in. A transaction that has run
+    only that read passes; one that ran anything else fails, as everywhere."""
 
     def __init__(self, db: FakeDb) -> None:
         self._db = db
         self._con = duckdb.connect()
 
     def execute(self, *args: Any) -> Any:
-        open_ = [conn for conn in self._db.conns if conn.in_transaction]
+        open_ = [
+            conn
+            for conn in self._db.conns
+            if conn.in_transaction and conn.txn != [ibr._LIVE_ROWS_SQL]
+        ]
         assert not open_, "a database transaction is open while DuckDB works"
         return self._con.execute(*args)
 
@@ -1152,7 +1269,25 @@ _DAMAGES: list[tuple[str, Callable[[Path, dict[str, Any]], None]]] = [
             '{"day": "2026-03-10"}', encoding="utf-8"
         ),
     ),
+    # decimal.InvalidOperation is an ArithmeticError, not a ValueError.
+    ("day file decimal not a number", lambda run, plan: _edit_insert(run, underlying_price="x")),
+    # The measured report reads them after the writes, so they are checked before any.
+    (
+        "plan day tickers without after",
+        lambda run, plan: _drop(plan["days"]["2026-03-10"]["tickers"]["SPY"], "after"),
+    ),
+    (
+        "plan day tickers not a mapping",
+        lambda run, plan: plan["days"]["2026-03-10"].update(tickers=[]),
+    ),
 ]
+
+
+def _edit_insert(run: Path, **changes: Any) -> None:
+    path = run / "days" / "2026-03-10.json"
+    day_plan = json.loads(path.read_text(encoding="utf-8"))
+    day_plan["inserts"][0].update(changes)
+    path.write_text(json.dumps(day_plan), encoding="utf-8")
 
 
 @pytest.mark.parametrize(("damage", "how"), _DAMAGES, ids=[name for name, _ in _DAMAGES])
@@ -1664,15 +1799,6 @@ def test_never_prints_secrets(world: World, monkeypatch: pytest.MonkeyPatch):
             assert secret not in text
 
 
-@pytest.mark.parametrize("command", ["heal", "export", "undo"])
-def test_part_two_modes_exit_2_not_yet(world: World, command: str):
-    code, out = world.run(command, "--from", "2026-05-13")
-
-    assert code == 2
-    assert "not yet" in out
-    assert world.db.dsns == []
-
-
 def test_apply_without_a_plan_is_a_bad_argument(world: World):
     (world.tmp / "empty").mkdir()
 
@@ -1689,3 +1815,1105 @@ def test_apply_without_a_plan_is_a_bad_argument(world: World):
 
     assert code == 2
     assert "plan.json" in out
+
+
+# --- heal -------------------------------------------------------------------------------------
+
+JUNE, JUNE2 = date(2026, 6, 2), date(2026, 6, 3)  # live days on the old rule (CDT)
+OCT28, OCT29, OCT30 = date(2026, 10, 28), date(2026, 10, 29), date(2026, 10, 30)
+FULL_A3 = date(2026, 3, 12)
+HELD_NO_RECORD = "no live settings record"
+HEAL_COUNTS = ("inserted", "removed", "flags_changed", "spot_filled")
+
+
+def settings_row(
+    booted_at: datetime, *, tickers: Sequence[str] = ("QQQ", "SPXW", "SPY"), enabled: bool = True
+) -> tuple[Any, ...]:
+    """An interval_ba_live_settings row with this rule's values, as psycopg2 returns it."""
+    return (
+        booted_at,
+        enabled,
+        list(tickers),
+        Decimal("0.7500"),
+        Decimal("250000.00"),
+        ibr.WINDOW_SEC,
+        Decimal("0.5000"),
+        sorted(ibr.MULTI_LEG_CODES),
+        ibr.CONFLUENCE_WINDOW_SEC,
+    )
+
+
+def add_live(world: World, alert: Any, **changes: Any) -> int:
+    """The live row for a tape alert as live wrote it: a wall-clock fired_at, both flags false
+    and, on SPXW, no spot."""
+    values: dict[str, Any] = {
+        "fired_at": alert.fired_at + timedelta(milliseconds=150),
+        "top_trade_is_sweep": False,
+        "top_trade_is_floor": False,
+    }
+    if alert.ticker == "SPXW":
+        values["underlying_price"] = None
+    values.update(changes)
+    return world.db.add(alert, source="live", **values)
+
+
+def live_day(world: World, day: date) -> dict[str, Any]:
+    """A live day: an SPY call whose top trade is an intermarket sweep (live's flags are false),
+    an SPXW call with no spot (live writes none), and a QQQ put and an SPXW put live missed."""
+    sweep, spxw = chain("SPY", "C", 670, day), chain("SPXW", "C", 6700, day)
+    qqq_put, spxw_put = chain("QQQ", "P", 590, day), chain("SPXW", "P", 6600, day)
+    alerts = {
+        a.option_chain: a
+        for a in world.tape(
+            day,
+            [
+                tick(at(day, "15:00:00"), sweep, flags=("intermarket_sweep",)),
+                tick(at(day, "15:10:00"), spxw, spot=6701.25),
+                tick(at(day, "15:20:00"), qqq_put),
+                tick(at(day, "15:30:00"), spxw_put),
+            ],
+        )
+    }
+    return {
+        "alerts": alerts,
+        "flag_row": add_live(world, alerts[sweep]),
+        "spot_row": add_live(world, alerts[spxw]),
+        "missed": {qqq_put, spxw_put},
+    }
+
+
+@pytest.mark.parametrize(
+    ("start", "end"), [("2026-05-12", "2026-05-13"), ("2026-03-10", "2026-03-11")]
+)
+def test_heal_refuses_day_before_live_start(world: World, start: str, end: str):
+    code, out = world.run("heal", "--from", start, "--to", end)
+
+    assert code == 3
+    assert start in out and "2026-05-13" in out
+    assert world.db.dsns == []
+    assert not world.runs.exists()
+
+
+def test_heal_insert_missed_only_from_10_29(world: World):
+    days = {d: live_day(world, d) for d in (OCT28, OCT29)}
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))  # this rule, all three on
+
+    code, out, run = world.dry_run(OCT28, OCT29, command="heal")
+
+    assert code == 0, out
+    assert world.db.writes() == []
+    plan = runs.load_plan(run)
+    before, after = plan["days"]["2026-10-28"], plan["days"]["2026-10-29"]
+    assert before["insert_missed"] is False and before["settings"] == "not consulted"
+    assert (before["insert"], before["live_missed"]) == (0, 2)
+    assert after["insert_missed"] is True and after["settings"] == "live"
+    assert (after["insert"], after["live_missed"]) == (2, 2)
+    for entry in (before, after):
+        assert (entry["remove"], entry["flags"], entry["spot"]) == (0, 1, 1)
+    assert plan["totals"] == {"insert": 2, "remove": 0, "flags": 2, "spot": 2}
+    day_file = json.loads((run / "days" / "2026-10-29.json").read_text(encoding="utf-8"))
+    assert {a["option_chain"] for a in day_file["inserts"]} == days[OCT29]["missed"]
+    # Only the day that may insert reads the settings.
+    assert len([s for s in world.db.statements if "interval_ba_live_settings" in s.sql]) == 1
+    report = (run / "report.md").read_text(encoding="utf-8")
+    assert "--expect-insert 2 --expect-remove 0 --expect-flags 2 --expect-spot 2" in report
+    assert "| 2026-10 | SPXW | 2 | 3 | +1 |" in report
+
+    code, out = world.apply(run, command="heal")
+
+    assert code == 0, out
+    assert world.db.day(OCT28, "replay") == []
+    assert {r["option_chain"] for r in world.db.day(OCT29, "replay")} == days[OCT29]["missed"]
+    for d, setup in days.items():
+        assert world.db.rows[setup["flag_row"]]["top_trade_is_sweep"] is True
+        assert world.db.rows[setup["spot_row"]]["underlying_price"] == Decimal("6701.25")
+        assert world.db.tape_days[d]["inserted"] == (2 if d == OCT29 else 0)
+    measured = (run / "report.md").read_text(encoding="utf-8").split("## Measured after")[1]
+    assert "| 2026-10 | SPXW | 2 | 3 | +1 |" in measured
+
+
+@pytest.mark.parametrize("assume", [True, False])
+def test_assume_default_settings_applies_only_to_uncovered_days(world: World, assume: bool):
+    days = {d: live_day(world, d) for d in (OCT29, OCT30)}
+    # The first settings row boots before 10-30's session, with SPXW off; none covers 10-29.
+    world.db.settings.append(settings_row(ct(OCT30, "07:00:00"), tickers=("QQQ", "SPY")))
+    qqq_put = chain("QQQ", "P", 590, OCT30)
+
+    code, out, run = world.dry_run(
+        OCT29, OCT30, command="heal", extra=["--assume-default-settings"] if assume else []
+    )
+
+    plan = runs.load_plan(run)
+    uncovered, covered = plan["days"]["2026-10-29"], plan["days"]["2026-10-30"]
+    covered_file = json.loads((run / "days" / "2026-10-30.json").read_text(encoding="utf-8"))
+    # The covered day runs on its own row, SPXW off, with the flag or without it.
+    assert covered["settings"] == "live" and covered["inserts_held"] is None
+    assert [a["option_chain"] for a in covered_file["inserts"]] == [qqq_put]
+    if assume:
+        assert code == 0, out
+        assert uncovered["settings"] == "assumed default" and uncovered["inserts_held"] is None
+        assert uncovered["insert"] == 2
+        code, out = world.apply(run, command="heal")
+        assert code == 0, out
+        assert {r["option_chain"] for r in world.db.day(OCT29, "replay")} == days[OCT29]["missed"]
+        assert [r["option_chain"] for r in world.db.day(OCT30, "replay")] == [qqq_put]
+    else:
+        assert code == 1
+        assert "FLAG" in out and "2026-10-29" in out and HELD_NO_RECORD in out
+        assert uncovered["settings"] == "none" and uncovered["inserts_held"] == HELD_NO_RECORD
+        assert (uncovered["insert"], uncovered["flags"], uncovered["spot"]) == (0, 1, 1)
+        assert HELD_NO_RECORD in (run / "report.md").read_text(encoding="utf-8")
+
+
+def test_heal_apply_checks_expect_totals_and_fresh_sha(world: World):
+    setup = live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    totals = plan_totals(run, EXPECTS["heal"])
+    assert totals == {"insert": 2, "remove": 0, "flags": 1, "spot": 1}
+    rows_before = copy.deepcopy(world.db.rows)
+
+    for name in EXPECTS["heal"]:
+        code, out = world.apply(run, command="heal", **{name: totals[name] + 1})
+        assert code == 3
+        assert f"--expect-{name}" in out
+    assert world.db.writes() == [] and world.s3.puts == []
+
+    # The day moves after the plan: something fills the SPXW spot first.
+    world.db.rows[setup["spot_row"]]["underlying_price"] = Decimal("6650.00")
+    code, out = world.apply(run, command="heal")
+    assert code == 3
+    assert "2026-10-29" in out and "PlanChanged" in out
+    assert not (run / "2026-10-29.applied").exists() and OCT29 not in world.db.tape_days
+    assert world.db.writes() == []
+
+    world.db.rows[setup["spot_row"]]["underlying_price"] = None
+    code, out = world.apply(run, command="heal")
+
+    assert code == 0, out
+    marker = json.loads((run / "2026-10-29.applied").read_text(encoding="utf-8"))
+    assert marker["how"] == "applied"
+    assert [marker[name] for name in HEAL_COUNTS] == [2, 0, 1, 1]
+    assert world.db.tape_days[OCT29]["inserted"] == 2
+    # On the rows that were there, only the two flags and a blank SPXW spot changed.
+    for row_id, before in rows_before.items():
+        after = world.db.rows[row_id]
+        changed = {name for name in before if before[name] != after[name]}
+        assert changed <= {"top_trade_is_sweep", "top_trade_is_floor", "underlying_price"}
+    assert len(world.s3.puts) == 1  # the run's one backup
+    # Every session is bounded, heal_day's transaction (which the tool cannot open) included.
+    assert world.db.connect_kwargs
+    assert all("statement_timeout=60000" in kw["options"] for kw in world.db.connect_kwargs)
+
+
+def test_heal_day_in_its_end_state_is_marked_and_not_rewritten(world: World):
+    live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    totals = plan_totals(run, EXPECTS["heal"])
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    # The run died between its commit and its marker.
+    (run / "2026-10-29.applied").unlink()
+    writes = len(world.db.writes())
+
+    code, out = world.apply(run, command="heal", **totals)
+
+    assert code == 0, out
+    marker = json.loads((run / "2026-10-29.applied").read_text(encoding="utf-8"))
+    assert marker["how"] == "end state"
+    assert len(world.db.writes()) == writes
+
+
+def test_heal_day_with_nothing_to_change_still_records_the_day(world: World):
+    (alert,) = world.tape(JUNE, fires(JUNE, ("15:00:00", chain("SPY", "C", 670, JUNE))))
+    add_live(world, alert)  # flags already right, and live writes an SPY spot
+    code, out, run = world.dry_run(JUNE, command="heal")
+    assert code == 0, out
+    assert plan_totals(run, EXPECTS["heal"]) == {"insert": 0, "remove": 0, "flags": 0, "spot": 0}
+
+    code, out = world.apply(run, command="heal")
+
+    assert code == 0, out
+    marker = json.loads((run / "2026-06-02.applied").read_text(encoding="utf-8"))
+    assert marker["how"] == "applied"
+    assert world.db.tape_days[JUNE]["live_rows"] == 1
+
+
+def test_heal_apply_stops_after_marking_when_the_database_wrote_other_than_the_plan(world: World):
+    setup = live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    # Another writer sets the sweep flag between heal_day's plan and its UPDATE.
+    world.db.before_insert = lambda: (
+        world.db.rows[setup["flag_row"]].update(top_trade_is_sweep=True),
+        setattr(world.db, "before_insert", None),
+    )
+
+    code, out = world.apply(run, command="heal")
+
+    assert code == 1
+    assert "2026-10-29" in out and "the database reported" in out
+    # The day committed, so it carries its marker with what the database wrote.
+    marker = json.loads((run / "2026-10-29.applied").read_text(encoding="utf-8"))
+    assert [marker[name] for name in HEAL_COUNTS] == [2, 0, 0, 1]
+
+
+def test_heal_db_error_mid_day_rolls_back_and_writes_no_marker(world: World):
+    live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    rows_before = copy.deepcopy(world.db.rows)
+    world.db.fail_on = "SET underlying_price"  # the spot UPDATE, after the inserts and flags
+
+    code, out = world.apply(run, command="heal")
+
+    assert code == 1
+    assert "OperationalError" in out and "server closed" not in out
+    assert world.db.rows == rows_before  # the inserts and the flag before it rolled back
+    assert OCT29 not in world.db.tape_days
+    assert not (run / "2026-10-29.applied").exists()
+
+
+def test_heal_window_rechecked_before_each_days_write(world: World):
+    days = {d: live_day(world, d) for d in (JUNE, JUNE2)}
+    code, out, run = world.dry_run(JUNE, JUNE2, command="heal")
+    assert code == 0, out
+    world.clock = lambda: (
+        datetime(2026, 11, 26, 7, 20, tzinfo=UTC)
+        if (run / "2026-06-02.applied").exists()
+        else SAFE_NOW
+    )
+
+    code, out = world.apply(run, command="heal")
+
+    assert code == 3
+    assert "07:15" in out and "2026-06-03" in out
+    assert world.db.rows[days[JUNE]["flag_row"]]["top_trade_is_sweep"] is True
+    assert world.db.rows[days[JUNE2]["flag_row"]]["top_trade_is_sweep"] is False
+    assert JUNE2 not in world.db.tape_days
+
+
+# --- export -----------------------------------------------------------------------------------
+
+EXPORT_KEY = "research/interval-ba/replay-2026-03-11.parquet"
+_TZ = "TIMESTAMP WITH TIME ZONE"
+EXPORT_SCHEMA = [
+    ("option_chain", "VARCHAR"),
+    ("ticker", "VARCHAR"),
+    ("option_type", "VARCHAR"),
+    ("strike", "DECIMAL(10,3)"),
+    ("expiry", "DATE"),
+    ("bucket_start", _TZ),
+    ("bucket_end", _TZ),
+    ("fired_at", _TZ),
+    ("ratio_pct", "DECIMAL(5,2)"),
+    ("ask_premium", "DECIMAL(14,2)"),
+    ("total_premium", "DECIMAL(14,2)"),
+    ("trade_count", "INTEGER"),
+    ("top_trade_premium", "DECIMAL(14,2)"),
+    ("top_trade_size", "INTEGER"),
+    ("top_trade_executed_at", _TZ),
+    ("top_trade_is_sweep", "BOOLEAN"),
+    ("top_trade_is_floor", "BOOLEAN"),
+    ("underlying_price", "DECIMAL(10,2)"),
+    ("confluence_tickers", "VARCHAR[]"),
+]
+RULE = {
+    "tickers": "SPXW,SPY,QQQ",
+    "ratio-threshold": "0.75",
+    "premium-floor-dollars": "250000",
+    "window-sec": "300",
+    "multi-leg-share-max": "0.5",
+    "multi-leg-codes": "cbmo,masl,mctp,mesl,mfsl,mlat,mlct,mlet,mlft",
+    "confluence-window-sec": "90",
+}
+
+
+def export_days(world: World) -> list[Any]:
+    """03-10 and 03-11, each an SPY call and a QQQ call 30 s later (a confluence)."""
+    alerts: list[Any] = []
+    for d in (FULL_A, FULL_A2):
+        alerts += world.tape(
+            d,
+            fires(
+                d, ("15:00:00", chain("SPY", "C", 670, d)), ("15:00:30", chain("QQQ", "C", 600, d))
+            ),
+        )
+    return alerts
+
+
+def test_export_writes_no_neon_row_and_records_hash_and_constants(world: World):
+    alerts = export_days(world)
+
+    code, out, run = world.dry_run(FULL_A, FULL_A2, command="export")
+
+    assert code == 0, out
+    assert world.db.dsns == [] and world.db.statements == []
+    assert world.s3.puts == [EXPORT_KEY]
+    body, metadata = world.s3.objects[("bucket-sekret", EXPORT_KEY)]
+    assert (run / "replay-2026-03-11.parquet").read_bytes() == body
+    assert metadata == {
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "rows": str(len(alerts)),
+        "module-blob": runs.blob_hash(runs.MODULE_PATH),
+        "from": "2026-03-10",
+        "to": "2026-03-11",
+        **RULE,
+    }
+    meta = json.loads(pq.read_schema(run / "replay-2026-03-11.parquet").metadata[b"interval_ba"])
+    assert meta["module_blob"] == metadata["module-blob"]
+    assert meta["tool_blobs"] == runs.code_blobs()["tool_blobs"]
+    assert meta["rule"] == RULE
+    assert (meta["from"], meta["to"]) == ("2026-03-10", "2026-03-11")
+    record = json.loads((run / "export.json").read_text(encoding="utf-8"))
+    assert record["rows"] == len(alerts) and record["r2_key"] == EXPORT_KEY
+    assert record["sha256"] == metadata["sha256"]
+
+
+def test_export_schema_matches_the_named_columns_and_types(world: World):
+    no_spot = tick(at(FULL_A, "15:00:00"), chain("SPXW", "C", 6700, FULL_A))
+    no_spot["underlying_price"] = None  # an SPXW crossing tick with no spot, and none after it
+    alerts = world.tape(
+        FULL_A, [no_spot, tick(at(FULL_A, "15:00:30"), chain("QQQ", "C", 600, FULL_A))]
+    )
+    assert [a.underlying_price for a in alerts] == [None, Decimal("670.00")]
+    assert [a.confluence_tickers for a in alerts] == [(), ("SPXW",)]
+
+    code, out, run = world.dry_run(FULL_A, command="export")
+
+    assert code == 0, out
+    path = str(run / "replay-2026-03-10.parquet")
+    con = duckdb.connect()
+    try:
+        described = con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [path]).fetchall()
+        assert [(row[0], row[1]) for row in described] == EXPORT_SCHEMA
+        assert [name for name, _ in EXPORT_SCHEMA] == list(TAPE_FIELDS)
+        got = con.execute(
+            "SELECT option_chain, ticker, option_type, strike, expiry, epoch_us(bucket_start),"
+            " epoch_us(bucket_end), epoch_us(fired_at), ratio_pct, ask_premium, total_premium,"
+            " trade_count, top_trade_premium, top_trade_size, epoch_us(top_trade_executed_at),"
+            " top_trade_is_sweep, top_trade_is_floor, underlying_price, confluence_tickers"
+            " FROM read_parquet(?)",
+            [path],
+        ).fetchall()
+    finally:
+        con.close()
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+
+    def us(t: datetime) -> int:
+        return (t - epoch) // timedelta(microseconds=1)
+
+    assert got == [
+        tuple(
+            us(value)
+            if isinstance(value, datetime)
+            else list(value)
+            if isinstance(value, tuple)
+            else value
+            for value in (getattr(alert, name) for name in TAPE_FIELDS)
+        )
+        for alert in alerts
+    ]
+    assert {f.name for f in pq.read_schema(path) if f.nullable} == {"underlying_price"}
+
+
+def test_export_refuses_to_overwrite_an_object(world: World):
+    export_days(world)
+    world.s3.objects[("bucket-sekret", EXPORT_KEY)] = (b"an earlier export", {})
+
+    code, out = world.run("export", "--from", "2026-03-10", "--to", "2026-03-11")
+
+    assert code == 3
+    assert EXPORT_KEY in out and "overwrite" in out
+    assert world.s3.puts == [] and not world.runs.exists()  # refused before any replay
+    assert world.s3.objects[("bucket-sekret", EXPORT_KEY)] == (b"an earlier export", {})
+
+
+@pytest.mark.parametrize(
+    ("tamper", "named"),
+    [({"Metadata": {"rows": "1"}}, "rows metadata"), ({"ETag": '"0123"'}, "ETag")],
+)
+def test_export_upload_that_does_not_verify_stops(world: World, tamper: dict[str, Any], named: str):
+    export_days(world)
+    world.s3.tamper = tamper
+
+    code, out, run = world.dry_run(FULL_A, FULL_A2, command="export")
+
+    assert code == 1
+    assert "R2" in out and named in out
+    assert not (run / "export.json").exists()
+
+
+def test_export_stops_on_a_day_it_cannot_replay(world: World):
+    export_days(world)
+    write_tape(Path(world.tapes["2026-03-11"]), [filler(FULL_A)])  # holds no 03-11 row
+
+    code, out, _ = world.dry_run(FULL_A, FULL_A2, command="export")
+
+    assert code == 1
+    assert "2026-03-11" in out and "ValueError" in out
+    assert world.s3.puts == []
+
+
+@pytest.mark.parametrize("command", ["heal", "export"])
+def test_heal_and_export_refuse_the_nightly_window(world: World, command: str):
+    live_day(world, OCT29)
+    world.clock = lambda: datetime(2026, 11, 29, 8, 0, tzinfo=UTC)
+
+    code, out = world.run(
+        command, "--from", "2026-10-29", "--to", "2026-10-29", "--allow-market-hours"
+    )
+
+    assert code == 3
+    assert "07:15" in out
+    assert world.db.dsns == [] and world.s3.puts == [] and not world.runs.exists()
+
+
+# --- undo -------------------------------------------------------------------------------------
+
+
+def test_undo_rebuild_day_restores_replay_rows_with_original_ids(world: World):
+    two_full_days(world)
+    rows_before = copy.deepcopy(world.db.rows)
+    code, out, run = world.dry_run(FULL_A, FULL_A2)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    assert world.db.rows != rows_before
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    assert world.db.rows == rows_before
+    for d in (FULL_A, FULL_A2):
+        marker = json.loads((run / f"{d}.undone").read_text(encoding="utf-8"))
+        assert (marker["deleted"], marker["reinserted"]) == (2, 1)
+    # Re-inserted under their own ids, not given new ones.
+    restores = world.db.writes_starting("INSERT INTO interval_ba_alerts (id,")
+    assert sorted(row[0] for s in restores for row in s.params) == sorted(rows_before)
+    # A second undo of the run leaves its days alone, even ones that moved since.
+    later = world.db.add(world.alerts[FULL_A][1], source="replay", trade_count=5)
+    writes = len(world.db.writes())
+    code, out = world.undo(run)
+    assert code == 0, out
+    assert later in world.db.rows and len(world.db.writes()) == writes
+
+
+def test_undo_heal_day_restores_flags_and_spot_only_where_unchanged_since(world: World):
+    days = {d: live_day(world, d) for d in (JUNE, JUNE2)}
+    code, out, run = world.dry_run(JUNE, JUNE2, command="heal")
+    assert code == 0, out
+    rows_before = copy.deepcopy(world.db.rows)
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    # Since the heal, someone set 06-02's floor flag and wrote 06-03's spot.
+    world.db.rows[days[JUNE]["flag_row"]]["top_trade_is_floor"] = True
+    world.db.rows[days[JUNE2]["spot_row"]]["underlying_price"] = Decimal("6650.00")
+    changed = {
+        i: copy.deepcopy(world.db.rows[i])
+        for i in (days[JUNE]["flag_row"], days[JUNE2]["spot_row"])
+    }
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    for row_id, row in changed.items():
+        assert world.db.rows[row_id] == row  # left as the later writer left it
+    for row_id in (days[JUNE]["spot_row"], days[JUNE2]["flag_row"]):
+        assert world.db.rows[row_id] == rows_before[row_id]  # back to the backup's values
+    one = json.loads((run / "2026-06-02.undone").read_text(encoding="utf-8"))
+    two = json.loads((run / "2026-06-03.undone").read_text(encoding="utf-8"))
+    assert (one["flags_restored"], one["spot_restored"], one["left"]) == (0, 1, 1)
+    assert (two["flags_restored"], two["spot_restored"], two["left"]) == (1, 0, 1)
+    assert "left" in out
+
+
+@pytest.mark.parametrize("changed_since", [False, True])
+def test_undo_heal_day_deletes_only_the_replay_rows_it_inserted(world: World, changed_since: bool):
+    setup = live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    qqq_put, spxw_put = chain("QQQ", "P", 590, OCT29), chain("SPXW", "P", 6600, OCT29)
+    # An earlier pass inserted the QQQ put, so the heal inserts only the SPXW put.
+    earlier = world.db.add(setup["alerts"][qqq_put], source="replay")
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    assert runs.load_plan(run)["days"]["2026-10-29"]["insert"] == 1
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    (inserted,) = [r["id"] for r in world.db.day(OCT29, "replay") if r["option_chain"] == spxw_put]
+    # After the run another writer adds a replay row of its own.
+    later = world.db.add(
+        replace_alert(setup["alerts"][qqq_put], option_chain=chain("QQQ", "P", 591, OCT29)),
+        source="replay",
+    )
+    if changed_since:
+        world.db.rows[inserted]["trade_count"] = 9
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    assert earlier in world.db.rows and later in world.db.rows
+    assert (inserted in world.db.rows) is changed_since
+    marker = json.loads((run / "2026-10-29.undone").read_text(encoding="utf-8"))
+    assert marker["deleted"] == (0 if changed_since else 1)
+    # The flags and the spot it wrote are restored either way.
+    assert world.db.rows[setup["flag_row"]]["top_trade_is_sweep"] is False
+    assert world.db.rows[setup["spot_row"]]["underlying_price"] is None
+
+
+def test_undo_never_deletes_or_reinserts_a_live_row(world: World):
+    setup = edge_first_world(world)
+    code, out, run = world.dry_run(EDGE_FIRST)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    kept, gone = setup["live"]
+    kept_row = copy.deepcopy(world.db.rows[kept])
+    del world.db.rows[gone]  # a live row goes missing after the run, not by the tool's hand
+    applied = len(world.db.statements)
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    assert gone not in world.db.rows
+    assert world.db.rows[kept] == kept_row
+    assert world.db.day(EDGE_FIRST, "replay") == []  # the backup held no replay row that day
+    undo_writes = [s for s in world.db.statements[applied:] if s in world.db.writes()]
+    assert undo_writes
+    for statement in undo_writes:
+        if statement.sql.startswith("DELETE"):
+            assert "a.source = 'replay'" in statement.sql
+        if statement.sql.startswith("INSERT INTO interval_ba_alerts"):
+            columns = _INSERT_COLUMNS.match(statement.sql)["columns"].split(", ")
+            assert all(
+                dict(zip(columns, row, strict=True))["source"] == "replay"
+                for row in statement.params
+            )
+
+
+def resign_heal_day(run: Path, day: date, edit: Callable[[dict[str, Any]], None]) -> None:
+    """Edit days/<day>.json of a heal run, then make its sha256 and plan.json's agree with it:
+    a forged plan that passes every hash check."""
+    path = run / "days" / f"{day}.json"
+    day_plan = json.loads(path.read_text(encoding="utf-8"))
+    edit(day_plan)
+    day_plan["sha256"] = ibr._write_set_sha(
+        day,
+        [ibr._alert_from_json(a) for a in day_plan["inserts"]],
+        tuple(day_plan["removes"]),
+        tuple(tuple(u) for u in day_plan["flag_updates"]),
+        tuple((i, Decimal(p)) for i, p in day_plan["spot_updates"]),
+    )
+    path.write_text(json.dumps(day_plan), encoding="utf-8")
+    plan = runs.load_plan(run)
+    plan["days"][day.isoformat()].update(
+        sha256=day_plan["sha256"],
+        insert=len(day_plan["inserts"]),
+        remove=len(day_plan["removes"]),
+        flags=len(day_plan["flag_updates"]),
+        spot=len(day_plan["spot_updates"]),
+    )
+    (run / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "forgery",
+    [
+        "removes a live row",
+        "updates a row the backup lacks",
+        "updates a replay row's flags",
+        "updates a replay row's spot",
+        "updates a live SPY row's spot",
+    ],
+)
+def test_undo_stops_on_a_heal_plan_the_run_did_not_apply(world: World, forgery: str):
+    setup = live_day(world, JUNE)
+    # Replay rows at two keys the tape fires (from an earlier pass): the heal leaves them be.
+    qqq, spxw = (
+        world.db.add(setup["alerts"][chain(*spec, JUNE)], source="replay")
+        for spec in (("QQQ", "P", 590), ("SPXW", "P", 6600))
+    )
+    code, out, run = world.dry_run(JUNE, command="heal")
+    assert code == 0, out
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    if forgery == "removes a live row":
+        resign_heal_day(run, JUNE, lambda d: d.update(removes=[setup["flag_row"]]))
+        named: tuple[str, ...] = (str(setup["flag_row"]), "live")
+    elif forgery == "updates a row the backup lacks":
+        resign_heal_day(run, JUNE, lambda d: d["flag_updates"].append([999999, True, False]))
+        named = ("999999", "does not hold")
+    else:
+        # The UPDATEs' SQL writes only a live row's flags and a live SPXW row's spot, so each of
+        # these touches nothing and fails the count check.
+        target, update = {
+            "updates a replay row's flags": (qqq, "flag_updates"),
+            "updates a replay row's spot": (spxw, "spot_updates"),
+            "updates a live SPY row's spot": (setup["flag_row"], "spot_updates"),
+        }[forgery]
+        row = world.db.rows[target]
+        value = (
+            [target, row["top_trade_is_sweep"], row["top_trade_is_floor"]]
+            if update == "flag_updates"
+            else [target, str(row["underlying_price"])]
+        )
+        resign_heal_day(run, JUNE, lambda d: d[update].append(value))
+        named = ("2026-06-02", "another writer")
+    rows_before = copy.deepcopy(world.db.rows)
+
+    code, out = world.undo(run)
+
+    assert code == 1
+    assert all(text in out for text in named)
+    assert world.db.rows == rows_before
+    assert not (run / "2026-06-02.undone").exists()
+
+
+def test_undo_touches_only_the_runs_applied_or_end_state_days(world: World):
+    old: dict[date, int] = {}
+    for d in (FULL_A, FULL_A2, FULL_A3):
+        spy, qqq = chain("SPY", "C", 670, d), chain("QQQ", "P", 590, d)
+        alerts = world.tape(d, fires(d, ("15:00:00", spy), ("15:10:00", qqq)))
+        old[d] = world.db.add(alerts[0], source="replay", trade_count=11)
+    code, out, run = world.dry_run(FULL_A, FULL_A3)
+    assert code == 0, out
+    # 03-11 moves after the plan, so the apply stops there with 03-10 done.
+    moved = world.db.add(world.alerts[FULL_A2][1], source="replay", trade_count=3)
+    code, out = world.apply(run)
+    assert code == 3
+    # 03-12 reached its planned end state some other way, and has no marker.
+    del world.db.rows[old[FULL_A3]]
+    for alert in world.alerts[FULL_A3]:
+        world.db.add(alert, source="replay")
+    day_two = copy.deepcopy(world.db.day(FULL_A2))
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    assert (run / "2026-03-10.undone").exists() and (run / "2026-03-12.undone").exists()
+    assert not (run / "2026-03-11.undone").exists()
+    assert world.db.day(FULL_A2) == day_two and moved in world.db.rows
+    for d in (FULL_A, FULL_A3):
+        assert [r["id"] for r in world.db.day(d)] == [old[d]]
+    assert "2026-03-11" in out and "not applied" in out
+
+
+def test_undo_refuses_a_run_with_no_backup(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+
+    code, out = world.undo(run)
+
+    assert code == 3
+    assert "backup" in out
+    assert len(world.db.dsns) == 1  # the dry run's only
+
+
+def test_undo_stops_when_the_runs_backup_changed(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    with (run / "backup.jsonl").open("ab") as handle:
+        handle.write(b'{"id": 1}\n')
+    writes = len(world.db.writes())
+
+    code, out = world.undo(run)
+
+    assert code == 1
+    assert "backup.jsonl no longer matches" in out
+    assert len(world.db.writes()) == writes and not (run / "2026-03-10.undone").exists()
+
+
+def test_undo_db_error_rolls_back_and_writes_no_marker(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    rows_after_apply = copy.deepcopy(world.db.rows)
+    world.db.fail_on = "INSERT INTO interval_ba_alerts (id,"
+
+    code, out = world.undo(run)
+
+    assert code == 1
+    assert "OperationalError" in out
+    assert world.db.rows == rows_after_apply  # the DELETE before the failure was rolled back
+    assert not (run / "2026-03-10.undone").exists()
+
+
+def test_undo_stops_rather_than_delete_an_acknowledged_row(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    acked = world.db.day(FULL_A, "replay")[0]["id"]
+    world.db.rows[acked]["acknowledged"] = True
+    writes = len(world.db.writes())
+
+    code, out = world.undo(run)
+
+    assert code == 1
+    assert "acknowledg" in out and str(acked) in out
+    assert len(world.db.writes()) == writes and not (run / "2026-03-10.undone").exists()
+
+
+def test_undo_refuses_market_hours_unless_allowed_and_rechecks_each_day(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A, FULL_A2)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    world.clock = lambda: ct(TUESDAY, "10:00:00")
+    writes = len(world.db.writes())
+
+    code, out = world.undo(run)
+    assert code == 3 and "08:15" in out
+    assert len(world.db.writes()) == writes
+
+    # Allowed in market hours, it stops at the nightly window, which opens after 03-10.
+    world.clock = lambda: (
+        datetime(2026, 11, 26, 7, 20, tzinfo=UTC)
+        if (run / "2026-03-10.undone").exists()
+        else ct(TUESDAY, "10:00:00")
+    )
+    code, out = world.undo(run, "--allow-market-hours")
+
+    assert code == 3
+    assert "07:15" in out and "2026-03-11" in out
+    assert (run / "2026-03-10.undone").exists() and not (run / "2026-03-11.undone").exists()
+
+
+def test_apply_refuses_a_run_that_was_undone(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A, FULL_A2)
+    assert code == 0, out
+    moved = world.db.add(world.alerts[FULL_A2][1], source="replay", trade_count=3)
+    code, out = world.apply(run)
+    assert code == 3  # 03-10 applied, 03-11 moved
+    code, out = world.undo(run)
+    assert code == 0, out
+    del world.db.rows[moved]
+    writes = len(world.db.writes())
+
+    code, out = world.apply(run)
+
+    assert code == 3
+    assert "undone" in out
+    assert len(world.db.writes()) == writes
+
+
+def test_undo_of_an_export_run_is_a_bad_argument(world: World):
+    export_days(world)
+    code, out, run = world.dry_run(FULL_A, FULL_A2, command="export")
+    assert code == 0, out
+
+    code, out = world.undo(run)
+
+    assert code == 2
+    assert "wrote nothing to Neon" in out
+    assert world.db.dsns == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["heal", "--from", "2026-10-29"],
+        ["heal", "--apply", "--run", "x", "--expect-insert", "0"],
+        ["heal", "--from", "2026-10-29", "--to", "2026-10-29", "--expect-flags", "1"],
+        [
+            "heal",
+            "--apply",
+            "--run",
+            "x",
+            *("--expect-insert", "0", "--expect-remove", "0"),
+            *("--expect-flags", "0", "--expect-spot", "0"),
+            "--assume-default-settings",
+        ],
+        ["export", "--from", "2026-03-10"],
+        ["undo"],
+        ["rebuild", "--expect-remove", "1"],
+    ],
+)
+def test_bad_arguments_exit_2(world: World, args: list[str]):
+    code, out = world.run(*args)
+
+    assert code == 2, out
+    assert world.db.dsns == [] and not world.runs.exists()
+
+
+def test_heal_export_and_undo_never_print_secrets(world: World):
+    live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    outputs: list[str] = []
+    code, out, run = world.dry_run(OCT29, command="heal")
+    outputs.append(out)
+    code, out = world.apply(run, command="heal")
+    outputs.append(out)
+    code, out = world.undo(run)
+    outputs.append(out)
+    assert code == 0, out
+    export_days(world)
+    code, out, _ = world.dry_run(FULL_A, FULL_A2, command="export")
+    outputs.append(out)
+    assert code == 0, out
+
+    files = [p.read_bytes() for p in world.runs.rglob("*") if p.is_file()]
+    for secret in SECRET_PARTS:
+        assert all(secret not in text for text in outputs)
+        assert all(secret.encode() not in data for data in files)
+
+
+def stale_replay_row(world: World, setup: dict[str, Any], day: date) -> int:
+    """A replay row at a key the tape does not fire (an earlier tape's): the heal removes it."""
+    alert = setup["alerts"][chain("QQQ", "P", 590, day)]
+    return world.db.add(
+        replace_alert(alert, option_chain=chain("QQQ", "P", 595, day)), source="replay"
+    )
+
+
+@pytest.mark.parametrize(
+    "undone", ["nothing", "an insert's values", "an insert", "a flag", "a spot", "a removal"]
+)
+def test_heal_end_state_needs_every_planned_write(world: World, undone: str):
+    setup = live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    stale = stale_replay_row(world, setup, OCT29)
+    stale_row = copy.deepcopy(world.db.rows[stale])
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    plan = ibr.DayPlan.from_json(
+        json.loads((run / "days" / "2026-10-29.json").read_text(encoding="utf-8"))
+    )
+    assert plan.removes == (stale,) and len(plan.inserts) == 2
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    inserted = next(r["id"] for r in world.db.day(OCT29, "replay"))
+    if undone == "an insert's values":
+        world.db.rows[inserted]["trade_count"] = 7
+    elif undone == "an insert":
+        del world.db.rows[inserted]
+    elif undone == "a flag":
+        world.db.rows[setup["flag_row"]]["top_trade_is_sweep"] = False
+    elif undone == "a spot":
+        world.db.rows[setup["spot_row"]]["underlying_price"] = None
+    elif undone == "a removal":
+        world.db.rows[stale] = stale_row
+
+    rows = tool.read_day_rows(world.db.connect("unused"), OCT29)
+
+    assert tool.heal_end_state(rows, plan) is (undone == "nothing")
+
+
+@pytest.mark.parametrize("edit", ["day file", "day file decimal", "plan counts", "settings source"])
+def test_heal_apply_refuses_an_edited_plan(world: World, edit: str):
+    live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    totals = plan_totals(run, EXPECTS["heal"])
+    path = run / "days" / "2026-10-29.json"
+    if edit == "day file":  # same counts, one value changed, re-hashed: not plan.json's plan
+        day_plan = json.loads(path.read_text(encoding="utf-8"))
+        day_plan["inserts"][0]["trade_count"] = 2
+        day_plan["sha256"] = ibr._write_set_sha(
+            OCT29,
+            [ibr._alert_from_json(a) for a in day_plan["inserts"]],
+            tuple(day_plan["removes"]),
+            tuple(tuple(u) for u in day_plan["flag_updates"]),
+            tuple((i, Decimal(p)) for i, p in day_plan["spot_updates"]),
+        )
+        path.write_text(json.dumps(day_plan), encoding="utf-8")
+    elif edit == "day file decimal":  # decimal.InvalidOperation is not a ValueError
+        day_plan = json.loads(path.read_text(encoding="utf-8"))
+        day_plan["spot_updates"][0][1] = "x"
+        path.write_text(json.dumps(day_plan), encoding="utf-8")
+    else:
+        plan = runs.load_plan(run)
+        if edit == "plan counts":  # --expect is checked against these
+            plan["days"]["2026-10-29"]["insert"] = totals["insert"] = 1
+        else:
+            plan["days"]["2026-10-29"]["settings"] = "bogus"
+        (run / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    code, out = world.apply(run, command="heal", **totals)
+
+    assert code == 3
+    assert "2026-10-29" in out and "REFUSED" in out
+    assert world.db.writes() == [] and world.s3.puts == []
+
+
+def test_undo_rolls_back_when_the_database_writes_other_than_planned(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    rows_after_apply = copy.deepcopy(world.db.rows)
+    # Another writer takes the old row's key between the undo's DELETE and its re-insert.
+    world.db.before_insert = lambda: (
+        world.db.add(world.alerts[FULL_A][0], source="live"),
+        setattr(world.db, "before_insert", None),
+    )
+
+    code, out = world.undo(run)
+
+    assert code == 1
+    assert "2026-03-10" in out and "another writer" in out
+    assert world.db.rows == rows_after_apply
+    assert not (run / "2026-03-10.undone").exists()
+
+
+@pytest.mark.parametrize("key_taken", [False, True])
+def test_undo_heal_day_puts_back_the_replay_rows_it_removed(world: World, key_taken: bool):
+    setup = live_day(world, JUNE)
+    stale = stale_replay_row(world, setup, JUNE)
+    stale_row = copy.deepcopy(world.db.rows[stale])
+    code, out, run = world.dry_run(JUNE, command="heal")
+    assert code == 0, out
+    assert runs.load_plan(run)["days"]["2026-06-02"]["remove"] == 1
+    # The removed replay row is a QQQ row: the day's QQQ count goes from 1 to 0.
+    assert "| 2026-06 | QQQ | 1 | 0 | -1 |" in (run / "report.md").read_text(encoding="utf-8")
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    assert stale not in world.db.rows
+    other = None
+    if key_taken:  # a later writer put a row of its own at the removed row's key
+        other = world.db.add(
+            replace_alert(
+                setup["alerts"][chain("QQQ", "P", 590, JUNE)],
+                option_chain=stale_row["option_chain"],
+            ),
+            source="replay",
+        )
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    marker = json.loads((run / "2026-06-02.undone").read_text(encoding="utf-8"))
+    if key_taken:
+        assert stale not in world.db.rows and other in world.db.rows
+        assert (marker["reinserted"], marker["left"]) == (0, 1)
+    else:
+        assert world.db.rows[stale] == stale_row  # back with its own id
+        assert (marker["reinserted"], marker["left"]) == (1, 0)
+
+
+@pytest.mark.parametrize("moved", ["flag", "spot"])
+def test_undo_never_overwrites_a_value_that_moved_during_it(world: World, moved: str):
+    setup = live_day(world, JUNE)
+    stale_replay_row(world, setup, JUNE)
+    code, out, run = world.dry_run(JUNE, command="heal")
+    assert code == 0, out
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    rows_after_apply = copy.deepcopy(world.db.rows)
+
+    def move() -> None:
+        """Another writer, between the undo's read and its UPDATEs (at its re-insert)."""
+        if moved == "flag":
+            world.db.rows[setup["flag_row"]]["top_trade_is_floor"] = True
+        else:
+            world.db.rows[setup["spot_row"]]["underlying_price"] = Decimal("6650.00")
+        world.db.before_insert = None
+
+    world.db.before_insert = move
+
+    code, out = world.undo(run)
+
+    assert code == 1
+    assert "2026-06-02" in out and "another writer" in out
+    assert world.db.rows == rows_after_apply  # rolled back, the other writer's change with it
+    assert not (run / "2026-06-02.undone").exists()
+
+
+def test_undo_leaves_rows_the_backup_already_held(world: World):
+    live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    plan = ibr.DayPlan.from_json(
+        json.loads((run / "days" / "2026-10-29.json").read_text(encoding="utf-8"))
+    )
+    # Before the apply another writer (the nightly, say) makes the plan's writes itself: the
+    # apply finds the day in its end state, and the backup holds those rows.
+    for alert in plan.inserts:
+        world.db.add(alert, source="replay")
+    for row_id, sweep, floor in plan.flag_updates:
+        world.db.rows[row_id].update(top_trade_is_sweep=sweep, top_trade_is_floor=floor)
+    for row_id, price in plan.spot_updates:
+        world.db.rows[row_id]["underlying_price"] = price
+    world.db.tape_days[OCT29] = {"day": OCT29}
+    rows_before = copy.deepcopy(world.db.rows)
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    assert json.loads((run / "2026-10-29.applied").read_text(encoding="utf-8"))["how"] == (
+        "end state"
+    )
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    assert world.db.rows == rows_before  # nothing the run did not write is taken away
+    marker = json.loads((run / "2026-10-29.undone").read_text(encoding="utf-8"))
+    assert (marker["deleted"], marker["left"]) == (0, 2)
+
+
+@pytest.mark.parametrize(
+    ("change", "named"),
+    [
+        (lambda row: row.update(strike="x"), "InvalidOperation"),
+        (lambda row: row.update(fired_at="2026-03-10T15:00:00"), "offset"),
+        (lambda row: row.update(id="1"), "id holds a str"),
+        (lambda row: row.update(extra=1), "columns"),
+    ],
+)
+def test_undo_refuses_a_backup_row_it_cannot_restore(
+    world: World, change: Callable[[dict[str, Any]], None], named: str
+):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    # A backup row edited, and backup.json made to agree, so only the row itself is wrong.
+    lines = (run / "backup.jsonl").read_bytes().splitlines()
+    first = json.loads(lines[0])
+    assert first["expiry"] == "2026-03-10"
+    change(first)
+    data = b"\n".join([json.dumps(first).encode("utf-8"), *lines[1:]]) + b"\n"
+    (run / "backup.jsonl").write_bytes(data)
+    record = json.loads((run / "backup.json").read_text(encoding="utf-8"))
+    record["sha256"] = hashlib.sha256(data).hexdigest()
+    (run / "backup.json").write_text(json.dumps(record), encoding="utf-8")
+    writes = len(world.db.writes())
+
+    code, out = world.undo(run)
+
+    assert code == 3
+    assert "backup.jsonl line 1" in out and named in out
+    assert len(world.db.writes()) == writes and not (run / "2026-03-10.undone").exists()
+
+
+def test_export_refuses_an_object_that_appeared_during_the_run(world: World):
+    export_days(world)
+    # Another export lands the key after the start check.
+    world.s3.after_head = lambda: world.s3.objects.update(
+        {("bucket-sekret", EXPORT_KEY): (b"another export", {})}
+    )
+
+    code, out, run = world.dry_run(FULL_A, FULL_A2, command="export")
+
+    assert code == 3
+    assert "overwrite" in out
+    assert world.s3.puts == []
+    assert world.s3.objects[("bucket-sekret", EXPORT_KEY)] == (b"another export", {})
+    assert not (run / "export.json").exists()

@@ -1,12 +1,12 @@
-"""Interval B/A history from the UW Full Tape: compare it with the table, and rebuild the days
-the live feed never covered.
+"""Interval B/A history from the UW Full Tape: compare it with the table, rebuild the days the
+live feed never covered, heal the live days, export the full-year replay, and undo a run.
 
-Spec: docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md, section 6.5. The
-detector is the shared replay module nightly/src/interval_ba_replay.py, loaded by its path. The
-tape is read from R2 through DuckDB's httpfs (ml/src/utils/r2.py); the table is production Neon.
-The mode-agnostic machinery (connections, windows, run folders, the backup and the apply
-driver) is in interval_ba_tape_runs.py beside this file; this file holds the command line and
-the modes.
+Spec: docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md, sections 6.4 and 6.5.
+The detector is the shared replay module nightly/src/interval_ba_replay.py, loaded by its path.
+The tape is read from R2 through DuckDB's httpfs (ml/src/utils/r2.py); the table is production
+Neon. The mode-agnostic machinery (connections, windows, run folders, the backup, verified R2
+puts and the apply driver) is in interval_ba_tape_runs.py beside this file; this file holds the
+command line and the modes.
 
 Modes:
 
@@ -18,7 +18,29 @@ Modes:
 - `rebuild [--from D --to D]`: a dry run of the delete-and-insert over the days with no live
   rows (spec 5.1). Writes a run folder with the plan and changes nothing.
 - `rebuild --apply --run <folder> --expect-delete N --expect-insert N`: applies that plan.
-- `heal`, `export` and `undo` exit 2: they are not built yet.
+- `heal --from D --to D [--assume-default-settings]`: a dry run of heal_day (spec 6.4) over the
+  live days, 2026-05-13 on; it refuses an earlier day. It fixes the two flags and a blank SPXW
+  spot on live rows and removes stale replay rows; from 2026-10-29 it also inserts the alerts
+  live missed, under the day's covering interval_ba_live_settings rows, which hold the inserts
+  when they ran another rule, had the detector off, or are missing. The flag assumes the code's
+  rule, all three tickers on, for a day no row covers, and only for such a day. A day whose
+  inserts are held is flagged (exit 1).
+- `heal --apply --run <folder> --expect-insert N --expect-remove N --expect-flags N
+  --expect-spot N`: applies that plan, one heal_day per day with the plan's sha256 as
+  expect_sha256.
+- `export --from D --to D`: read-only for Neon (it never connects). Replays every trading day,
+  all three tickers, and writes the alerts as parquet (the TapeAlert fields in order, times as
+  UTC TIMESTAMPTZ from epoch microseconds) to the run folder and to R2 at
+  research/interval-ba/replay-<to>.parquet, put once and verified. It never overwrites an
+  object. The file's metadata and the object's hold the module's blob hash and the rule
+  constants; the object's also sha256 and rows.
+- `undo --run <folder>`: puts a rebuild or heal run's days back to its backup: the days marked
+  `.applied`, and those whose rows equal the plan's end state. A rebuild day's replay rows
+  become the backup's, ids and all. A heal day's inserts are deleted (only rows the backup never
+  held, still as written), its removed replay rows go back with their ids, and its flags and
+  spots go back to the backup's where they still hold what the heal wrote. A live row is never
+  deleted or inserted, and interval_ba_tape_days is left alone. Each day is one transaction and
+  then a `<day>.undone` marker; an undone run is never applied again.
 
 The rebuild's days: every trading day from 2026-01-02 to 2026-05-12 and from 2026-07-23 to
 2026-09-04, plus 2026-05-13 for the tape alerts that fired before that day's first live row and
@@ -30,34 +52,40 @@ edge days' bounds must be the ones spec section 4 names (the first live row in 1
 05-13; 11 live rows on 07-22, the last in 14:52:46Z), or the run stops. A live row is never
 deleted.
 
-A run folder, docs/tmp/interval-ba-rebuild/<UTC stamp>-rebuild/, holds:
+A run folder, docs/tmp/interval-ba-rebuild/<UTC stamp>-<mode>/, holds:
 
-- plan.json: per day and ticker the counts, one sha256 per day over the day and its exact write
-  set, the git blob hash of the replay module and of every file of the tool, and
-  root_label_mismatch;
-- days/<day>.json: the day's full write lists;
-- report.md: the counts and bound per day, the live twins skipped, and before/after per ticker
-  and month;
-- once applied: backup.jsonl and backup.json (the backup), and a <day>.applied marker per day.
+- plan.json (rebuild, heal): per day and ticker the counts, one sha256 per day over the day and
+  its exact write set, the git blob hash of the replay module and of every file of the tool, and
+  root_label_mismatch; a heal plan also records each day's settings source;
+- days/<day>.json: the day's full write lists (a heal day's is DayPlan.to_json());
+- report.md: the counts per day, the flags, and before/after per ticker and month;
+- once applied: backup.jsonl and backup.json (the backup), and a <day>.applied marker per day;
+  once undone, a <day>.undone marker per day;
+- an export's folder: the parquet file and export.json, its record.
 
-An apply refuses (exit 3) when a refusal window is open, when a code file's blob hash differs
-from the plan's, when plan.json or a pending day file is damaged or disagrees with the other,
-or when an --expect total differs from the plan's total over the days not yet applied. Its first
-apply writes every row of interval_ba_alerts to backup.jsonl, reads it back, copies it to R2 at
-backups/interval-ba-alerts/<UTC stamp>.jsonl and checks the copy, before any write; a later
-apply of the same run takes no new backup. Then, per day not yet marked:
+An apply refuses (exit 3) when a refusal window is open, when the run was undone, when a code
+file's blob hash differs from the plan's, when plan.json or a pending day file is damaged or
+disagrees with the other, or when an --expect total differs from the plan's total over the days
+not yet applied. Its first apply writes every row of interval_ba_alerts to backup.jsonl, reads
+it back, copies it to R2 at backups/interval-ba-alerts/<UTC stamp>.jsonl and checks the copy,
+before any write; a later apply of the same run takes no new backup. Then, per day not yet
+marked:
 
-1. if the day's rows already equal the plan's end state, write the marker and go on;
-2. replay the day and, in the day's transaction before any write, re-plan it and compare the
-   sha256 with the plan's (PlanChanged, exit 3, on a difference);
-3. check the refusal windows again;
-4. delete and insert, check the counts the database reports, and commit;
-5. write the marker.
+1. if the day's rows already equal the plan's end state (for a heal day, with its
+   interval_ba_tape_days row), write the marker and go on;
+2. rebuild: replay the day and, in the day's transaction before any write, re-plan it and
+   compare the sha256 with the plan's (PlanChanged, exit 3, on a difference); then check the
+   refusal windows again; then delete and insert, check the counts the database reports, and
+   commit. heal: check the windows, then heal_day, which owns the transaction and re-plans,
+   compares the sha256 (PlanChanged before any write), writes and commits; a day it committed
+   other than planned is marked and stops the run (exit 1);
+3. write the marker.
 
 Any failed day stops the run; the days before it keep their markers, so a rerun resumes.
 
-Refusal windows, for both rebuild runs: weekdays 08:15 to 16:00 CT (`--allow-market-hours`
-overrides it, for a market holiday) and every day 07:15 to 12:30 UTC, the nightly run.
+Refusal windows, for every mode but verify: weekdays 08:15 to 16:00 CT (`--allow-market-hours`
+overrides it, for a market holiday) and every day 07:15 to 12:30 UTC, the nightly run. An apply
+and an undo check them again before each day's write.
 
 Secrets: DATABASE_URL and the four R2_* names come from --env-file, else this checkout's
 .env.local, else the main checkout's. No value is ever printed; every line of output is
@@ -71,6 +99,15 @@ Usage, from the repo root, with ml/.venv (Windows):
     ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py rebuild
     ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py rebuild --apply \\
         --run docs/tmp/interval-ba-rebuild/<stamp>-rebuild --expect-delete N --expect-insert N
+    ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py heal \\
+        --from 2026-05-13 --to 2026-11-24 --assume-default-settings
+    ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py heal --apply \\
+        --run docs/tmp/interval-ba-rebuild/<stamp>-heal --expect-insert N --expect-remove N \\
+        --expect-flags N --expect-spot N
+    ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py export \\
+        --from 2026-01-02 --to 2026-11-24
+    ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py undo \\
+        --run docs/tmp/interval-ba-rebuild/<stamp>-heal
 
 Exit codes: 0 ok, 1 an error or a failed check, 2 bad arguments, 3 refused.
 """
@@ -79,23 +116,28 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import sys
 import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import psycopg2
 import psycopg2.extras
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-# The shared machinery sits beside this file; -I keeps this folder off sys.path.
+# The shared machinery sits beside this file; -I keeps this folder off sys.path. Appended, so
+# no module of this folder can shadow a standard or installed one.
 _SCRIPTS = str(Path(__file__).resolve().parent)
 if _SCRIPTS not in sys.path:
-    sys.path.insert(0, _SCRIPTS)
+    sys.path.append(_SCRIPTS)
 
 import interval_ba_tape_runs as runs  # noqa: E402
 from interval_ba_tape_runs import CheckFailedError, RefusedError, UsageError  # noqa: E402
@@ -639,15 +681,6 @@ def _month_table(counts: dict[tuple[str, str], tuple[int, int]]) -> list[str]:
     return lines
 
 
-def _planned_months(plan: dict[str, Any]) -> dict[tuple[str, str], tuple[int, int]]:
-    counts: dict[tuple[str, str], tuple[int, int]] = {}
-    for day, entry in plan["days"].items():
-        for ticker, c in entry["tickers"].items():
-            before, after = counts.get((day[:7], ticker), (0, 0))
-            counts[(day[:7], ticker)] = (before + c["before"], after + c["after"])
-    return counts
-
-
 def _report(run: Path, plan: dict[str, Any], days: Sequence[RebuildDay]) -> str:
     totals = plan["totals"]
     largest = plan["largest_day"]
@@ -715,7 +748,7 @@ def _report(run: Path, plan: dict[str, Any], days: Sequence[RebuildDay]) -> str:
     else:
         lines.append("None.")
     lines += ["", "## Before and after, per ticker and month", ""]
-    lines += _month_table(_planned_months(plan))
+    lines += _month_table(runs.planned_months(plan))
     lines += [
         "",
         "## Apply",
@@ -815,7 +848,8 @@ def _load_rebuild_day(run: Path, day: date, entry: dict[str, Any]) -> RebuildDay
     try:
         planned = RebuildDay.from_json(json.loads((run / name).read_text(encoding="utf-8")))
         sha256, delete, insert = entry["sha256"], entry["delete"], entry["insert"]
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    # ArithmeticError: a malformed decimal raises decimal.InvalidOperation, not a ValueError.
+    except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
         raise RefusedError(
             f"{day}: {name} is not a day plan this run can apply ({type(exc).__name__}: {exc})"
         ) from None
@@ -900,7 +934,7 @@ def _append_measured(conn: Any, run: Path, plan: dict[str, Any]) -> None:
         cur.execute(_MONTH_COUNTS_SQL, (days,))
         now = {(month, ticker): count for month, ticker, count in cur.fetchall()}
     measured = {
-        key: (before, now.get(key, 0)) for key, (before, _) in _planned_months(plan).items()
+        key: (before, now.get(key, 0)) for key, (before, _) in runs.planned_months(plan).items()
     }
     with (run / "report.md").open("a", encoding="utf-8", newline="\n") as report:
         report.write(
@@ -925,6 +959,881 @@ REBUILD = runs.ApplyMode(
 )
 
 
+# --- heal: the live days ----------------------------------------------------------------------
+
+# Where a heal day's settings came from (plan.json `settings`).
+NOT_CONSULTED = "not consulted"  # before 2026-10-29: heal_day inserts nothing and reads none
+LIVE_SETTINGS = "live"  # the day's covering interval_ba_live_settings rows
+ASSUMED_DEFAULT = "assumed default"  # no covering row, and --assume-default-settings
+NO_SETTINGS = "none"  # no covering row: heal_day holds the inserts
+_SETTINGS_SOURCES = (NOT_CONSULTED, LIVE_SETTINGS, ASSUMED_DEFAULT, NO_SETTINGS)
+
+# A heal day's planned writes, by their plan.json count and their DayPlan count.
+_HEAL_EXPECT = ("insert", "remove", "flags", "spot")
+HEAL_COUNTS = ("inserted", "removed", "flags_changed", "spot_filled")
+# The DayPlan diagnostics plan.json and report.md carry per day.
+_HEAL_DIAGNOSTICS = (
+    "tape_alerts",
+    "live_rows",
+    "matched",
+    "live_missed",
+    "live_only",
+    "value_mismatched",
+    "flags_unmatched",
+    "root_label_mismatch",
+)
+
+_TAPE_DAY_SQL = "SELECT day FROM interval_ba_tape_days WHERE day = %(day)s"
+
+
+def heal_days(start: date, end: date) -> list[date]:
+    """The trading days from start to end. Refuses a range with a day before the first live
+    day: those days have no live rows, and the rebuild covers them."""
+    days = runs.trading_days(start, end)
+    early = [day for day in days if day < ibr.LIVE_START]
+    if early:
+        listed = ", ".join(day.isoformat() for day in early[:5])
+        more = f" and {len(early) - 5} more" if len(early) > 5 else ""
+        raise RefusedError(
+            f"heal refuses {listed}{more}: before {ibr.LIVE_START}, the first live day. Those"
+            " days have no live rows; rebuild covers them"
+        )
+    if not days:
+        raise UsageError("no trading day in that range")
+    return days
+
+
+def _insert_missed(day: date) -> bool:
+    """heal_day's insert_missed: live ran this rule from 2026-10-29 only."""
+    return day >= ibr.INSERT_MISSED_FROM
+
+
+def _settings_for(conn: Any, day: date, *, assume_default: bool) -> tuple[list[Any], str]:
+    """The settings heal_day gets for `day`, and where they came from.
+
+    Before 2026-10-29 none are read: heal_day inserts nothing then and does not consult them.
+    From then on, the day's covering rows; a day with none gets [default_settings()] when
+    assume_default is set, else none, and heal_day holds its inserts. The read's transaction
+    is ended here, because heal_day needs an idle connection.
+    """
+    if not _insert_missed(day):
+        return [], NOT_CONSULTED
+    with runs.rolled_back(conn):
+        covering = ibr.read_covering_settings(conn, day)
+    if covering:
+        return covering, LIVE_SETTINGS
+    if assume_default:
+        return [ibr.default_settings()], ASSUMED_DEFAULT
+    return [], NO_SETTINGS
+
+
+def _tape_day_recorded(conn: Any, day: date) -> bool:
+    """Whether interval_ba_tape_days holds the day, which heal_day writes with its changes."""
+    with conn.cursor() as cur:
+        cur.execute(_TAPE_DAY_SQL, {"day": day})
+        return bool(cur.fetchall())
+
+
+def _write_counts(plan: Any) -> tuple[int, int, int, int]:
+    """A DayPlan's planned writes: inserts, removes, flag updates and spot fills."""
+    return (len(plan.inserts), len(plan.removes), len(plan.flag_updates), len(plan.spot_updates))
+
+
+@dataclass(frozen=True)
+class HealDay:
+    """A heal day's approved plan (an ibr.DayPlan), and where the dry run's settings came from:
+    the apply assumes the defaults again only for a day the dry run assumed them for."""
+
+    plan: Any
+    settings: str
+
+
+def _heal_tickers(plan: Any, rows: Sequence[StoredRow]) -> dict[str, dict[str, int]]:
+    """Per ticker: the day's rows before, the planned writes, and the rows after."""
+    ticker_of = {row.id: row.ticker for row in rows}
+    tickers: dict[str, dict[str, int]] = {}
+    for ticker in ibr.TICKERS:
+        before = sum(row.ticker == ticker for row in rows)
+        insert = sum(alert.ticker == ticker for alert in plan.inserts)
+        remove = sum(ticker_of.get(row_id) == ticker for row_id in plan.removes)
+        tickers[ticker] = {
+            "before": before,
+            "insert": insert,
+            "remove": remove,
+            "flags": sum(ticker_of.get(update[0]) == ticker for update in plan.flag_updates),
+            "spot": sum(ticker_of.get(update[0]) == ticker for update in plan.spot_updates),
+            "after": before + insert - remove,
+        }
+    return tickers
+
+
+def _heal_entry(plan: Any, settings: str, rows: Sequence[StoredRow]) -> dict[str, Any]:
+    return {
+        "sha256": plan.sha256,
+        **dict(zip(_HEAL_EXPECT, _write_counts(plan), strict=True)),
+        "insert_missed": _insert_missed(plan.day),
+        "settings": settings,
+        "inserts_held": plan.inserts_held,
+        **{name: getattr(plan, name) for name in _HEAL_DIAGNOSTICS},
+        "tickers": _heal_tickers(plan, rows),
+    }
+
+
+def heal_end_state(rows: Sequence[StoredRow], plan: Any) -> bool:
+    """Whether the day's rows already hold every write of the plan: a row at each insert's key
+    with the planned values (only the inserted replay row has them: a live row's fired_at is
+    wall clock), each removed id gone, each flag and spot at the planned value. The apply also
+    needs the day's interval_ba_tape_days row, which the same transaction writes."""
+    by_id = {row.id: row for row in rows}
+    by_key = {row.key: row for row in rows}
+    for alert in plan.inserts:
+        row = by_key.get(alert.key)
+        if row is None or _row_values(row) != _alert_values(alert):
+            return False
+    if any(row_id in by_id for row_id in plan.removes):
+        return False
+    for row_id, sweep, floor in plan.flag_updates:
+        row = by_id.get(row_id)
+        if row is None or (
+            row.values["top_trade_is_sweep"],
+            row.values["top_trade_is_floor"],
+        ) != (sweep, floor):
+            return False
+    for row_id, price in plan.spot_updates:
+        row = by_id.get(row_id)
+        if row is None or row.values["underlying_price"] != price:
+            return False
+    return True
+
+
+def _heal_plan_json(entries: dict[str, dict[str, Any]], assume_default: bool) -> dict[str, Any]:
+    return {
+        "mode": "heal",
+        "created_at": runs.utc_now().isoformat(),
+        **runs.code_blobs(),
+        "assume_default_settings": assume_default,
+        "root_label_mismatch": sum(e["root_label_mismatch"] for e in entries.values()),
+        "totals": {name: sum(e[name] for e in entries.values()) for name in _HEAL_EXPECT},
+        "held": {day: e["inserts_held"] for day, e in entries.items() if e["inserts_held"]},
+        "days": entries,
+    }
+
+
+def _heal_apply_line(run: Path, totals: dict[str, int]) -> str:
+    expects = " ".join(f"--expect-{name} {totals[name]}" for name in _HEAL_EXPECT)
+    return f"heal --apply --run {run} {expects}"
+
+
+def _heal_report(run: Path, plan: dict[str, Any]) -> str:
+    days = plan["days"]
+    totals = plan["totals"]
+    tool_blobs = ", ".join(f"{name} `{blob}`" for name, blob in plan["tool_blobs"].items())
+    lines = [
+        f"# Interval B/A heal: dry run {run.name}",
+        "",
+        f"- Days: {len(days)}, {min(days)} to {max(days)}.",
+        f"- Inserts {totals['insert']} tape alerts live missed (from {ibr.INSERT_MISSED_FROM}"
+        f" only), removes {totals['remove']} stale replay rows, corrects the flags on"
+        f" {totals['flags']} live rows and fills {totals['spot']} blank SPXW spots.",
+        "- --assume-default-settings: "
+        + ("on, for a day no settings row covers." if plan["assume_default_settings"] else "off."),
+        f"- Replay module blob `{plan['module_blob']}`; tool blobs: {tool_blobs}.",
+        f"- root_label_mismatch: {plan['root_label_mismatch']}.",
+        "",
+        "## Flags",
+        "",
+    ]
+    flags = [f"- **{day}: inserts held: {reason}.**" for day, reason in plan["held"].items()]
+    flags += [
+        f"- **{day}: the tape fires no alert, but the day has {e['live_rows']} live rows.**"
+        for day, e in days.items()
+        if e["tape_alerts"] == 0 and e["live_rows"] > 0
+    ]
+    lines += flags or ["None."]
+    lines += [
+        "",
+        "## Days",
+        "",
+        "The comparison counts cover the tickers on in every covering settings row. Settings:"
+        f" `{NOT_CONSULTED}` before {ibr.INSERT_MISSED_FROM}, `{LIVE_SETTINGS}` (the covering"
+        f" rows), `{ASSUMED_DEFAULT}` or `{NO_SETTINGS}`.",
+        "",
+        "| Day | Settings | Inserts held | Tape alerts | Live rows | Matched | Live missed"
+        " | Live only | Value mismatched | Insert | Remove | Flags | Flags unmatched | Spot"
+        " | root_label_mismatch |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for day, e in days.items():
+        lines.append(
+            f"| {day} | {e['settings']} | {e['inserts_held'] or '-'} | {e['tape_alerts']}"
+            f" | {e['live_rows']} | {e['matched']} | {e['live_missed']} | {e['live_only']}"
+            f" | {e['value_mismatched']} | {e['insert']} | {e['remove']} | {e['flags']}"
+            f" | {e['flags_unmatched']} | {e['spot']} | {e['root_label_mismatch']} |"
+        )
+    lines += ["", "## Before and after, per ticker and month", ""]
+    lines += _month_table(runs.planned_months(plan))
+    lines += ["", "## Apply", "", "```", _heal_apply_line(run, totals), "```", ""]
+    return "\n".join(lines)
+
+
+def _heal_day_line(day: date, e: dict[str, Any]) -> str:
+    held = f", inserts held: {e['inserts_held']}" if e["inserts_held"] else ""
+    return (
+        f"{day} ({e['settings']}): insert {e['insert']}, remove {e['remove']}, flags"
+        f" {e['flags']}, spot {e['spot']}; live missed {e['live_missed']}{held}"
+    )
+
+
+def _heal_dry_run(args: argparse.Namespace, out: runs.Output) -> int:
+    if args.start is None or args.end is None:
+        raise UsageError("heal needs --from and --to, or --apply with --run")
+    days = heal_days(args.start, args.end)
+    runs.refuse_in_window(args.allow_market_hours)
+    env = runs.load_env(args.env_file)
+    out.hide(env)
+    conn = runs.connect(env, readonly=True)
+    try:
+        con = runs.tape_connection()
+        try:
+            run = runs.new_run("heal")
+            out.say(f"run folder: {run}")
+            entries: dict[str, dict[str, Any]] = {}
+            for day in days:
+                with runs.stops_at(out, day):
+                    settings, source = _settings_for(
+                        conn, day, assume_default=args.assume_default_settings
+                    )
+                    plan = ibr.heal_day(
+                        conn,
+                        con,
+                        runs.tape_url(day),
+                        day,
+                        settings,
+                        insert_missed=_insert_missed(day),
+                        apply=False,
+                    )
+                    with runs.rolled_back(conn):
+                        rows = read_day_rows(conn, day)
+                runs.write_json(run / "days" / f"{day}.json", plan.to_json())
+                entries[day.isoformat()] = _heal_entry(plan, source, rows)
+                out.say(_heal_day_line(day, entries[day.isoformat()]))
+        finally:
+            con.close()
+    finally:
+        conn.close()
+
+    plan_json = _heal_plan_json(entries, args.assume_default_settings)
+    runs.write_json(run / "plan.json", plan_json)
+    runs.write_text(run / "report.md", _heal_report(run, plan_json))
+    totals = plan_json["totals"]
+    out.say(
+        f"plan: {run / 'plan.json'}; insert {totals['insert']}, remove {totals['remove']},"
+        f" flags {totals['flags']}, spot {totals['spot']}"
+    )
+    out.say(f"report: {run / 'report.md'}")
+    if plan_json["held"]:
+        held = ", ".join(f"{day} ({reason})" for day, reason in plan_json["held"].items())
+        out.say(f"FLAG: inserts held on {held} (report.md)", err=True)
+        return 1
+    return 0
+
+
+def _load_heal_day(run: Path, day: date, entry: dict[str, Any]) -> HealDay:
+    """days/<day>.json as a HealDay. Refused when it is damaged or edited, when it is another
+    day's, when its sha256 or counts are not plan.json's, or when plan.json's settings source
+    is not one the dry run writes."""
+    name = f"days/{day}.json"
+    try:
+        planned = ibr.DayPlan.from_json(json.loads((run / name).read_text(encoding="utf-8")))
+        sha256, settings = entry["sha256"], entry["settings"]
+        counts = tuple(entry[count] for count in _HEAL_EXPECT)
+    except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+        raise RefusedError(
+            f"{day}: {name} is not a day plan this run can apply ({type(exc).__name__}: {exc})"
+        ) from None
+    if planned.day != day or planned.sha256 != sha256:
+        raise RefusedError(f"{day}: {name} and plan.json hold different plans")
+    if _write_counts(planned) != counts:
+        raise RefusedError(
+            f"{day}: plan.json counts {dict(zip(_HEAL_EXPECT, counts, strict=True))}, but"
+            f" {name} holds {dict(zip(_HEAL_EXPECT, _write_counts(planned), strict=True))}"
+        )
+    if settings not in _SETTINGS_SOURCES:
+        raise RefusedError(f"{day}: plan.json's settings {settings!r} is not one a dry run writes")
+    return HealDay(planned, settings)
+
+
+def _apply_heal_day(
+    conn: Any,
+    con: duckdb.DuckDBPyConnection,
+    day: date,
+    planned: HealDay,
+    allow_market_hours: bool,
+) -> runs.DayDone:
+    """One heal day's apply; the driver writes the marker after it.
+
+    The rebuild's order, except that heal_day owns the day's transaction: in it, it re-plans,
+    compares the fresh sha256 with the approved one (PlanChanged, before any write), writes and
+    commits. So the windows are checked just before heal_day, not between those two steps.
+    """
+    # 1. Already in its end state (a run that died between its commit and its marker).
+    with runs.rolled_back(conn):
+        with conn.cursor() as cur:
+            runs.set_local_timeouts(cur)
+        rows = read_day_rows(conn, day)
+        recorded = _tape_day_recorded(conn, day)
+    if recorded and heal_end_state(rows, planned.plan):
+        return runs.DayDone(
+            "end state", dict.fromkeys(HEAL_COUNTS, 0), f"{day}: already in its planned end state"
+        )
+    # 2. The windows, right before the day's transaction.
+    runs.refuse_in_window(allow_market_hours, f"{day}: ")
+    # 3. The approved plan exactly, or nothing.
+    settings, _ = _settings_for(conn, day, assume_default=planned.settings == ASSUMED_DEFAULT)
+    done = ibr.heal_day(
+        conn,
+        con,
+        runs.tape_url(day),
+        day,
+        settings,
+        insert_missed=_insert_missed(day),
+        apply=True,
+        expect_sha256=planned.plan.sha256,
+    )
+    counts = {name: getattr(done, name) for name in HEAL_COUNTS}
+    wanted = dict(zip(HEAL_COUNTS, _write_counts(planned.plan), strict=True))
+    shown = ", ".join(f"{name} {value}" for name, value in counts.items())
+    problem = None
+    if counts != wanted:
+        planned_text = ", ".join(f"{name} {value}" for name, value in wanted.items())
+        problem = (
+            f"{day}: committed, but the database reported {shown} where the plan had"
+            f" {planned_text}: another writer moved the day between heal_day's plan and its"
+            " write. The day is marked as applied; check it before going on"
+        )
+    return runs.DayDone("applied", counts, f"{day}: {shown}", problem)
+
+
+HEAL = runs.ApplyMode(
+    name="heal",
+    expect=_HEAL_EXPECT,
+    load_day=_load_heal_day,
+    apply_day=_apply_heal_day,
+    finish=_append_measured,
+)
+
+
+# --- export: the full-year replay for studies -------------------------------------------------
+
+EXPORT_PREFIX = "research/interval-ba/"
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_UTC_US = pa.timestamp("us", tz="UTC")
+# The TapeAlert fields in order, as the export writes them (spec 6.5 and Task 8).
+_EXPORT_COLUMNS: tuple[tuple[str, pa.DataType], ...] = (
+    ("option_chain", pa.string()),
+    ("ticker", pa.string()),
+    ("option_type", pa.string()),
+    ("strike", pa.decimal128(10, 3)),
+    ("expiry", pa.date32()),
+    ("bucket_start", _UTC_US),
+    ("bucket_end", _UTC_US),
+    ("fired_at", _UTC_US),
+    ("ratio_pct", pa.decimal128(5, 2)),
+    ("ask_premium", pa.decimal128(14, 2)),
+    ("total_premium", pa.decimal128(14, 2)),
+    ("trade_count", pa.int32()),
+    ("top_trade_premium", pa.decimal128(14, 2)),
+    ("top_trade_size", pa.int32()),
+    ("top_trade_executed_at", _UTC_US),
+    ("top_trade_is_sweep", pa.bool_()),
+    ("top_trade_is_floor", pa.bool_()),
+    ("underlying_price", pa.decimal128(10, 2)),
+    ("confluence_tickers", pa.list_(pa.string())),
+)
+_EXPORT_NULLABLE = frozenset({"underlying_price"})  # an SPXW crossing with no spot to give
+
+
+def export_key(end: date) -> str:
+    return f"{EXPORT_PREFIX}replay-{end.isoformat()}.parquet"
+
+
+def _rule() -> dict[str, str]:
+    """The replay module's rule constants, as ASCII strings (they go in R2 user metadata)."""
+    return {
+        "tickers": ",".join(ibr.TICKERS),
+        "ratio-threshold": str(ibr.RATIO_THRESHOLD),
+        "premium-floor-dollars": str(ibr.PREMIUM_FLOOR_DOLLARS),
+        "window-sec": str(ibr.WINDOW_SEC),
+        "multi-leg-share-max": str(ibr.MULTI_LEG_SHARE_MAX),
+        "multi-leg-codes": ",".join(sorted(ibr.MULTI_LEG_CODES)),
+        "confluence-window-sec": str(ibr.CONFLUENCE_WINDOW_SEC),
+    }
+
+
+def _epoch_us(at: datetime) -> int:
+    return (at - _EPOCH) // timedelta(microseconds=1)
+
+
+def _export_column(name: str, kind: pa.DataType, alerts: Sequence[Any]) -> pa.Array:
+    values = [getattr(alert, name) for alert in alerts]
+    if kind == _UTC_US:  # written from epoch microseconds, so no time zone conversion runs
+        return pa.array([_epoch_us(at) for at in values], pa.int64()).cast(_UTC_US)
+    if name == "confluence_tickers":
+        return pa.array([list(tags) for tags in values], kind)
+    return pa.array(values, kind)
+
+
+def _export_table(alerts: Sequence[Any], meta: dict[str, Any]) -> pa.Table:
+    schema = pa.schema(
+        [pa.field(name, kind, nullable=name in _EXPORT_NULLABLE) for name, kind in _EXPORT_COLUMNS],
+        metadata={b"interval_ba": json.dumps(meta, sort_keys=True).encode("utf-8")},
+    )
+    return pa.Table.from_arrays(
+        [_export_column(name, kind, alerts) for name, kind in _EXPORT_COLUMNS], schema=schema
+    )
+
+
+def _refuse_overwrite(r2: runs.R2Bucket, key: str) -> None:
+    if runs.object_exists(r2, key):
+        raise RefusedError(
+            f"R2 already holds {key}, and the tool does not overwrite an object (the owner"
+            " decides on deletes in the bucket). Delete it, or export to another --to"
+        )
+
+
+def _export(args: argparse.Namespace, out: runs.Output) -> int:
+    """Read-only for Neon: it never connects. Replays every day with today's rule and writes
+    the alerts to the run folder and to R2, verified."""
+    days = runs.trading_days(args.start, args.end)
+    if not days:
+        raise UsageError("no trading day in that range")
+    runs.refuse_in_window(args.allow_market_hours)
+    env = runs.load_env(args.env_file)
+    out.hide(env)
+    r2 = runs.r2_bucket(env)
+    key = export_key(args.end)
+    _refuse_overwrite(r2, key)  # before hours of replays, and again before the put
+    run = runs.new_run("export")
+    out.say(f"run folder: {run}")
+    alerts: list[Any] = []
+    per_day: dict[str, dict[str, Any]] = {}
+    con = runs.tape_connection()
+    try:
+        for day in days:
+            with runs.stops_at(out, day):
+                replay = ibr.replay_day(con, runs.tape_url(day), day)
+            alerts += replay.alerts
+            per_day[day.isoformat()] = {
+                "tickers": {t: sum(a.ticker == t for a in replay.alerts) for t in ibr.TICKERS},
+                "root_label_mismatch": replay.root_label_mismatch,
+            }
+            out.say(f"{day}: {len(replay.alerts)} alerts")
+    finally:
+        con.close()
+
+    blobs = runs.code_blobs()
+    meta = {
+        "from": args.start.isoformat(),
+        "to": args.end.isoformat(),
+        "rows": len(alerts),
+        "module_blob": blobs["module_blob"],
+        "tool_blobs": blobs["tool_blobs"],
+        "rule": _rule(),
+        "created_at": runs.utc_now().isoformat(),
+    }
+    path = run / f"replay-{args.end}.parquet"
+    pq.write_table(_export_table(alerts, meta), path)
+    body = path.read_bytes()  # what is hashed is what is put
+    sha256 = hashlib.sha256(body).hexdigest()
+    rows = len(alerts)
+    _refuse_overwrite(r2, key)  # the object may have appeared during the replays
+    runs.put_verified(
+        r2,
+        key,
+        body,
+        {
+            "sha256": sha256,
+            "rows": str(rows),
+            "module-blob": blobs["module_blob"],
+            "from": meta["from"],
+            "to": meta["to"],
+            **_rule(),
+        },
+        content_type="application/vnd.apache.parquet",
+        what="export",
+    )
+    runs.write_json(
+        run / "export.json",
+        {
+            **{name: meta[name] for name in ("from", "to", "rows", "module_blob", "tool_blobs")},
+            "rule": meta["rule"],
+            "sha256": sha256,
+            "bytes": len(body),
+            "r2_key": key,
+            "root_label_mismatch": sum(d["root_label_mismatch"] for d in per_day.values()),
+            "days": per_day,
+            "exported_at": runs.utc_now().isoformat(),
+        },
+    )
+    out.say(f"export: {rows} alerts over {len(days)} days in {path}; R2 copy {key}, verified")
+    return 0
+
+
+# --- undo: a run's applied days, back to its backup -------------------------------------------
+
+# Every column of interval_ba_alerts, as the backup holds it and the restore writes it back.
+_RESTORE_COLUMNS: tuple[str, ...] = ("id", *_TAPE_FIELDS, "acknowledged", "source")
+# How take_backup wrote each column: NUMERIC as a string, times and dates in ISO form.
+_RESTORE_KINDS: dict[str, str] = {
+    "id": "int",
+    "option_chain": "str",
+    "ticker": "str",
+    "option_type": "str",
+    "strike": "decimal",
+    "expiry": "date",
+    "bucket_start": "instant",
+    "bucket_end": "instant",
+    "fired_at": "instant",
+    "ratio_pct": "decimal",
+    "ask_premium": "decimal",
+    "total_premium": "decimal",
+    "trade_count": "int",
+    "top_trade_premium": "decimal",
+    "top_trade_size": "int",
+    "top_trade_executed_at": "instant",
+    "top_trade_is_sweep": "bool",
+    "top_trade_is_floor": "bool",
+    "underlying_price": "decimal",
+    "confluence_tickers": "list",
+    "acknowledged": "bool",
+    "source": "str",
+}
+
+# A restored row keeps its id; any conflict, on the id or the key, skips it, and the count
+# check after it stops the day.
+_RESTORE_SQL = (
+    "INSERT INTO interval_ba_alerts ("
+    + ", ".join(_RESTORE_COLUMNS)
+    + ") VALUES %s ON CONFLICT DO NOTHING RETURNING id"
+)
+# A live row's flags go back only while they still hold what the heal wrote.
+_UNDO_FLAGS_SQL = (
+    "UPDATE interval_ba_alerts AS a"
+    " SET top_trade_is_sweep = v.old_sweep, top_trade_is_floor = v.old_floor"
+    " FROM (VALUES %s) AS v(id, day, new_sweep, new_floor, old_sweep, old_floor)"
+    " WHERE a.id = v.id AND a.expiry = v.day AND a.source = 'live'"
+    " AND a.top_trade_is_sweep IS NOT DISTINCT FROM v.new_sweep"
+    " AND a.top_trade_is_floor IS NOT DISTINCT FROM v.new_floor"
+    " RETURNING a.id"
+)
+_UNDO_FLAGS_TEMPLATE = "(%s::bigint, %s::date, %s::boolean, %s::boolean, %s::boolean, %s::boolean)"
+# A live SPXW spot goes back only while it still holds what the heal wrote.
+_UNDO_SPOT_SQL = (
+    "UPDATE interval_ba_alerts AS a SET underlying_price = v.old_price"
+    " FROM (VALUES %s) AS v(id, day, new_price, old_price)"
+    " WHERE a.id = v.id AND a.expiry = v.day AND a.source = 'live' AND a.ticker = 'SPXW'"
+    " AND a.underlying_price = v.new_price"
+    " RETURNING a.id"
+)
+_UNDO_SPOT_TEMPLATE = "(%s::bigint, %s::date, %s::numeric, %s::numeric)"
+_UNDO_COUNTS = ("deleted", "reinserted", "flags_restored", "spot_restored")
+
+
+def _restore_value(name: str, value: Any) -> Any:
+    """A backup value as its column takes it back. Raises TypeError, ValueError or an
+    ArithmeticError for a value take_backup would not have written."""
+    if value is None:
+        return None
+    kind = _RESTORE_KINDS[name]
+    if kind == "decimal" and isinstance(value, str):
+        return Decimal(value)
+    if kind == "date" and isinstance(value, str):
+        return date.fromisoformat(value)
+    if kind == "instant" and isinstance(value, str):
+        at = datetime.fromisoformat(value)
+        if at.tzinfo is None:
+            raise ValueError(f"{name} {value} has no UTC offset")
+        return at
+    if kind == "list" and isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return value
+    if (kind, type(value)) in {("int", int), ("str", str), ("bool", bool)}:
+        return value
+    raise TypeError(f"{name} holds a {type(value).__name__}, not a {kind}")
+
+
+def _backup_rows(run: Path, days: set[date]) -> tuple[dict[date, dict[int, dict]], set[int]]:
+    """The backup's rows on `days`, by day and id, as the table takes them back, and every id
+    the backup holds. Refuses a backup whose rows are not the columns undo restores."""
+    by_day: dict[date, dict[int, dict]] = {}
+    ids: set[int] = set()
+    for n, record in enumerate(runs.read_backup(run), start=1):
+        try:
+            if not isinstance(record, dict) or set(record) != set(_RESTORE_COLUMNS):
+                raise TypeError("its columns are not the ones undo restores")
+            row_id = _restore_value("id", record["id"])
+            ids.add(row_id)
+            expiry = _restore_value("expiry", record["expiry"])
+            if expiry in days:
+                by_day.setdefault(expiry, {})[row_id] = {
+                    name: _restore_value(name, record[name]) for name in _RESTORE_COLUMNS
+                }
+        except (ValueError, TypeError, ArithmeticError) as exc:
+            raise RefusedError(
+                f"backup.jsonl line {n} is not a row undo can restore ({type(exc).__name__}: {exc})"
+            ) from None
+    return by_day, ids
+
+
+@dataclass(frozen=True)
+class UndoDay:
+    """One day's restore: replay rows to delete, backup rows to put back with their ids, live
+    flags and spots to set back, and how many planned restores were left because the row
+    changed since the run. A flag is (id, day, heal's sweep, heal's floor, the backup's sweep,
+    the backup's floor); a spot is (id, day, heal's spot, the backup's spot)."""
+
+    deletes: tuple[int, ...]
+    inserts: tuple[dict[str, Any], ...]
+    flags: tuple[tuple[Any, ...], ...]
+    spots: tuple[tuple[Any, ...], ...]
+    left: int
+
+
+def _undo_rebuild(rows: Sequence[StoredRow], backup: dict[int, dict]) -> UndoDay:
+    """The day's replay rows deleted and the backup's replay rows put back, ids and all (spec
+    6.5). Live rows are neither deleted nor taken from the backup. A backup row whose key a live
+    row holds now cannot go back; the count check after the write stops the day then."""
+    deletes = tuple(sorted(row.id for row in rows if row.source == "replay"))
+    inserts = tuple(row for _, row in sorted(backup.items()) if row["source"] == "replay")
+    return UndoDay(deletes, inserts, (), (), 0)
+
+
+def _backup_row(day: date, backup: dict[int, dict], row_id: int, wrote: str) -> dict[str, Any]:
+    """The backup's row `row_id` on `day`. Every row a run wrote was in its backup, so a missing
+    one means the plan is not the run's: the undo stops."""
+    row = backup.get(row_id)
+    if row is None:
+        raise CheckFailedError(
+            f"{day}: the run {wrote} row {row_id}, which the backup does not hold on this day;"
+            " the plan is not the one this run applied. The undo stops"
+        )
+    return row
+
+
+def _undo_heal(
+    day: date,
+    rows: Sequence[StoredRow],
+    plan: Any,
+    backup: dict[int, dict],
+    backup_ids: set[int],
+) -> UndoDay:
+    """What a heal day wrote, put back where it still holds what the heal wrote: its inserts
+    deleted (rows the backup never held, still with the inserted values), its removed replay
+    rows put back with their ids where their key is free, and its flags and spots set back to
+    the backup's where they still hold the heal's values. The rest is counted as left.
+
+    A live row is never deleted or inserted: the DELETE and the UPDATEs carry the source in their
+    SQL, with the values they expect, so a row that moved during the undo fails the count check
+    rather than be written."""
+    by_id = {row.id: row for row in rows}
+    by_key = {row.key: row for row in rows}
+    left = 0
+    deletes = []
+    for alert in plan.inserts:
+        row = by_key.get(alert.key)
+        if (
+            row is not None
+            and row.id not in backup_ids
+            and _row_values(row) == _alert_values(alert)
+        ):
+            deletes.append(row.id)
+        else:
+            left += 1
+    kept_keys = {row.key for row in rows if row.id not in deletes}
+    inserts = []
+    for row_id in plan.removes:
+        then = _backup_row(day, backup, row_id, "removed")
+        if then["source"] != "replay":
+            raise CheckFailedError(
+                f"{day}: the run removed row {row_id}, which the backup holds as a live row; a"
+                " heal removes only replay rows. The undo stops"
+            )
+        if (then["option_chain"], then["bucket_start"]) in kept_keys:  # this row, or another
+            left += 1
+        else:
+            inserts.append(then)
+    flags = []
+    for row_id, sweep, floor in plan.flag_updates:
+        then = _backup_row(day, backup, row_id, "updated")
+        row = by_id.get(row_id)
+        if row is not None and (
+            row.values["top_trade_is_sweep"],
+            row.values["top_trade_is_floor"],
+        ) == (sweep, floor):
+            flags.append(
+                (row_id, day, sweep, floor, then["top_trade_is_sweep"], then["top_trade_is_floor"])
+            )
+        else:
+            left += 1
+    spots = []
+    for row_id, price in plan.spot_updates:
+        then = _backup_row(day, backup, row_id, "updated")
+        row = by_id.get(row_id)
+        if row is not None and row.values["underlying_price"] == price:
+            spots.append((row_id, day, price, then["underlying_price"]))
+        else:
+            left += 1
+    return UndoDay(tuple(sorted(deletes)), tuple(inserts), tuple(flags), tuple(spots), left)
+
+
+def _undo_day(
+    conn: Any,
+    run: Path,
+    mode: str,
+    day: date,
+    planned: Any,
+    backup: tuple[dict[date, dict[int, dict]], set[int]],
+    allow_market_hours: bool,
+) -> tuple[dict[str, int], int] | None:
+    """One day, in one transaction: None for a day the run neither marked nor left in its
+    planned end state (untouched), else the counts written and the restores left. The marker is
+    written after the commit."""
+    by_day, backup_ids = backup
+    applied = runs.marker_path(run, day.isoformat()).exists()
+    try:
+        with conn.cursor() as cur:
+            runs.set_local_timeouts(cur)
+        rows = read_day_rows(conn, day)
+        if not applied:
+            in_end = (
+                in_end_state(rows, planned)
+                if mode == "rebuild"
+                else heal_end_state(rows, planned.plan)
+            )
+            if not in_end:
+                conn.rollback()
+                return None
+        backup_day = by_day.get(day, {})
+        undo = (
+            _undo_rebuild(rows, backup_day)
+            if mode == "rebuild"
+            else _undo_heal(day, rows, planned.plan, backup_day, backup_ids)
+        )
+        acked = [row.id for row in rows if row.id in undo.deletes and row.acknowledged]
+        if acked:
+            raise CheckFailedError(
+                f"{day}: row(s) {', '.join(map(str, acked[:10]))} hold an acknowledgement, which"
+                " the undo's delete would lose. The undo stops"
+            )
+        runs.refuse_in_window(allow_market_hours, f"{day}: ")
+        with conn.cursor() as cur:
+            counts = {
+                "deleted": _delete_replay_rows(cur, day, undo.deletes),
+                "reinserted": len(
+                    psycopg2.extras.execute_values(
+                        cur,
+                        _RESTORE_SQL,
+                        [tuple(row[c] for c in _RESTORE_COLUMNS) for row in undo.inserts],
+                        page_size=_PAGE_ROWS,
+                        fetch=True,
+                    )
+                ),
+                "flags_restored": len(
+                    psycopg2.extras.execute_values(
+                        cur,
+                        _UNDO_FLAGS_SQL,
+                        undo.flags,
+                        template=_UNDO_FLAGS_TEMPLATE,
+                        page_size=_PAGE_ROWS,
+                        fetch=True,
+                    )
+                ),
+                "spot_restored": len(
+                    psycopg2.extras.execute_values(
+                        cur,
+                        _UNDO_SPOT_SQL,
+                        undo.spots,
+                        template=_UNDO_SPOT_TEMPLATE,
+                        page_size=_PAGE_ROWS,
+                        fetch=True,
+                    )
+                ),
+            }
+        wanted = dict(
+            zip(
+                _UNDO_COUNTS,
+                (len(undo.deletes), len(undo.inserts), len(undo.flags), len(undo.spots)),
+                strict=True,
+            )
+        )
+        if counts != wanted:
+            raise CheckFailedError(
+                f"{day}: the database wrote {counts} where the undo planned {wanted}: another"
+                " writer moved the day, or the plan names a row these writes may not touch."
+                " Rolled back"
+            )
+        conn.commit()
+    except BaseException:
+        with contextlib.suppress(psycopg2.Error):
+            conn.rollback()
+        raise
+    runs.mark_undone(run, day, {**counts, "left": undo.left})
+    return counts, undo.left
+
+
+def _undo(args: argparse.Namespace, out: runs.Output) -> int:
+    run = Path(args.run)
+    if (run / "export.json").is_file():
+        raise UsageError(
+            f"{run.name} is an export run: it wrote nothing to Neon, so nothing to undo"
+        )
+    plan = runs.load_plan(run)
+    mode = {"rebuild": REBUILD, "heal": HEAL}.get(plan.get("mode"))
+    if mode is None:
+        raise UsageError(
+            f"{run} holds a {plan.get('mode')} plan; undo restores rebuild and heal runs"
+        )
+    runs.refuse_in_window(args.allow_market_hours)
+    if not (run / "backup.json").is_file():
+        raise RefusedError(
+            f"{run.name} holds no backup, which undo restores from: its apply never got past its"
+            " start checks, so it wrote nothing"
+        )
+    try:
+        days = [date.fromisoformat(day) for day in sorted(plan["days"])]
+        planned = {day: mode.load_day(run, day, plan["days"][day.isoformat()]) for day in days}
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RefusedError(
+            f"{run / 'plan.json'} is not a plan undo can read ({type(exc).__name__}: {exc})"
+        ) from None
+    pending = [day for day in days if not runs.undone_path(run, day.isoformat()).exists()]
+    if not pending:
+        out.say(f"every day of {run.name} is undone")
+        return 0
+    backup = _backup_rows(run, set(pending))
+
+    env = runs.load_env(args.env_file)
+    out.hide(env)
+    conn = runs.connect(env, readonly=False)
+    undone = 0
+    try:
+        for day in pending:
+            with runs.stops_at(out, day):
+                result = _undo_day(
+                    conn, run, mode.name, day, planned[day], backup, args.allow_market_hours
+                )
+            if result is None:
+                out.say(f"{day}: not applied by this run, nor in its planned end state; left alone")
+                continue
+            counts, left = result
+            undone += 1
+            shown = ", ".join(f"{name} {value}" for name, value in counts.items())
+            out.say(f"{day}: undone: {shown}; left {left} (changed since the run)")
+    finally:
+        conn.close()
+    out.say(f"undid {undone} day(s) of {run.name}; markers in {run}")
+    return 0
+
+
 # --- The command line -------------------------------------------------------------------------
 
 
@@ -947,12 +1856,32 @@ def _rebuild(args: argparse.Namespace, out: runs.Output) -> int:
     return _rebuild_dry_run(args, out)
 
 
-def _not_yet(args: argparse.Namespace, out: runs.Output) -> int:
-    out.say(f"{args.command}: not yet (it comes with the tool's part 2)", err=True)
-    return 2
-
-
-_PART_TWO = ("heal", "export", "undo")
+def _heal(args: argparse.Namespace, out: runs.Output) -> int:
+    expected = {name: getattr(args, f"expect_{name}") for name in _HEAL_EXPECT}
+    if args.apply:
+        if args.start is not None or args.end is not None:
+            raise UsageError("--apply takes its days from --run's plan, not --from/--to")
+        if args.assume_default_settings:
+            raise UsageError(
+                "--assume-default-settings goes with the dry run; its plan records the days it"
+                " covered"
+            )
+        if args.run is None or None in expected.values():
+            raise UsageError(
+                "--apply needs --run, --expect-insert, --expect-remove, --expect-flags and"
+                " --expect-spot"
+            )
+        return runs.apply_run(
+            HEAL,
+            Path(args.run),
+            expected,
+            allow_market_hours=args.allow_market_hours,
+            env_file=args.env_file,
+            out=out,
+        )
+    if args.run is not None or any(value is not None for value in expected.values()):
+        raise UsageError("--run and --expect-* go with --apply")
+    return _heal_dry_run(args, out)
 
 
 def _count(text: str) -> int:
@@ -969,6 +1898,13 @@ def _parser() -> argparse.ArgumentParser:
         help="the env file with DATABASE_URL and R2_* (default: .env.local here, else the"
         " main checkout's)",
     )
+    # The modes that write (Neon or R2) refuse the two windows; this flag lifts the first.
+    windows = argparse.ArgumentParser(add_help=False)
+    windows.add_argument(
+        "--allow-market-hours",
+        action="store_true",
+        help="run inside weekdays 08:15-16:00 CT (a market holiday); never 07:15-12:30 UTC",
+    )
     parser = argparse.ArgumentParser(
         prog="interval_ba_tape.py",
         description="Interval B/A history from the UW Full Tape (spec 6.5).",
@@ -981,7 +1917,9 @@ def _parser() -> argparse.ArgumentParser:
     verify.set_defaults(handler=_verify)
 
     rebuild = commands.add_parser(
-        "rebuild", parents=[common], help="rebuild the days with no live rows (dry run by default)"
+        "rebuild",
+        parents=[common, windows],
+        help="rebuild the days with no live rows (dry run by default)",
     )
     rebuild.add_argument("--from", dest="start", type=date.fromisoformat)
     rebuild.add_argument("--to", dest="end", type=date.fromisoformat)
@@ -989,15 +1927,44 @@ def _parser() -> argparse.ArgumentParser:
     rebuild.add_argument("--run", help="the dry run's folder")
     rebuild.add_argument("--expect-delete", type=_count)
     rebuild.add_argument("--expect-insert", type=_count)
-    rebuild.add_argument(
-        "--allow-market-hours",
-        action="store_true",
-        help="run inside weekdays 08:15-16:00 CT (a market holiday); never 07:15-12:30 UTC",
-    )
     rebuild.set_defaults(handler=_rebuild)
 
-    for name in _PART_TWO:
-        commands.add_parser(name, help="not yet").set_defaults(handler=_not_yet)
+    heal = commands.add_parser(
+        "heal",
+        parents=[common, windows],
+        help="correct the live days' flags and SPXW spot, and from 2026-10-29 add the alerts"
+        " live missed (dry run by default)",
+    )
+    heal.add_argument("--from", dest="start", type=date.fromisoformat)
+    heal.add_argument("--to", dest="end", type=date.fromisoformat)
+    heal.add_argument(
+        "--assume-default-settings",
+        action="store_true",
+        help="for a day no interval_ba_live_settings row covers, assume the code's rule with all"
+        " three tickers on",
+    )
+    heal.add_argument("--apply", action="store_true", help="write a dry run's plan")
+    heal.add_argument("--run", help="the dry run's folder")
+    for name in _HEAL_EXPECT:
+        heal.add_argument(f"--expect-{name}", type=_count)
+    heal.set_defaults(handler=_heal)
+
+    export = commands.add_parser(
+        "export",
+        parents=[common, windows],
+        help="write the replay of every day to R2 and a run folder (no Neon access)",
+    )
+    export.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
+    export.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
+    export.set_defaults(handler=_export)
+
+    undo = commands.add_parser(
+        "undo",
+        parents=[common, windows],
+        help="put a rebuild or heal run's applied days back to its backup",
+    )
+    undo.add_argument("--run", required=True, help="the run's folder")
+    undo.set_defaults(handler=_undo)
     return parser
 
 
@@ -1005,9 +1972,7 @@ def main(argv: list[str] | None = None) -> int:
     out = runs.Output()
     parser = _parser()
     try:
-        args, extra = parser.parse_known_args(argv)
-        if extra and args.command not in _PART_TWO:
-            parser.error(f"unrecognized arguments: {' '.join(extra)}")
+        args = parser.parse_args(argv)
     except SystemExit as exc:  # argparse's own exit: 2 for an error, 0 for --help
         return exc.code if isinstance(exc.code, int) else 2
     try:
