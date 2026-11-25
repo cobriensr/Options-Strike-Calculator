@@ -1041,6 +1041,124 @@ describe('MarketRegimeSection', () => {
       });
     });
 
+    // The live feed holds a body from one session across the page's life: a
+    // tab loaded before today's first bar, or left open overnight or over a
+    // weekend, still holds a previous session's range. The card takes only
+    // the current one (currentOpeningRange): today's, or on a weekend or
+    // holiday the last session's. Fri 2026-03-13, Sat 03-14, Mon 03-16.
+    describe("the live opening range is only the current session's", () => {
+      const FRIDAY = '2026-03-13';
+      const SATURDAY = '2026-03-14';
+      const MONDAY = '2026-03-16';
+
+      /** The live market holding an intraday body from `sessionDate`. */
+      const heldFrom = (
+        sessionDate: string,
+        high = 7000,
+        low = 6900,
+      ): MarketDataState => ({
+        ...liveMarket,
+        data: {
+          ...liveMarket.data,
+          intraday: {
+            ...liveMarket.data.intraday!,
+            sessionDate,
+            openingRange: {
+              high,
+              low,
+              rangePts: high - low,
+              minutes: 30,
+              complete: true,
+            },
+          },
+        },
+      });
+
+      it("is empty on Monday while the held range is Friday's", () => {
+        renderCard({
+          selectedDate: MONDAY,
+          etToday: MONDAY,
+          market: heldFrom(FRIDAY),
+        });
+
+        expect(highInput().value).toBe('');
+        expect(lowInput().value).toBe('');
+      });
+
+      it("shows Friday's range on Saturday: the last session's, on a weekend", () => {
+        renderCard({
+          selectedDate: SATURDAY,
+          etToday: SATURDAY,
+          market: heldFrom(FRIDAY),
+        });
+
+        expect(highInput().value).toBe('7000.00');
+        expect(lowInput().value).toBe('6900.00');
+      });
+
+      it("empties the card when the same held body meets Monday's date", () => {
+        const market = heldFrom(FRIDAY);
+        const { rerenderWith } = renderCard({
+          selectedDate: SATURDAY,
+          etToday: SATURDAY,
+          market,
+        });
+        expect(highInput().value).toBe('7000.00');
+
+        rerenderWith({ selectedDate: MONDAY, etToday: MONDAY });
+
+        expect(highInput().value).toBe('');
+        expect(lowInput().value).toBe('');
+      });
+
+      it('drops an edit typed before the rollover', async () => {
+        const user = userEvent.setup();
+        const market = heldFrom(FRIDAY);
+        const { rerenderWith } = renderCard({
+          selectedDate: SATURDAY,
+          etToday: SATURDAY,
+          market,
+        });
+        await user.clear(highInput());
+        await user.type(highInput(), '7100');
+        expect(highInput().value).toBe('7100');
+
+        rerenderWith({ selectedDate: MONDAY, etToday: MONDAY });
+
+        expect(highInput().value).toBe('');
+        expect(lowInput().value).toBe('');
+      });
+
+      it("fills when today's range arrives later the same day", () => {
+        const { rerenderWith } = renderCard({
+          selectedDate: MONDAY,
+          etToday: MONDAY,
+          market: heldFrom(FRIDAY),
+        });
+        expect(highInput().value).toBe('');
+
+        rerenderWith({ market: heldFrom(MONDAY, 7050, 7010) });
+
+        expect(highInput().value).toBe('7050.00');
+        expect(lowInput().value).toBe('7010.00');
+      });
+
+      it('keeps an edit typed on the same ET day', async () => {
+        const user = userEvent.setup();
+        const { rerenderWith } = renderCard({
+          selectedDate: MONDAY,
+          etToday: MONDAY,
+          market: heldFrom(MONDAY, 7050, 7010),
+        });
+        await user.clear(highInput());
+        await user.type(highInput(), '7100');
+
+        rerenderWith({ market: heldFrom(MONDAY, 7060, 7010) });
+
+        expect(highInput().value).toBe('7100');
+      });
+    });
+
     // Pre-Trade Signals reads today's quotes (the overnight gap) and today's
     // movers (the breadth). Both are today's, so a past date shows neither,
     // and the card, which renders nothing when it has no signal, is absent.

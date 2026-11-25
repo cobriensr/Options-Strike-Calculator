@@ -18,6 +18,7 @@ import type { HistorySnapshot } from '../hooks/useHistoryData';
 import type { ChainResponse, HistoryCandle } from '../types/api';
 import type { ComputedSignals } from '../hooks/useComputedSignals';
 import { isPastETDate } from '../utils/timezone';
+import { currentOpeningRange } from '../utils/current-opening-range';
 
 interface Props {
   dVix: string;
@@ -113,12 +114,14 @@ export default function MarketRegimeSection({
   // and 8:35 CT, and the same last ended bar either side of a missing SPX bar.
   // The date separates two dates read at the same label. Without a label, the
   // candle and its index are the best identity there is. A past date with no
-  // snapshot is keyed on the date alone.
+  // snapshot is keyed on the date alone, and the live card on the ET date: a
+  // held tab that crosses into a new ET day remounts to empty inputs, since the
+  // card syncs only when a range is set and would keep the old day's values.
   const historySlotKey = historySnapshot
     ? (entryTimeLabel ??
       `${historySnapshot.candle.datetime}:${historySnapshot.candleIndex}`)
     : null;
-  let openingRangeKey = 'live-or';
+  let openingRangeKey = `live-or-${etToday}`;
   if (historySlotKey != null) {
     openingRangeKey = `hist-or-${selectedDate}-${historySlotKey}`;
   } else if (pastDate) {
@@ -196,7 +199,7 @@ export default function MarketRegimeSection({
                     selectedDate={selectedDate}
                     initialRange={
                       historySnapshot?.openingRange ??
-                      liveData?.intraday?.openingRange ??
+                      currentOpeningRange(liveData?.intraday, etToday) ??
                       undefined
                     }
                   />

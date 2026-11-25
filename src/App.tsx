@@ -16,6 +16,7 @@ import { useSpotInputs } from './hooks/useSpotInputs';
 import { useStrategyInputs } from './hooks/useStrategyInputs';
 import { useClusterMultiplier } from './hooks/useClusterMultiplier';
 import { resolveYesterday } from './utils/yesterday';
+import { currentOpeningRange } from './utils/current-opening-range';
 import { useTheme } from './hooks/useTheme';
 import { useTimeInputs } from './hooks/useTimeInputs';
 import { useAutoFill } from './hooks/useAutoFill';
@@ -642,7 +643,10 @@ export default function StrikeCalculator() {
     liveVix1d: market.data.quotes?.vix1d?.price ?? undefined,
     liveVix9d: market.data.quotes?.vix9d?.price ?? undefined,
     liveVvix: market.data.quotes?.vvix?.price ?? undefined,
-    liveOpeningRange: market.data.intraday?.openingRange ?? undefined,
+    // Only the current session's range: the held body can be a previous
+    // session's, read against the same ET clock the selected date follows.
+    liveOpeningRange:
+      currentOpeningRange(market.data.intraday, vix.etToday) ?? undefined,
     liveSpx: market.data.quotes?.spx ?? undefined,
     quotesMarketOpen: market.data.quotes?.marketOpen ?? false,
     liveYesterdayHigh: yesterday?.high,

@@ -160,6 +160,21 @@ describe('App date-clock wiring', () => {
     expect(appCode).toMatch(/^\s+liveChain,$/m);
   });
 
+  it('builds the signals’ live opening range from the current one, against the date clock', () => {
+    // The held /api/intraday body can be a previous session's. A raw
+    // `market.data.intraday?.openingRange` would compile and read it as today's.
+    const inputs = /useComputedSignals\(\{([\s\S]*?)\n {2}\}\);/.exec(
+      appCode,
+    )?.[1];
+    expect(inputs).toMatch(
+      /^\s+liveOpeningRange:\s*currentOpeningRange\(\s*market\.data\.intraday,\s*vix\.etToday,?\s*\) \?\? undefined,$/m,
+    );
+    expect(appCode).toMatch(
+      /^import \{ currentOpeningRange \} from '\.\/utils\/current-opening-range';$/m,
+    );
+    expect(appCode).not.toMatch(/market\.data\.intraday\?\.openingRange/);
+  });
+
   it('hands AdvancedSection the date clock, which decides its no-VIX-data hint', () => {
     const props = /<AdvancedSection([\s\S]*?)\/>/.exec(appCode)?.[1];
     expect(props).toMatch(/^\s+selectedDate=\{vix\.selectedDate\}$/m);
