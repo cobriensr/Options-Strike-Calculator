@@ -1,7 +1,7 @@
 # GEXBot panels after the close — design
 
-Status: design; adversarial review rounds 1 and 2 settled (the rule's
-limit); owner questions answered 2026-11-21; awaiting owner approval
+Status: approved by the owner 2026-11-26. Adversarial review rounds 1
+and 2 settled (the rule's limit); owner questions answered 2026-11-21.
 
 ## Goal
 
