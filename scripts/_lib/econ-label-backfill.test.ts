@@ -76,15 +76,19 @@ describe('daysBetween', () => {
   });
 });
 
-describe('dbHost', () => {
+// The table is in db-host.test.ts. This file re-exports `dbHost` for the
+// scripts that import it from here, so pin that it is the hardened one.
+describe('dbHost, as this module exports it', () => {
   it('shows the host only, never the credentials', () => {
     expect(
       dbHost('postgres://user:s3cret@ep-cool-123.neon.tech/db?sslmode=require'),
     ).toBe('ep-cool-123.neon.tech');
   });
 
-  it.each([undefined, '', 'not a url'])('says so for %j', (url) => {
-    expect(dbHost(url)).toBe('(DATABASE_URL missing or not a URL)');
+  it('gives no part of the user or password when the URL parses badly', () => {
+    expect(dbHost('postgres://owner:12/34@ep-cool-123.neon.tech/db')).toBe(
+      '(DATABASE_URL not readable)',
+    );
   });
 });
 

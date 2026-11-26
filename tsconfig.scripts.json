@@ -29,6 +29,8 @@
     "scripts/_lib/anchor-backfill.ts",
     "scripts/_lib/anchor-backfill.test.ts",
     "scripts/_lib/anchor-backfill-pglite.test.ts",
+    "scripts/_lib/db-host.ts",
+    "scripts/_lib/db-host.test.ts",
     "scripts/backfill-economic-event-labels.ts",
     "scripts/_lib/econ-label-backfill.ts",
     "scripts/_lib/econ-label-backfill.test.ts",

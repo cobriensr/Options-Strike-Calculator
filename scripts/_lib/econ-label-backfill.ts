@@ -77,14 +77,12 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   return { apply, envFile };
 }
 
-/** The host of DATABASE_URL, for the header line. Never the credentials. */
-export function dbHost(databaseUrl: string | undefined): string {
-  try {
-    return new URL(databaseUrl ?? '').hostname;
-  } catch {
-    return '(DATABASE_URL missing or not a URL)';
-  }
-}
+/**
+ * The host of DATABASE_URL, for the header line. It lives in db-host.ts, which
+ * imports nothing (a script's CLI test can take it without a database client),
+ * and is re-exported here for the scripts that already import it from this file.
+ */
+export { dbHost } from './db-host.js';
 
 // ── Plan (pure) ─────────────────────────────────────────────────────────────
 
