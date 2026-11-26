@@ -1,6 +1,67 @@
 # Spec review gate: make the adversarial review hard to skip
 
-**Status:** design; the owner approved the approach in conversation 2026-11-21 ("yeah go ahead"); adversarial review rounds 1 and 2 settled (the rule's limit); the owner answered the scope question 2026-11-21.
+**Status:** built and live (see "As built"). The hooks went live phase by phase from 2026-11-21 to 25, from the local `.claude` history. The commit check lands on main with this note, 2026-11-26. The owner approved the approach in conversation 2026-11-21 ("yeah go ahead") and answered the scope question the same day. Adversarial review rounds 1 and 2 are settled, the rule's limit.
+
+## As built (2026-11-26)
+
+Built subagent-driven from `docs/superpowers/plans/2026-11-21-spec-review-gate.md`: the plan's six tasks plus two added mid-build (the named-reviewer `done`, the waiver list). Each task had its own review. Then one whole-branch review (Opus), one fix wave, and a scoped re-review, whose two test-only Minors got a follow-up commit in each history.
+
+**Where it is.**
+
+- **Local `.claude` history** (not public):
+  - what it holds: `hooks/_spec-review-lib.sh`, the five `hooks/spec-review-*.sh` hooks, `hooks/tests/spec-review-gate.test.mjs` and `spec-review-reminder.test.mjs`, the spec-review hunks of `settings.json`, and the agents-md skill's hook table;
+  - commits: the ones after `297a2bc`, up to `36e9344`, plus one `test(hooks)` follow-up. The `agents/*.md` commits in that range are other sessions' work.
+- **Main:**
+  - what it holds: `scripts/_lib/spec-review-log.mjs` and its test, `scripts/spec-review-check.mjs`, `scripts/_lib/spec-review-check.cli.test.mjs`, `.githooks/pre-commit`, one `SPAWN_TEST_FILES` line in `vite.config.ts`, and `CLAUDE.md`;
+  - commits: `930792427` to `b679a7b16` (rebased onto main 2026-11-26), one `test(githooks)` follow-up, and this note.
+
+**What changed from the design while building.** The sections below already hold every change but two, which only this note records: the recorders' `CLAUDE_PROJECT_DIR` rule and the block read.
+
+- **Named reviewers.** A spec-reviewer dispatched with a `name` runs as a teammate. It goes idle instead of stopping, and its SubagentStop carries the name, not `spec-reviewer`, as `agent_type`. Its `done` is recorded on TeammateIdle when the log has an open `start` for that agent id (Recording).
+- **The release warning moved to the next prompt.** The owner didn't confirm seeing the Stop `systemMessage` on release. So the waiver hook prints the warning at the session's next prompt, the channel the owner did see.
+  - A prompt that starts with `<`, such as a hand-back or a task notification, holds the warning for the next prompt. The first live announce had landed on a subagent's hand-back.
+- **The waiver list** (owner, 2026-11-24): only the docs named right after the phrase are waived, and a sentence period ends the list. A doc named later is reported as not waived, with what to type.
+- **A review this session ran before its first `write` counts** (final review). Before this fix, the gate cost one extra Opus review in live use:
+  - session `b9cb1791` reviewed `specs/gexbot-expected-move-net-vanna-2026-11-20.md`;
+  - 23 minutes later it Wrote the doc to settle the findings;
+  - the gate blocked it, and it ran a second review (about 7.5 minutes).
+- **Recorders need `CLAUDE_PROJECT_DIR`,** so a shell command can't forge a `start`, `done` or `waive` line. A `start` or `done` with no session id records `-`; the readers pair by agent id.
+- **The commit check:**
+  - It blocks a doc with no key, and the message says to rename it.
+  - It lists added docs with `git --no-literal-pathspecs diff … ':(glob,icase)…'`, so a pathspec setting in the hook's environment can't empty the list or drop a doc (final review).
+- **Every hook reads its input in blocks** (`read -N`, in the lib). A 1 MB payload went from about 1.6 s to under 0.1 s.
+
+**Live checks.**
+
+- **Recording (2026-11-22):**
+  - A throwaway spec got its `write`, `start` and `done` lines from a real review.
+  - The real SubagentStop payload had its fields in the order the tests assume.
+- **Named reviewer (2026-11-24):** the `done` came from TeammateIdle, about 2 minutes after the `start`.
+- **Guard and waiver (2026-11-22):**
+  - The deny rule refused a Write and an Edit in the log's folder, and the guard refused a shell command that named the log.
+  - The owner typed the waiver phrase. The `waive` line landed, and the owner saw the message.
+- **Stop gate (2026-11-24):** a throwaway spec gave block, block, release. The release warning reached the session's next prompt, which led to the `<` rule above.
+- **Commit check:** no live check, by design. Its tests run the real hook through git, from the main checkout and from a linked worktree.
+
+**Cost** on a 5,000-line log:
+
+| Hook | Case | Time |
+| --- | --- | --- |
+| Waiver hook, every prompt | nothing pending | 23 ms |
+| Waiver hook, every prompt | one or twenty releases already announced | 30 ms |
+| Stop, every turn end | a session that wrote no doc | 23 ms (666 ms before the final fix wave's early exit) |
+
+The live log held about 80 lines after four days.
+
+**CLAUDE.md.** Plan First's first review bullet now says the hooks enforce the rule, and it gives the waiver phrase. The status-edit bullet adds "Make such edits with Edit". The Commit gate paragraph says `.githooks/pre-commit` also blocks an unreviewed doc.
+
+**Left as is by the final review:**
+
+- When the log can't be written, the Stop's fail-open message uses the Stop channel that wasn't confirmed on screen. No other channel exists then.
+- The Stop reason prints the doc path as the log holds it.
+- A pending release behind 20 announced ones costs 3 to 7 s, once.
+- The hook test file stays one file, about 3,200 lines.
+- The new `.mjs` files aren't type-checked by the gate. The same holds for every `scripts/_lib` `.mjs` (`tsconfig.scripts.json` includes `.ts` only).
 
 ## Goal
 
@@ -283,6 +344,7 @@ Each new hook is a `command` hook on `"$CLAUDE_PROJECT_DIR"/.claude/hooks/<scrip
 - **A named (teammate) reviewer that runs past 45 minutes** gets one block that asks for a review already running. Its `background_tasks` entry carries a task id, not the agent id (Recording).
 - **A release warning can be stale.** It still prints when the doc was reviewed between the release and the owner's next plain prompt.
 - **A worktree branched before this shipped runs its own older `.githooks/pre-commit`,** because `core.hooksPath` is relative and resolves per worktree. Its doc commits get no check until it takes main.
+- **A Write to an upper-case folder spelling** (`Docs/Superpowers/…`) may not fire the reminder. Its `if` filter, `Write(//**/docs/superpowers/**)`, hasn't been tested for case on Windows, where that path reaches the same folder. If the filter misses, the doc gets no `write` line and no Stop block. The commit check's case-insensitive listing still blocks it. An upper-case file name (`X.MD`) isn't affected, since the filter sees only the folders.
 
 ## Phases
 
