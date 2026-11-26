@@ -5,15 +5,18 @@ import { describe, it, expect } from 'vitest';
  *
  * These test the pure computation logic, owner gating, token management,
  * and response shape contracts without requiring Schwab credentials or
- * Upstash Redis. The functions are inlined from the API files since
- * Vitest runs in the frontend context and can't import from api/.
+ * Upstash Redis. Sections 1 to 4 are tested through their handlers, in
+ * api/__tests__/: those functions are private to the handlers, and copies of
+ * them here had drifted and pinned nothing real. Sections 5 to 14 still test
+ * functions inlined from the API files, since Vitest runs in the frontend
+ * context and can't import from api/.
  *
  * Categories:
- * 1. Opening range computation (intraday): tested through the handler, in
- *    api/__tests__/intraday.test.ts
- * 2. Today OHLC computation (intraday)
- * 3. Date conversion (yesterday)
- * 4. Day summary / range computation (yesterday)
+ * 1. Opening range computation (intraday): api/__tests__/intraday.test.ts
+ * 2. Today OHLC computation (intraday): api/__tests__/intraday.test.ts
+ * 3. Date conversion (yesterday): api/__tests__/yesterday.test.ts
+ * 4. Day summary / range computation (yesterday):
+ *    api/__tests__/yesterday.test.ts
  * 5. Quote slice mapping (quotes)
  * 6. Cookie parsing (owner gate)
  * 7. Owner verification logic (owner gate)
@@ -38,166 +41,23 @@ import { describe, it, expect } from 'vitest';
 // ============================================================
 // 2. TODAY OHLC COMPUTATION
 // ============================================================
-
-function computeTodayOHLC(
-  candles: Array<{ open: number; high: number; low: number; close: number }>,
-) {
-  if (candles.length === 0) return null;
-  const open = candles[0]!.open;
-  const last = candles.at(-1)!.close;
-  let high = -Infinity;
-  let low = Infinity;
-  for (const c of candles) {
-    if (c.high > high) high = c.high;
-    if (c.low < low) low = c.low;
-  }
-  return { open, high, low, last };
-}
-
-describe('computeTodayOHLC', () => {
-  it('returns null for empty candles', () => {
-    expect(computeTodayOHLC([])).toBeNull();
-  });
-
-  it('uses first candle open and last candle close', () => {
-    const ohlc = computeTodayOHLC([
-      { open: 6790, high: 6800, low: 6780, close: 6795 },
-      { open: 6795, high: 6810, low: 6775, close: 6805 },
-      { open: 6805, high: 6820, low: 6790, close: 6815 },
-    ])!;
-    expect(ohlc.open).toBe(6790);
-    expect(ohlc.last).toBe(6815);
-    expect(ohlc.high).toBe(6820);
-    expect(ohlc.low).toBe(6775);
-  });
-
-  it('single candle works', () => {
-    const ohlc = computeTodayOHLC([
-      { open: 6800, high: 6810, low: 6790, close: 6805 },
-    ])!;
-    expect(ohlc.open).toBe(6800);
-    expect(ohlc.last).toBe(6805);
-  });
-
-  it('finds global extremes', () => {
-    const ohlc = computeTodayOHLC([
-      { open: 6800, high: 6800, low: 6800, close: 6800 },
-      { open: 6800, high: 6900, low: 6700, close: 6800 },
-      { open: 6800, high: 6800, low: 6800, close: 6800 },
-    ])!;
-    expect(ohlc.high).toBe(6900);
-    expect(ohlc.low).toBe(6700);
-  });
-});
+//
+// Not tested here. `computeTodayOHLC` is private to api/intraday.ts. Its rules
+// are pinned through the handler, in api/__tests__/intraday.test.ts.
 
 // ============================================================
 // 3. DATE CONVERSION
 // ============================================================
-
-function msToDateStr(ms: number): string {
-  const d = new Date(ms);
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-describe('msToDateStr', () => {
-  it('converts Unix ms to YYYY-MM-DD', () => {
-    expect(msToDateStr(1773100800000)).toBe('2026-03-10');
-  });
-
-  it('handles Jan 1', () => {
-    expect(msToDateStr(1767225600000)).toBe('2026-01-01');
-  });
-
-  it('handles Dec 31', () => {
-    expect(msToDateStr(1767139200000)).toBe('2025-12-31');
-  });
-
-  it('handles leap year Feb 29', () => {
-    // 2024-02-29 00:00:00 UTC
-    expect(msToDateStr(1709164800000)).toBe('2024-02-29');
-  });
-});
+//
+// Not tested here. `msToDateStr` is private to api/yesterday.ts. Its rules are
+// pinned through the handler, in api/__tests__/yesterday.test.ts.
 
 // ============================================================
 // 4. DAY SUMMARY (YESTERDAY)
 // ============================================================
-
-function toDaySummary(candle: {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  datetime: number;
-}) {
-  const rangePts = Math.round((candle.high - candle.low) * 100) / 100;
-  const rangePct =
-    Math.round(((candle.high - candle.low) / candle.open) * 10000) / 100;
-  return {
-    date: msToDateStr(candle.datetime),
-    open: candle.open,
-    high: candle.high,
-    low: candle.low,
-    close: candle.close,
-    rangePct,
-    rangePts,
-  };
-}
-
-describe('toDaySummary', () => {
-  it('computes range percentage from open', () => {
-    const s = toDaySummary({
-      open: 6800,
-      high: 6850,
-      low: 6750,
-      close: 6820,
-      datetime: 1773100800000,
-    });
-    expect(s.rangePts).toBe(100);
-    expect(s.rangePct).toBeCloseTo(1.47, 1);
-    expect(s.date).toBe('2026-03-10');
-  });
-
-  it('handles zero range', () => {
-    const s = toDaySummary({
-      open: 6800,
-      high: 6800,
-      low: 6800,
-      close: 6800,
-      datetime: 1773187200000,
-    });
-    expect(s.rangePts).toBe(0);
-    expect(s.rangePct).toBe(0);
-  });
-
-  it('handles large range day (real data)', () => {
-    const s = toDaySummary({
-      open: 6681.78,
-      high: 6810.44,
-      low: 6636.04,
-      close: 6781.48,
-      datetime: 1773187200000,
-    });
-    expect(s.rangePts).toBeCloseTo(174.4, 1);
-    expect(s.rangePct).toBeCloseTo(2.61, 1);
-  });
-
-  it('preserves all OHLC values', () => {
-    const s = toDaySummary({
-      open: 1111,
-      high: 2222,
-      low: 333,
-      close: 4444,
-      datetime: 1773187200000,
-    });
-    expect(s.open).toBe(1111);
-    expect(s.high).toBe(2222);
-    expect(s.low).toBe(333);
-    expect(s.close).toBe(4444);
-  });
-});
+//
+// Not tested here. `toDaySummary` is private to api/yesterday.ts. Its rules
+// are pinned through the handler, in api/__tests__/yesterday.test.ts.
 
 // ============================================================
 // 5. QUOTE SLICE MAPPING
@@ -440,6 +300,20 @@ describe('isMarketOpen heuristic', () => {
 // ============================================================
 // 11. YESTERDAY FILTERING
 // ============================================================
+//
+// Still an inline copy, like sections 1 to 4 were: of the handler's filter in
+// api/yesterday.ts, with a copy of its private `msToDateStr`, kept only for
+// this section. The real rules are covered through the handler, in
+// api/__tests__/yesterday.test.ts ("caches the prior session when Schwab also
+// sends today", "does not cache a body with no completed day at all").
+
+function msToDateStr(ms: number): string {
+  const d = new Date(ms);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 function filterCompleted(
   candles: Array<{ datetime: number }>,

@@ -515,3 +515,161 @@ describe('GET /api/yesterday: only a body for the right day is cached', () => {
     expect(metrics.increment).toHaveBeenCalledWith('yesterday.wrong_day');
   });
 });
+
+// ============================================================
+// THE DAY SUMMARIES
+// ============================================================
+//
+// `msToDateStr` and `toDaySummary` are private to api/yesterday.ts, so their
+// rules are pinned here, through the handler. The fixtures are old dates, so
+// none is today's partial candle, and the clock is the real one.
+
+interface DaySummaryBody {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  rangePct: number;
+  rangePts: number;
+}
+
+describe('GET /api/yesterday: the day summaries', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function bodyFor(candles: ReturnType<typeof makeDailyCandle>[]) {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.mocked(isMarketOpen).mockReturnValue(false);
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: { symbol: '$SPX', empty: false, candles },
+    });
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+    expect(res._status).toBe(200);
+    return res._json as {
+      yesterday: DaySummaryBody;
+      twoDaysAgo: DaySummaryBody | null;
+      priorDays: DaySummaryBody[];
+    };
+  }
+
+  /** A daily candle stamped at an exact instant, not at 00:00Z. */
+  const stamped = (iso: string) => ({
+    ...makeDailyCandle('2026-03-10', 5470, 5520, 5460, 5510),
+    datetime: Date.parse(iso),
+  });
+
+  it('carries the open, high, low and close as sent, with the range in points and in percent of the open', async () => {
+    const { yesterday } = await bodyFor([
+      makeDailyCandle('2026-03-10', 6681.78, 6810.44, 6636.04, 6781.48),
+    ]);
+
+    expect(yesterday).toEqual({
+      date: '2026-03-10',
+      open: 6681.78,
+      high: 6810.44,
+      low: 6636.04,
+      close: 6781.48,
+      rangePts: 174.4,
+      rangePct: 2.61,
+    });
+  });
+
+  it('rounds rangePts and rangePct to two decimals', async () => {
+    // 100.222 points, 1.4738 percent of the open.
+    const { yesterday } = await bodyFor([
+      makeDailyCandle('2026-03-10', 6800, 6850.333, 6750.111, 6820),
+    ]);
+
+    expect(yesterday.rangePts).toBe(100.22);
+    expect(yesterday.rangePct).toBe(1.47);
+  });
+
+  it('is a zero range when high equals low', async () => {
+    const { yesterday } = await bodyFor([
+      makeDailyCandle('2026-03-10', 6800, 6800, 6800, 6800),
+    ]);
+
+    expect(yesterday.rangePts).toBe(0);
+    expect(yesterday.rangePct).toBe(0);
+  });
+
+  it('takes the percent from the open, not the close', async () => {
+    // 100 points: 1.47 percent of a 6800 open, 1.5 percent of a 6667 close.
+    const { yesterday } = await bodyFor([
+      makeDailyCandle('2026-03-10', 6800, 6850, 6750, 6667),
+    ]);
+
+    expect(yesterday.rangePct).toBe(1.47);
+  });
+
+  describe('priorDays', () => {
+    const days = [
+      '2026-03-02',
+      '2026-03-03',
+      '2026-03-04',
+      '2026-03-05',
+      '2026-03-06',
+      '2026-03-09',
+      '2026-03-10',
+    ];
+    const candlesFor = (dates: string[]) =>
+      dates.map((date, i) =>
+        makeDailyCandle(date, 5400 + i, 5450 + i, 5390 + i, 5430 + i),
+      );
+
+    it('is the last five completed days, oldest first, each a whole summary', async () => {
+      const body = await bodyFor(candlesFor(days));
+
+      expect(body.priorDays.map((d) => d.date)).toEqual(days.slice(-5));
+      expect(body.priorDays.at(-1)).toEqual(body.yesterday);
+      expect(body.priorDays.at(-2)).toEqual(body.twoDaysAgo);
+      expect(body.priorDays[0]).toEqual({
+        date: '2026-03-04',
+        open: 5402,
+        high: 5452,
+        low: 5392,
+        close: 5432,
+        rangePts: 60,
+        rangePct: 1.11,
+      });
+    });
+
+    it('is every completed day when there are fewer than five', async () => {
+      const body = await bodyFor(candlesFor(days.slice(0, 3)));
+
+      expect(body.priorDays.map((d) => d.date)).toEqual(days.slice(0, 3));
+    });
+  });
+
+  // The date is the stamp's UTC calendar date, zero-padded, which is the
+  // trading day whether Schwab stamps 00:00Z or a midnight in ET or CT.
+  it.each([
+    ['00:00Z, an ordinary day', '2026-03-10T00:00:00Z', '2026-03-10'],
+    [
+      '00:00Z on Jan 1: month and day are padded',
+      '2026-01-01T00:00:00Z',
+      '2026-01-01',
+    ],
+    [
+      '00:00Z on Dec 31: the year does not roll',
+      '2025-12-31T00:00:00Z',
+      '2025-12-31',
+    ],
+    ['00:00Z on a leap day', '2024-02-29T00:00:00Z', '2024-02-29'],
+    ['04:00Z, a midnight in ET (EDT)', '2026-03-10T04:00:00Z', '2026-03-10'],
+    ['06:00Z, a midnight in CT (CST)', '2026-03-10T06:00:00Z', '2026-03-10'],
+    [
+      '01:00Z on the 11th: the UTC date, though it is still the 10th in ET',
+      '2026-03-11T01:00:00Z',
+      '2026-03-11',
+    ],
+  ])('dates a candle stamped %s', async (_label, iso, date) => {
+    const { yesterday } = await bodyFor([stamped(iso)]);
+
+    expect(yesterday.date).toBe(date);
+  });
+});
