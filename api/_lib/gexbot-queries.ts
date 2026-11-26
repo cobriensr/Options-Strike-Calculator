@@ -63,11 +63,15 @@ export interface SnapshotsLatestRow {
   oneGexoflow: number | null;
   oneCvroflow: number | null;
   /**
-   * The vendor's level strikes, as sent (price levels, not flows). The state
-   * major call and put come from the orderflow payload; the four classic
-   * majors (positive and negative, by volume and by open interest) come from
-   * the classic `gex_zero` capture. fetch-gexbot-fast writes all six each
-   * minute.
+   * The vendor's level prices, as sent: price levels, not flows, and not
+   * listed strikes (on 2026-11-25 most sat between strikes, e.g.
+   * `major_pos_vol` 7,199.49). The state major call and put come from the
+   * orderflow payload; the four classic majors (positive and negative, by
+   * volume and by open interest) come from the classic `gex_zero` capture.
+   * fetch-gexbot-fast stores the two orderflow levels with every snapshot
+   * row, but the four classic majors only when the classic call succeeded:
+   * `mergeClassic` fails open, so on a tick where it failed they are NULL
+   * while `zeroMcall` and `zeroMput` are still set.
    */
   zeroMcall: number | null;
   zeroMput: number | null;
