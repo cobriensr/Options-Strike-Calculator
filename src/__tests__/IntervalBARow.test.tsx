@@ -407,11 +407,45 @@ describe('IntervalBARow — summary line', () => {
           underlying_price: price,
         }),
       );
-      expect(screen.getByText(String(price))).toBeInTheDocument();
       expect(screen.getByText(caption)).toBeInTheDocument();
       for (const other of ['spx', 'spy', 'qqq'].filter((c) => c !== caption)) {
         expect(screen.queryByText(other)).not.toBeInTheDocument();
       }
+    },
+  );
+
+  // An ETF trades in cents, so SPY and QQQ show the spot to the cent; the index
+  // shows whole points. The caption test above does not look at the number.
+  it.each([
+    {
+      ticker: 'SPY',
+      chain: 'SPY260327C00580000',
+      price: 579.43,
+      shown: '579.43',
+    },
+    {
+      ticker: 'QQQ',
+      chain: 'QQQ260327C00512000',
+      price: 512.1,
+      shown: '512.10',
+    },
+    {
+      ticker: 'SPXW',
+      chain: 'SPXW260327C06850000',
+      price: 6850.37,
+      shown: '6850',
+    },
+  ])(
+    'shows the $ticker row spot $price as "$shown"',
+    ({ ticker, chain, price, shown }) => {
+      renderRow(
+        makeAlert({
+          ticker,
+          option_chain: chain,
+          underlying_price: price,
+        }),
+      );
+      expect(screen.getByText(shown)).toBeInTheDocument();
     },
   );
 

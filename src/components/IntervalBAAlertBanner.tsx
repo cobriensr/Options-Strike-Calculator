@@ -1,5 +1,5 @@
 /**
- * IntervalBAAlertBanner — fixed bottom-right toast for SPXW Interval B/A
+ * IntervalBAAlertBanner — fixed bottom-right toast for Interval B/A
  * ask-side alerts.
  *
  * Separate from {@link AlertBanner} (which lives at top-0 for market

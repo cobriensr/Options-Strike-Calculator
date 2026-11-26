@@ -87,6 +87,11 @@ const formatDollar = (n: number): string => {
 const formatStrike = (n: number): string =>
   Number.isInteger(n) ? n.toString() : n.toFixed(0);
 
+// The index trades in points, so an SPXW spot shows whole points; SPY and QQQ
+// are ETFs priced in cents, so theirs shows to the cent.
+const formatSpot = (ticker: string, n: number): string =>
+  ticker === 'SPXW' ? n.toFixed(0) : n.toFixed(2);
+
 /**
  * Pretty-print an OTM/ITM distance as a percentage of spot. Tight
  * decimals close to zero so the user sees fractional-percent moves;
@@ -393,7 +398,7 @@ export const IntervalBARow = memo(function IntervalBARow({
             SPY or QQQ row, so the caption names the row's own underlying. */}
         {alert.underlying_price != null && (
           <span className="flex flex-col items-end text-neutral-400">
-            <span>{alert.underlying_price.toFixed(0)}</span>
+            <span>{formatSpot(alert.ticker, alert.underlying_price)}</span>
             <span className="text-[10px] text-neutral-500">
               {alert.ticker === 'SPXW' ? 'spx' : alert.ticker.toLowerCase()}
             </span>
