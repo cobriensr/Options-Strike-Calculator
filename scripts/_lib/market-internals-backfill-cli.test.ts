@@ -149,6 +149,19 @@ describe('backfill-market-internals CLI', () => {
     expect(printed).not.toContain('s3cret');
   });
 
+  it('names no part of the user or password when DATABASE_URL parses badly: the banner is the shared dbHost', async () => {
+    // Parsed raw, this URL has the host `owner`.
+    process.env.DATABASE_URL = 'postgres://owner:12/34@ep-test-1.neon.tech/db';
+
+    const code = await runCli();
+
+    expect(code).toBe(0);
+    const banner = log.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.startsWith('Database host:'));
+    expect(banner).toBe('Database host: (DATABASE_URL not readable)');
+  });
+
   it('--apply is passed through', async () => {
     await runCli('--apply');
     expect((runBackfill.mock.calls[0]![0] as { apply: boolean }).apply).toBe(

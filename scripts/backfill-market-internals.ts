@@ -45,6 +45,7 @@ import { config } from 'dotenv';
 import { Redis } from '@upstash/redis';
 
 import { resolveEnvFile } from './_lib/anchor-backfill.js';
+import { dbHost } from './_lib/db-host.js';
 import {
   formatReport,
   parseArgs,
@@ -78,7 +79,7 @@ async function main(): Promise<number> {
   const redis = new Redis({ url: env.redisUrl, token: env.redisToken });
 
   const sessions = resolveSessions(args, new Date());
-  console.log(`Database host: ${new URL(databaseUrl).hostname}`);
+  console.log(`Database host: ${dbHost(databaseUrl)}`);
   const report = await runBackfill({
     apply: args.apply,
     sessions,
