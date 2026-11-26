@@ -22,7 +22,7 @@ import { fetchMaxPain } from './max-pain.js';
 import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
+import { getETToday } from '../../src/utils/timezone.js';
 
 /** UW's rolling history window, in trading days. */
 const UW_WINDOW_TRADING_DAYS = 30;
@@ -454,13 +454,16 @@ function optionsVolumeRowDate(row: unknown): string | null {
  * reply has none (UW has not published the day, it is older than the rows
  * asked for, or the reply is malformed) nothing is set, never another day's
  * row: the reply's date and the requested one are logged and sent to Sentry.
- * The level follows who is asking, as `reportNoPickDates` in the build-features
- * cron does: an error when `dateStr` is the current ET date, the daily run's
- * own (in winter it tries a date once, at 21:45 UTC, so a miss would leave the
- * day empty and unheard); a warning otherwise, for backfills and `?date=`
- * repairs. A live miss has an issue per date, repairs share one. A feature
- * left unset is not a clean slate downstream: the upsert keeps the stored
- * value, so a value written earlier stays until it is repaired.
+ * The level follows the date, as `reportNoPickDates` in the build-features
+ * cron follows the run mode: an error when `dateStr` is the current ET date,
+ * the daily run's own (in winter it tries a date once, at 21:45 UTC, so a miss
+ * would leave the day empty and unheard); a warning otherwise, for the older
+ * dates of backfills and `?date=` repairs. This helper cannot see the run
+ * mode, only the date, so `?date=<today ET>` and a backfill whose dates include
+ * today count as live too and report at `error`. A live miss has an issue per
+ * date, repairs share one. A feature left unset is not a clean slate
+ * downstream: the upsert keeps the stored value, so a value written earlier
+ * stays until it is repaired.
  */
 export async function addOptionsVolumeFeatures(
   dateStr: string,
@@ -492,7 +495,7 @@ export async function addOptionsVolumeFeatures(
           { date: dateStr, returnedDates },
           'Options volume: UW returned no row for the requested date, so no opt_* features are set',
         );
-        const isLiveDate = dateStr === getETDateStr(new Date());
+        const isLiveDate = dateStr === getETToday();
         Sentry.captureMessage('Options volume: no row for the requested date', {
           level: isLiveDate ? 'error' : 'warning',
           fingerprint: [
