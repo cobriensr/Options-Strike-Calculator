@@ -87,6 +87,7 @@ Detail and evidence are in the reports.
 
 - **Replay accuracy.** A DuckDB replay of the Full Tape with today's rules reproduces live exactly on 11-16 to 11-20 and 11-23: 1,053 of 1,053 keys, and every numeric column (spec §5.1).
   - Over the 13 sessions it replayed since 10-29, 0.5% of rows differ in value and 2 keys differ, all from ticks the live socket missed before the mirror sockets (11-13/14). The worst session is 11-11: 4 of 119 rows (3.4%).
+  - **As found in phase 6 (2026-11-25):** the tool's replay, which orders ties by file row, differs on 2 of 96 rows of 11-18. Both are value differences whose crossing print shares its microsecond with another print of the same contract (§8.2). Every key matches.
   - It cannot reproduce `fired_at`, which is wall clock (p50 0.1 s after the tick, up to 500 s in a backlog).
 - **The live rule was not always today's rule.** Live ran 8 multi-leg codes, including `mfto` and without `cbmo` or `mctp`, from 05-13 until the 10-28 change (spec §1.7). So a today's-rule replay of a May to Oct day differs from what live sent. On 10-22, for example, 110 of 114 keys are in common.
 - **Canceled prints.** The live handler counts them. The replay must too.
@@ -645,11 +646,15 @@ Gates: `npm run review` for the TypeScript phases; each Python package's own sui
 
 What each group must show:
 
-- **From 11-13 (the mirror sockets), 7 sessions:** every key and every compared column equal.
+- **From 11-13 (the mirror sockets), 7 sessions:** every key and every compared column equal, with one allowed exception (owner, 2026-11-25).
+  - **The exception:** a value difference whose crossing print shares its microsecond with another print of the same contract. The tape doesn't record the order in which the live socket received tied prints, and the replay orders them by file row, so the two can cross on different prints of one tie.
+  - Each one is listed with its tied prints and checked by hand: the gap in `total_premium` and `ask_premium` must equal, to the cent, the tied prints one side counted and the other didn't. On the SPY put that is (40 − 28) × $4.45 × 100 = $5,340.
+  - Phase 6 found two, both on 11-18. On the SPY 735 put at 18:18Z, a 28-lot and a 40-lot at $4.45 share a microsecond. Live crossed on the 40 ($255,425), the replay on the 28 ($250,085). The QQQ 653 call at 15:43Z is the same case with four tied prints.
+  - A key difference from 11-13 on is never covered by this exception.
 - **Before 11-13, 11 sessions:** per session, at most 5% of matched rows may differ in value and at most 2 keys may differ, and every one is listed.
   - The measured worst cases are 4 of 119 (3.4%, 11-11) and 1 key (10-30, 11-10).
   - 11-02, 11-03, 11-04, 11-06 and 11-09 have not been replayed before, so their lists are read in the hand check.
-- **Anything over those limits,** or any difference from 11-13 on, stops the work.
+- **Anything over those limits,** or any other difference from 11-13 on, stops the work.
 
 This checks the detector against live where live ran today's rule. May to Oct live days are not compared, because they ran another rule.
 

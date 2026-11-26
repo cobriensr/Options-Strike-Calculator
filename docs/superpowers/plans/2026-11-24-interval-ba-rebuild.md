@@ -479,7 +479,7 @@ async def test_a_failed_settings_write_is_reported_once_and_retried_quietly():
 
 - [ ] **Push Tasks 1–9 through their windows.** Task 3's migration is applied before Task 4 is pushed.
 - [ ] **Run the parity check** in the background: `ml/.venv/Scripts/python.exe scripts/interval_ba_tape.py verify --from 2026-10-29 --to 2026-11-23`. It must meet spec §8.2:
-  - from 11-13, an exact match;
+  - from 11-13, an exact match, except value differences at a same-microsecond tie (spec §8.2, owner 2026-11-25);
   - before 11-13, per session, ≤ 5% of rows differing in value and ≤ 2 keys differing, each one listed.
 
   Its `root_label_mismatch` total is reported to the owner either way. Anything over the limits stops the work and goes to the owner.
