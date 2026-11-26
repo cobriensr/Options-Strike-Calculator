@@ -96,6 +96,7 @@ import {
   type SlotCandle,
 } from '../../src/utils/snapshot-slot.js';
 import { getETToday } from '../../src/utils/timezone.js';
+import { dbHost, DB_HOST_UNREADABLE } from './db-host.js';
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -1163,9 +1164,10 @@ const cutoffMessage = (what: string, date: string): string =>
  * LAST_REPLAY_DATE: a dry run never plans such a row, so an old or hand-edited
  * file that does would rewrite a live row, whose real-time open, high and low
  * every other guard would let through (they match on the id and the values).
- * `updates` is the whole of what an apply reads; `dbHost` is the database the
- * plan was read from, and an apply refuses another; `report` is for people and
- * is not read.
+ * `updates` is the whole of what an apply reads; `dbHost` is the host of the
+ * database the plan was read from (the host alone, by `dbHost` in db-host.ts,
+ * so a plan written before that was hardened still reads), and an apply
+ * refuses another; `report` is for people and is not read.
  */
 const PlanFileSchema = z
   .strictObject({
@@ -1400,15 +1402,6 @@ export interface DryRunResult {
 /** A path as the reports print it: forward slashes, which Git Bash can paste. */
 const fwd = (path: string): string => path.replaceAll('\\', '/');
 
-/** The host of a database URL: never its user, password or path. */
-function hostOf(databaseUrl: string | undefined): string {
-  try {
-    return new URL(databaseUrl ?? '').hostname || '(DATABASE_URL has no host)';
-  } catch {
-    return '(DATABASE_URL missing or not a URL)';
-  }
-}
-
 /**
  * Every planned row of the dates, as the plan file and the undo file hold
  * it. Throws on a planned result whose row was not read: the plan would be
@@ -1530,7 +1523,9 @@ export function writePlanFile(
   const body = {
     note: PLAN_NOTE,
     createdAt: now.toISOString(),
-    dbHost: hostOf(process.env.DATABASE_URL),
+    // Called after the dry run's reads have succeeded, and only then: the host
+    // of a URL no query has confirmed is not written down.
+    dbHost: dbHost(process.env.DATABASE_URL),
     since: run.since,
     until: run.until,
     summary: summaryLine(run.dates, run.untried.length),
@@ -1584,14 +1579,23 @@ function nextStreak(streak: Streak, plan: DatePlan): Streak {
  * MAX_SAME_FAILURES dates in a row fail the same way, and lists the dates it
  * never reached. Writes nothing to the database; leaves the plan file. A
  * progress line per date goes to stderr. Every refusal throws before the plan
- * file is written: a missing variable, an empty range, a refused cookie. A DB
- * error propagates.
+ * file is written: a missing variable, a DATABASE_URL that is missing or whose
+ * host cannot be read as written (refused before `getDb()`, echoing nothing of
+ * it), an empty range, a refused cookie. A DB error propagates.
  */
 export async function runDryRun(opts: {
   since: string | null;
   until: string | null;
   undoDir: string;
 }): Promise<DryRunResult> {
+  // Before getDb(): a URL whose parse puts the user or part of the password in
+  // the host would be taken by the driver, and its first query would send the
+  // whole connection string to that host. The message echoes nothing.
+  if (dbHost(process.env.DATABASE_URL) === DB_HOST_UNREADABLE) {
+    throw new Error(
+      'Refusing to run: DATABASE_URL is missing or is not a usable database URL. Nothing was read or written.',
+    );
+  }
   const access = historyAccess(process.env);
   const sql = getDb();
   const today = getETToday();
@@ -1786,7 +1790,11 @@ async function readAlreadyApplied(
  * Apply exactly the plan file a dry run left: no fetch, no re-plan, no
  * OWNER_SECRET. The file is checked with a strict schema first, and refused
  * unless DATABASE_URL points at the host the plan was read from, before any
- * file or statement. With `apply`, the undo file is written, then the rows,
+ * connection, file or statement. The refusal names only the host the plan
+ * recorded, and says DATABASE_URL points elsewhere or is not usable: the host
+ * derived from DATABASE_URL is not printed before a query has succeeded. A plan
+ * that records the unreadable placeholder matches nothing. With `apply`, the
+ * undo file is written, then the rows,
  * 500 to a statement, each only where it still holds the values the dry run
  * read; then the rows no statement wrote are read back, to tell those an
  * earlier apply of this plan already wrote from those that changed; then the
@@ -1828,10 +1836,18 @@ export async function runApply(opts: {
   };
   if (!opts.apply) return { ...head, ...idle };
 
-  const current = hostOf(process.env.DATABASE_URL);
-  if (current !== plan.dbHost) {
+  // Before any connection, so the message carries the host the plan recorded
+  // and never the one derived from DATABASE_URL, which no query has confirmed.
+  // The placeholder matches nothing, itself included: two unreadable URLs are
+  // not the same database.
+  if (plan.dbHost === DB_HOST_UNREADABLE) {
     throw new Error(
-      `Refusing to apply: the plan was made against the database host ${plan.dbHost}, but DATABASE_URL points at ${current}. Nothing was written.`,
+      'Refusing to apply: the plan records no usable database host, so it cannot be matched to DATABASE_URL. Nothing was written.',
+    );
+  }
+  if (dbHost(process.env.DATABASE_URL) !== plan.dbHost) {
+    throw new Error(
+      `Refusing to apply: the plan was made against the database host ${plan.dbHost}, and DATABASE_URL points elsewhere or is not usable. Nothing was written.`,
     );
   }
   if (planned === 0) return { ...head, ...idle };

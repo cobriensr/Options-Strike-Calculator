@@ -56,11 +56,17 @@ import { PGlite } from '@electric-sql/pglite';
 import { neonOverPglite } from '../../api/__tests__/pglite-migrations.js';
 
 const holder = vi.hoisted(() => ({ sql: null as unknown }));
-const { pause } = vi.hoisted(() => ({ pause: vi.fn(async () => undefined) }));
+const { pause, getDbSpy } = vi.hoisted(() => ({
+  pause: vi.fn(async () => undefined),
+  getDbSpy: vi.fn(),
+}));
 
 vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/_lib/db.js')>()),
-  getDb: () => holder.sql,
+  getDb: () => {
+    getDbSpy();
+    return holder.sql;
+  },
 }));
 vi.mock('node:timers/promises', () => ({ setTimeout: pause }));
 // Everything else of node:fs is real; a case can make the writing of an apply
@@ -395,6 +401,58 @@ const filesIn = (dir: string, prefix: string): string[] =>
 const readJson = (file: string | null) =>
   JSON.parse(readFileSync(file ?? '', 'utf8')) as Record<string, unknown>;
 
+/** The error a run rejects with; a run that does not reject fails the test. */
+async function failureOf(run: Promise<unknown>): Promise<Error> {
+  try {
+    await run;
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error('the run was expected to fail and did not');
+}
+
+/**
+ * DATABASE_URLs that parse with the user or part of the password where the
+ * host should be (`owner:p@ss/34@host/db` gives the host `ss`), which a driver
+ * would take and then send the whole connection string to that host. `tokens`
+ * are the parts that must not appear in anything printed. A URL with a real
+ * host and text after the database name (`.../neondb;password=x`) is not in
+ * the table: its host is the host.
+ */
+const UNUSABLE_BY_SHAPE: Array<[label: string, url: string, tokens: string[]]> =
+  [
+    [
+      'a slash after a numeric password prefix',
+      'postgres://owner:12/34@ep-plan.neon.tech/neondb',
+      ['owner', '12', '34'],
+    ],
+    [
+      'an @ in the password, then a slash',
+      'postgres://owner:p@ss/34@ep-plan.neon.tech/neondb',
+      ['owner', 'ss', '34'],
+    ],
+    [
+      'an @ in the password, then a question mark',
+      'postgres://owner:p@ss?34@ep-plan.neon.tech/neondb',
+      ['owner', 'ss', '34'],
+    ],
+    [
+      'an @ in the password, then a hash',
+      'postgres://owner:p@ss#34@ep-plan.neon.tech/neondb',
+      ['owner', 'ss', '34'],
+    ],
+    [
+      'an @ in the user',
+      'postgres://ow@ner/34@ep-plan.neon.tech/neondb',
+      ['ow', 'ner', '34'],
+    ],
+    [
+      'an @ after the database name',
+      'postgres://owner:pw@ep-plan.neon.tech/neondb@x',
+      ['owner', 'pw', '@x'],
+    ],
+  ];
+
 const progressLines = (): string[] =>
   progress.mock.calls.map((call) => String(call[0]));
 
@@ -418,6 +476,7 @@ beforeEach(async () => {
   answers.clear();
   fetchMock.mockClear();
   pause.mockClear();
+  getDbSpy.mockClear();
   progress = vi.spyOn(console, 'error').mockImplementation(() => undefined);
   vi.stubGlobal('fetch', fetchMock);
   fsHook.failApplyReport = false;
@@ -434,6 +493,43 @@ afterEach(() => {
 });
 
 // ── Dry run ─────────────────────────────────────────────────────────────────
+
+describe('a dry run with no usable DATABASE_URL', () => {
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['not a URL', 'not a url'],
+    ...UNUSABLE_BY_SHAPE.map(([label, url]): [string, string] => [label, url]),
+  ])(
+    'is refused before getDb() and before any fetch, naming no part of the URL: %s',
+    async (_label, url) => {
+      if (url === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = url;
+      getDbSpy.mockClear();
+
+      const failure = await failureOf(dry());
+
+      // The exact fixed text: nothing of the URL can be in it.
+      expect(failure.message).toBe(
+        'Refusing to run: DATABASE_URL is missing or is not a usable database URL. Nothing was read or written.',
+      );
+      expect(getDbSpy).not.toHaveBeenCalled();
+      expect(statements).toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(filesIn(undoDir, 'dry-run-')).toEqual([]);
+    },
+  );
+
+  it('writes no plan file when a read fails: the host is recorded only after the reads succeed', async () => {
+    failWhen = (text) =>
+      /FROM market_snapshots/.test(text) ? new Error('connection lost') : null;
+
+    const failure = await failureOf(dry());
+
+    expect(failure.message).toMatch(/connection lost/);
+    expect(filesIn(undoDir, 'dry-run-')).toEqual([]);
+  });
+});
 
 describe('a dry run', () => {
   it('plans from the history, writes nothing to the database, and leaves a plan file', async () => {
@@ -2208,24 +2304,118 @@ describe('applying a plan file', () => {
         'postgres://owner:pw@ep-other.neon.tech/neondb';
       statements.length = 0;
 
-      const run = applyFile(planned.planFile);
+      getDbSpy.mockClear();
 
-      await expect(run).rejects.toThrow(
-        /made against the database host ep-plan\.neon\.tech.*DATABASE_URL points at ep-other\.neon\.tech.*Nothing was written/,
+      const failure = await failureOf(applyFile(planned.planFile));
+
+      // The recorded host only: the current one is not echoed.
+      expect(failure.message).toBe(
+        'Refusing to apply: the plan was made against the database host ep-plan.neon.tech, and DATABASE_URL points elsewhere or is not usable. Nothing was written.',
       );
-      await expect(run).rejects.not.toThrow('pw');
+      expect(failure.message).not.toContain('ep-other');
+      expect(failure.message).not.toContain('pw');
+      expect(getDbSpy).not.toHaveBeenCalled();
       expect(statements).toEqual([]);
       expect(filesIn(undoDir, 'undo-')).toEqual([]);
       expect(filesIn(undoDir, 'apply-')).toEqual([]);
     });
 
-    it('refuses an apply when DATABASE_URL is not set', async () => {
+    it('refuses an apply when DATABASE_URL is not set, without a word of it', async () => {
       const planned = await dry();
       delete process.env.DATABASE_URL;
+      getDbSpy.mockClear();
 
-      await expect(applyFile(planned.planFile)).rejects.toThrow(
-        /DATABASE_URL points at \(DATABASE_URL missing/,
+      const failure = await failureOf(applyFile(planned.planFile));
+
+      expect(failure.message).toBe(
+        'Refusing to apply: the plan was made against the database host ep-plan.neon.tech, and DATABASE_URL points elsewhere or is not usable. Nothing was written.',
       );
+      expect(getDbSpy).not.toHaveBeenCalled();
+    });
+
+    it.each(UNUSABLE_BY_SHAPE)(
+      'refuses an apply with no part of the user or password in the message, before getDb(): %s',
+      async (_label, url, tokens) => {
+        const planned = await dry();
+        process.env.DATABASE_URL = url;
+        statements.length = 0;
+        getDbSpy.mockClear();
+
+        const failure = await failureOf(applyFile(planned.planFile));
+
+        expect(failure.message).toBe(
+          'Refusing to apply: the plan was made against the database host ep-plan.neon.tech, and DATABASE_URL points elsewhere or is not usable. Nothing was written.',
+        );
+        for (const token of tokens)
+          expect(failure.message).not.toContain(token);
+        expect(getDbSpy).not.toHaveBeenCalled();
+        expect(statements).toEqual([]);
+        expect(filesIn(undoDir, 'undo-')).toEqual([]);
+        expect(filesIn(undoDir, 'apply-')).toEqual([]);
+      },
+    );
+
+    it.each([
+      ['a usable URL', PLAN_DB],
+      ['no usable URL', 'not a url'],
+    ])(
+      'refuses a plan that records the placeholder, with DATABASE_URL %s: it never matches',
+      async (_label, url) => {
+        const planned = await dry();
+        writeFileSync(
+          planned.planFile,
+          JSON.stringify({
+            ...readJson(planned.planFile),
+            dbHost: '(DATABASE_URL not readable)',
+          }),
+        );
+        process.env.DATABASE_URL = url;
+        statements.length = 0;
+        getDbSpy.mockClear();
+
+        await expect(applyFile(planned.planFile)).rejects.toThrow(
+          'Refusing to apply: the plan records no usable database host, so it cannot be matched to DATABASE_URL. Nothing was written.',
+        );
+
+        expect(getDbSpy).not.toHaveBeenCalled();
+        expect(statements).toEqual([]);
+        expect(filesIn(undoDir, 'undo-')).toEqual([]);
+      },
+    );
+
+    it('applies a plan in the current format: the host alone, under the key dbHost', async () => {
+      // As every plan this script wrote before the hardening reads, built by
+      // hand so nothing the code writes now can bend the test.
+      const file = join(undoDir, 'dry-run-by-hand.json');
+      writeFileSync(
+        file,
+        JSON.stringify({
+          note: 'The plan of a dry run of backfill-snapshot-price-context.ts.',
+          createdAt: '2026-11-19T22:00:00.000Z',
+          dbHost: 'ep-plan.neon.tech',
+          since: null,
+          until: '2026-11-17',
+          summary: 'nothing to write',
+          updates: [],
+          report: {},
+        }),
+      );
+
+      await expect(applyFile(file)).resolves.toMatchObject({
+        apply: true,
+        planned: 0,
+        written: 0,
+        dbHost: 'ep-plan.neon.tech',
+      });
+    });
+
+    it('records the plain host under dbHost, and no other key, in a plan it writes', async () => {
+      const planned = await dry();
+
+      const file = readJson(planned.planFile);
+
+      expect(file.dbHost).toBe('ep-plan.neon.tech');
+      expect(file).not.toHaveProperty('database');
     });
 
     it('only counts a plan without --apply, whichever host it points at, and says which host the plan has', async () => {

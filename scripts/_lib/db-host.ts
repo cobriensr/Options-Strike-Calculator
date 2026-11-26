@@ -26,8 +26,12 @@
  * database client.
  */
 
-/** What `dbHost` returns for a URL it will not read a host from. */
-const UNREADABLE = '(DATABASE_URL not readable)';
+/**
+ * What `dbHost` returns for a URL it will not read a host from. A script that
+ * records or compares the host must treat it as matching nothing, itself
+ * included: two unreadable URLs are not the same database.
+ */
+export const DB_HOST_UNREADABLE = '(DATABASE_URL not readable)';
 
 /**
  * The parsed URL, when its host is what the raw string says it is; null for a
@@ -49,5 +53,5 @@ export function readableUrl(databaseUrl: string | undefined): URL | null {
 }
 
 export function dbHost(databaseUrl: string | undefined): string {
-  return readableUrl(databaseUrl)?.hostname ?? UNREADABLE;
+  return readableUrl(databaseUrl)?.hostname ?? DB_HOST_UNREADABLE;
 }
