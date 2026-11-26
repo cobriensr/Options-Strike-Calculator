@@ -284,10 +284,13 @@ Ids are the ladder's own, chosen to match the planned study's tags.
   give two chips, in table order.
 - A strike level off the grid is a marker line at its exact value.
   `classic_zero_gamma` is always a marker line: an off-grid level has no
-  strike row to sit on, and zero gamma is a crossing, not a strike. Off-grid
-  values are common, not an edge case: the SPX row captured at 14:59 CT on
-  2026-11-25 had five of the eight strike levels off the grid (for example
-  `major_pos_vol` 7,199.49 and `zero_mcall` 7,189.17).
+  strike row to sit on, and zero gamma is a crossing, not a strike. Measured
+  over 392 SPX minutes on 2026-11-25 (08:30 to 15:15 CT): the two state gamma
+  levels are nearly always off the grid (`z_mlgamma` 349 minutes,
+  `z_msgamma` 315), so they are usually marker lines. The other six are
+  nearly always on it: 58 off-grid readings in 2,352 (2.5%), most of them
+  `zero_mcall` (18), `zero_mput` (16) and `major_neg_vol` (18). So both
+  paths render every session.
 - Levels show only when the snapshot is usable: `capturedAt` within
   `LADDER_MAX_LEVEL_AGE_SECONDS` of now while the market is open, and `minDte`
   0 or null. With the market closed the last levels stay, labelled with their
@@ -861,6 +864,7 @@ author-side. Settled here:
 - A Schwab save never overwrites a CSV row: a conflict guard in
   `savePositions`, with a pglite test (phase 4a).
 - Summary wording for inside the band, no band and breached.
-- Checked against production while settling: off-grid strike levels are
-  common (five of eight on the 14:59 CT row of 2026-11-25), and the last
-  capture of a session lands at 15:01 CT.
+- Checked against production while settling: how often each strike level
+  sits off the grid (counts under "Levels"; an earlier draft generalised
+  from one outlier row and was corrected after the phase 1b code review),
+  and the last capture of a session lands at 15:01 CT.
