@@ -40,7 +40,7 @@
 - **Tape gates** (spot-check tool, SPX only): median |d| ≤ 2 pt and p99 ≤ 5 pt; the ratio within 1e-6 on ≥ 99% of minutes, only where ETF rows are final (≤ 2026-04-27).
   - NDX has no tape price (UW leaves `underlying_price` NULL on NDX/NDXP prints), so the spec's NDX tape gate is replaced by the repair tool's NDX close and ratio checks.
 - **Feature guard:** `|round4(v)| ≥ 10000` gives NULL.
-- **Dark-pool overwrite:** only when the read succeeded, the date has `dark_pool_prints` rows, and it has the full `cashSessionMinutes` of SPX regular bars and of SPY ETF bars. A failed read sets the status to `partial`; no prints or short bars is a data state, recorded in `dpKept`.
+- **Dark-pool overwrite:** only when the read succeeded, the date has `dark_pool_prints` rows, and it has the full `cashSessionMinutes` of SPX regular bars and of SPY ETF bars. A failed read sets the status to `partial` and lists the date in `dpReadFailed`; no prints, short bars or no `spx_open` is a data state, recorded in `dpKept`.
 - **SQL inside a transaction is tagged templates only.** Bulk writes use `unnest` batches of at most 500 rows.
 - No migration, no env var, no new dependency, no new cron. Tests never touch a real DB or network (pglite and `vi.mock` only).
 - `scripts/_tape_reader.py` is a nightly watch path; don't edit it.
@@ -421,9 +421,9 @@ export async function restoreRows(sql, { table, backupPath }); // one transactio
 
 **Runbook C: the rebuilds,** after the push and after 15:00 CT. Each step comes after a Task 11 backup.
 1. **Features.**
-   - Read-only pre-check: every one of the 28 dates (03-23 → 04-10, 09-21, the 13 gap days) has `cashSessionMinutes` SPX `r` bars, the same number of SPY ETF bars, and SPY prints. A date that fails goes to the owner before the rebuild.
+   - Read-only pre-check: every one of the 28 dates (03-23 → 04-10, 09-21, the 13 gap days) has `cashSessionMinutes` SPX `r` bars, the same number of SPY ETF bars, SPY prints, and an open (`outcomes.day_open`, when no trusted snapshot row has one). A date that fails goes to the owner before the rebuild.
    - Back up `training_features` and `day_labels` for the 28 dates.
-   - Call `build-features?date=` for each one. Every response must show the date **not** in `dpKept`. A date listed there is a stop: its stale `dp_*` values were kept, so report it.
+   - Call `build-features?date=` for each one. Every response must show `status: 'success'` and the date in neither `dpKept` nor `dpReadFailed`. Either list is a stop, and so is a `partial` status: the date's stale `dp_*` values were kept (no prints, short bars or no `spx_open` in `dpKept`; a failed read or completeness check in `dpReadFailed`), so report it.
    - Resolve Sentry `SENTRY-EMERALD-DESERT-MB`.
 2. **Gamma fires:**
    1. Run `--dry-run --from 2026-02-26 --to 2026-04-17`.

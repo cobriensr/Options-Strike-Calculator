@@ -2644,6 +2644,8 @@ describe('build-features handler', () => {
      * Error to reject with. `dates` is the flow_data date list a backfill
      * reads, `insertFailure` makes the training_features INSERT reject, and
      * `labelsFailure` makes the label extraction that follows it reject.
+     * There is no snapshot row, so the date's `spx_open` is `dayOpen`, read
+     * from outcomes (5805, between the two LEVELS; null for no open at all).
      * Every other query resolves to [].
      */
     function mockRun(
@@ -2652,10 +2654,12 @@ describe('build-features handler', () => {
         dates = [],
         insertFailure,
         labelsFailure,
+        dayOpen = '5805',
       }: {
         dates?: string[];
         insertFailure?: Error;
         labelsFailure?: Error;
+        dayOpen?: string | null;
       } = {},
     ) {
       mockSql.mockImplementation(
@@ -2663,6 +2667,9 @@ describe('build-features handler', () => {
           const text = strings.join(' ');
           if (text.includes('SELECT DISTINCT date FROM flow_data')) {
             return Promise.resolve(dates.map((date) => ({ date })));
+          }
+          if (dayOpen != null && /SELECT day_open FROM outcomes/.test(text)) {
+            return Promise.resolve([{ day_open: dayOpen }]);
           }
           if (insertFailure && text.includes('INSERT INTO training_features')) {
             return Promise.reject(insertFailure);
@@ -2714,6 +2721,15 @@ describe('build-features handler', () => {
       expect(featureUpserts()).toHaveLength(1);
       expect(overwritten(featureUpserts()[0]!)).toEqual([...DP_COLUMNS]);
       expect(featureUpsertValue('dp_total_premium')).toBe(800000);
+      // The open (5805) puts the 5800 level below it: all seven columns hold a
+      // value, so the overwrite replaces none of them with NULL.
+      expect(featureUpsertValue('dp_top_cluster_dist')).toBe(-5);
+      expect(featureUpsertValue('dp_support_premium')).toBe(500000);
+      expect(featureUpsertValue('dp_resistance_premium')).toBe(300000);
+      expect(featureUpsertValue('dp_support_resistance_ratio')).toBeCloseTo(
+        500000 / 300000,
+        4,
+      );
       // Asked once for the date, over the same client the run reads with.
       expect(mockDpDayComplete).toHaveBeenCalledTimes(1);
       expect(mockDpDayComplete).toHaveBeenCalledWith(mockSql, DATE);
@@ -2749,6 +2765,50 @@ describe('build-features handler', () => {
         dpReadFailed: [],
       });
       expect(mockCaptureException).not.toHaveBeenCalled();
+    });
+
+    it('keeps dp, and lists the date in dpKept, when a complete day has no spx_open', async () => {
+      // No snapshot row and no outcomes.day_open: the four columns that read
+      // the open (top-cluster distance, support, resistance and their ratio)
+      // come out unset, and an overwrite would store that NULL over their
+      // values. A data state like no prints: the row is written, the status
+      // stays success, and the date in dpKept is the one sign of it.
+      mockRun(() => LEVELS, { dayOpen: null });
+      mockDpDayComplete.mockResolvedValue(true);
+
+      const res = await buildDate(DATE);
+
+      expect(featureUpserts()).toHaveLength(1);
+      expect(overwritten(featureUpserts()[0]!)).toEqual([]);
+      // What an overwrite would have written: the open-free columns hold a
+      // value, the four that need the open do not.
+      expect(featureUpsertValue('dp_total_premium')).toBe(800000);
+      expect(featureUpsertValue('dp_support_premium') ?? null).toBeNull();
+      expect(res._json).toMatchObject({
+        status: 'success',
+        featuresBuilt: 1,
+        errors: 0,
+        dpKept: [DATE],
+        dpReadFailed: [],
+      });
+      expect(mockCaptureException).not.toHaveBeenCalled();
+    });
+
+    it('reports a failed read as partial even when the date has no spx_open', async () => {
+      // The failure is the louder state: it must not read as the quiet dpKept.
+      const failure = new Error('dark pool read failed');
+      mockRun(() => failure, { dayOpen: null });
+      mockDpDayComplete.mockResolvedValue(true);
+
+      const res = await buildDate(DATE);
+
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        errors: 0,
+        dpKept: [],
+        dpReadFailed: [DATE],
+      });
+      expect(overwritten(featureUpserts()[0]!)).toEqual([]);
     });
 
     it('keeps dp and reports partial when the dark-pool read rejects, on a one-date run', async () => {
@@ -2937,25 +2997,89 @@ describe('build-features handler', () => {
 
     it('completeness is unchanged by the signal', async () => {
       // The three outcomes: overwritten, kept and read failed. The signal is
-      // not a feature, so none of them moves feature_completeness.
+      // not a feature, so none of them moves feature_completeness (rounded to
+      // 2 decimals, so too coarse alone to see a stray key), adds a column to
+      // the INSERT, or changes the value bound to a column outside DP_COLUMNS.
       const scenarios: Array<[read: unknown[] | Error, complete: boolean]> = [
         [LEVELS, true],
         [LEVELS, false],
         [new Error('dark pool read failed'), true],
       ];
-      const stored: unknown[] = [];
+      const dpColumns = new Set<string>(DP_COLUMNS);
+      const runs: Array<{
+        completeness: unknown;
+        columns: string[];
+        others: Record<string, unknown>;
+      }> = [];
       for (const [read, complete] of scenarios) {
         mockSql.mockClear();
         mockRun(() => read);
         mockDpDayComplete.mockResolvedValue(complete);
 
         await buildDate(DATE);
-        stored.push(featureUpsertValue('feature_completeness'));
+
+        const call = featureUpserts()[0]!;
+        const list = /INSERT INTO training_features\s*\(([^)]*)\)/.exec(
+          sqlText(call),
+        )![1]!;
+        const columns = list.split(',').map((c) => c.trim());
+        runs.push({
+          completeness: featureUpsertValue('feature_completeness'),
+          columns,
+          // call[0] is the strings array, so column n's value is call[n + 1].
+          others: Object.fromEntries(
+            columns
+              .map((c, i) => [c, call[i + 1]] as const)
+              .filter(([c]) => !dpColumns.has(c)),
+          ),
+        });
       }
 
-      expect(typeof stored[0]).toBe('number');
-      expect(stored[1]).toBe(stored[0]);
-      expect(stored[2]).toBe(stored[0]);
+      expect(typeof runs[0]!.completeness).toBe('number');
+      for (const run of runs.slice(1)) {
+        expect(run.completeness).toBe(runs[0]!.completeness);
+        expect(run.columns).toEqual(runs[0]!.columns);
+        expect(run.others).toEqual(runs[0]!.others);
+      }
+    });
+
+    // The completed line is the run's summary, so it is a warning when the
+    // run is partial because a dark-pool read failed (the failure itself is
+    // logged and captured on its own).
+    describe('the completed log line', () => {
+      const COMPLETED = 'build-features: completed';
+      const completedAt = (level: 'info' | 'warn') =>
+        vi
+          .mocked(logger[level])
+          .mock.calls.filter(([, message]) => message === COMPLETED);
+
+      it('is a warning, with the dp counts, when a dark-pool read failed', async () => {
+        mockRun(() => new Error('dark pool read failed'));
+        mockDpDayComplete.mockResolvedValue(true);
+
+        await buildDate(DATE);
+
+        expect(completedAt('warn')).toEqual([
+          [
+            expect.objectContaining({ dates: 1, dpKept: 0, dpReadFailed: 1 }),
+            COMPLETED,
+          ],
+        ]);
+        expect(completedAt('info')).toHaveLength(0);
+      });
+
+      it.each([
+        ['overwritten', true],
+        ['kept', false],
+      ])('stays info when the date is %s', async (_label, complete) => {
+        mockRun(() => LEVELS);
+        mockDpDayComplete.mockResolvedValue(complete);
+
+        await buildDate(DATE);
+
+        expect(completedAt('info')).toHaveLength(1);
+        expect(completedAt('warn')).toHaveLength(0);
+      });
     });
   });
 });

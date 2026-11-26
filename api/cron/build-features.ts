@@ -17,9 +17,10 @@
  *
  * Every column keeps its stored value over a NULL, except the seven dark-pool
  * columns (DP_COLUMNS) of a date whose dark-pool read worked and whose day is
- * complete (dpDayComplete): they take the rebuilt value as it is. A date with
- * no prints or short bars is listed in `dpKept`; a failed read lists it in
- * `dpReadFailed` and makes the run `partial`.
+ * complete (dpDayComplete) and has an spx_open: they take the rebuilt value as
+ * it is. A date with no prints, short bars or no spx_open is listed in
+ * `dpKept`; a failed read lists it in `dpReadFailed` and makes the run
+ * `partial`.
  *
  * Feature engineering is split into focused modules:
  *   build-features-flow.ts   - flow checkpoint NCP/NPP + agreement
@@ -432,9 +433,10 @@ function snapshotFeatures(s: SnapshotRow | undefined): FeatureRow {
  * - `overwrite`: the dark-pool read worked and the day is complete
  *   (`dpDayComplete`), so the columns take the rebuilt value as it is, NULL
  *   included;
- * - `keep`: the read worked but the day has no prints or short bars. A data
- *   state, not a failure: the columns keep their stored value (the COALESCE
- *   every column has), and the date is listed in `dpKept`;
+ * - `keep`: the read worked but the day has no prints or short bars, or the
+ *   date has no `spx_open`. A data state, not a failure: the columns keep
+ *   their stored value (the COALESCE every column has), and the date is listed
+ *   in `dpKept`;
  * - `read-failed`: the dark-pool read, or the check of the day, failed. The
  *   columns keep their stored value too, and the run is `partial`.
  */
@@ -443,13 +445,21 @@ type DarkPoolWrite = 'overwrite' | 'keep' | 'read-failed';
 /**
  * The dp columns' fate for `dateStr`. Nothing here throws: a rejected check of
  * the day is a failed read of the dp signal, like a failed dark-pool read.
+ *
+ * `hasOpen` is whether the date has an `spx_open`. Without one, the dark-pool
+ * step leaves four columns unset (top-cluster distance, support, resistance
+ * and their ratio, which are measured from the open), so an overwrite would
+ * store NULL over their values though the day's levels are all there: a date
+ * with no open keeps them, like a day with no prints.
  */
 async function darkPoolWrite(
   sql: ReturnType<typeof getDb>,
   dateStr: string,
   dpReadOk: boolean,
+  hasOpen: boolean,
 ): Promise<DarkPoolWrite> {
   if (!dpReadOk) return 'read-failed';
+  if (!hasOpen) return 'keep';
   try {
     const complete = await withDbRetry(
       () => dpDayComplete(sql, dateStr),
@@ -557,7 +567,13 @@ async function buildFeaturesForDate(dateStr: string): Promise<BuiltDate> {
 
   // 6-9. Phase 2: prev day, realized vol, events, max pain, dark pool, options
   const { dpReadOk } = await engineerPhase2Features(sql, dateStr, features);
-  const dp = await darkPoolWrite(sql, dateStr, dpReadOk);
+  // The same test the dark-pool step applies before it reads the open.
+  const dp = await darkPoolWrite(
+    sql,
+    dateStr,
+    dpReadOk,
+    features.spx_open != null,
+  );
 
   // 10. Monitor features: IV dynamics + flow ratio dynamics
   await engineerMonitorFeatures(sql, dateStr, features);
@@ -694,8 +710,9 @@ const wrappedCron = withCronInstrumentation(
     // leaves the date here and also counts in `errors`.
     const noPickDates: NoPickDate[] = [];
     // Dates written with their dp columns kept for a data state (no prints,
-    // short bars), and dates written with them kept because a read failed. As
-    // with noPickDates, a date whose features write failed is in neither.
+    // short bars, no spx_open), and dates written with them kept because a
+    // read failed. As with noPickDates, a date whose features write failed is
+    // in neither.
     const dpKeptDates: string[] = [];
     const dpReadFailedDates: string[] = [];
 
@@ -730,18 +747,23 @@ const wrappedCron = withCronInstrumentation(
 
     if (noPickDates.length > 0) reportNoPickDates(noPickDates, mode);
 
-    log.info(
-      {
-        dates: dates.length,
-        featuresBuilt,
-        labelsExtracted,
-        errors,
-        noPickDates: noPickDates.length,
-        dpKept: dpKeptDates.length,
-        dpReadFailed: dpReadFailedDates.length,
-      },
-      'build-features: completed',
-    );
+    // The run's summary is a warning when a dark-pool read failed (the status
+    // is then `partial`); the failure itself is logged and captured as it
+    // happens.
+    const completed = {
+      dates: dates.length,
+      featuresBuilt,
+      labelsExtracted,
+      errors,
+      noPickDates: noPickDates.length,
+      dpKept: dpKeptDates.length,
+      dpReadFailed: dpReadFailedDates.length,
+    };
+    if (dpReadFailedDates.length > 0) {
+      log.warn(completed, 'build-features: completed');
+    } else {
+      log.info(completed, 'build-features: completed');
+    }
 
     // Every date failing is 'error' (red Sentry monitor), not 'partial'; no
     // dates to process is 'success'. A no-pick date is a data state, not a
@@ -767,8 +789,9 @@ const wrappedCron = withCronInstrumentation(
         // (api/_lib/axiom-fields.ts), so it is reported inside `meta`.
         noPickDates: noPickDates.length,
         // The dates whose dp columns were not overwritten because the day has
-        // no prints or short bars. In the response too, so a `?date=` rebuild
-        // says whether its date is here. Inside `meta` in Axiom like the rest.
+        // no prints, short bars or no spx_open. In the response too, so a
+        // `?date=` rebuild says whether its date is here. Inside `meta` in
+        // Axiom like the rest.
         dpKept: dpKeptDates,
         // The dates whose dark-pool read, or check of the day, failed; why the
         // status is 'partial' with no errors.

@@ -3807,6 +3807,17 @@ describe('dpDayComplete (real SQL, pglite)', () => {
     expect(sql).toHaveBeenCalledTimes(1);
   });
 
+  it('is false when the query returns no row', async () => {
+    // Not what Postgres does for this SELECT, which always answers one row;
+    // a client that hands back nothing must not read as a complete day.
+    const sql = vi.fn(() => Promise.resolve([]));
+
+    await expect(dpDayComplete(sql as never, EDT_DAY.date)).resolves.toBe(
+      false,
+    );
+    expect(sql).toHaveBeenCalledTimes(1);
+  });
+
   it('lets a database error through for the caller to count', async () => {
     const sql = vi.fn(() => Promise.reject(new Error('connection lost')));
 
