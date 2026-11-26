@@ -138,9 +138,11 @@ It runs at every turn end of every session in the project, so its first step is 
 For each key with a `write` line in this session whose `path` still exists, with `t0` the time of its first `write` in this session:
 
 1. **Settled** when either:
-   - a `start` for the key at or after `t0` has a `done` with the same agent id, or
+   - a `start` for the key in this session, or at or after `t0` from any session, has a `done` with the same agent id, or
    - a `waive` for the key is in this session or at or after `t0`. The owner can waive before the doc exists.
-2. **Running** when a `start` for the key at or after `t0` has no `done` yet, and either:
+
+   A review this session ran before its first `write` counts, as a waiver does. The session that reviews a doc often settles the findings with a Write, and the gate asks for one review per doc per session (Non-goals); a later re-review is the session's judgment.
+2. **Running** when a `start` for the key in this session, or at or after `t0`, has no `done` yet, and either:
    - its agent is running: the raw input contains `{"id":"<agent id>","type":"subagent","status":"running"`. A copy of that text inside `last_assistant_message` arrives with escaped quotes, so it can't match.
    - the start is under 45 minutes old.
 
@@ -215,7 +217,7 @@ For the unsettled keys:
 - **`.githooks/pre-commit`** keeps its `CLAUDECODE=1` early exit, so only Claude Code commits are checked.
 - **New step,** before the review-gate check:
   1. Skip it when the commit replays existing commits: `MERGE_HEAD`, `CHERRY_PICK_HEAD` or `REVERT_HEAD` exists, or a rebase is in progress (`rebase-merge/` or `rebase-apply/` in the git dir). A merge from main lists every doc main added since the branch last synced, and those docs belong to other sessions or predate the log.
-  2. List the staged paths that the commit adds under `docs/superpowers/specs/` or `docs/superpowers/plans/` and end in `.md`: `git diff --cached --no-renames --name-only --diff-filter=A`, limited to those folders by a case-insensitive pathspec. A doc moved in from `docs/tmp/` shows as added anyway, since git applies the pathspec before it looks for renames. `--no-renames` makes a rename inside `specs/` or `plans/` show as added too.
+  2. List the staged paths that the commit adds under `docs/superpowers/specs/` or `docs/superpowers/plans/` and end in `.md`: `git --no-literal-pathspecs diff --cached --no-renames --name-only --diff-filter=A`, limited to those folders by the pathspecs `:(glob,icase)docs/superpowers/specs/**/*.md` and `:(glob,icase)docs/superpowers/plans/**/*.md`. The explicit `glob` magic and `--no-literal-pathspecs` keep git's global settings (`GIT_LITERAL_PATHSPECS`, `GIT_NOGLOB_PATHSPECS`, `GIT_GLOB_PATHSPECS`) from emptying the list or dropping a doc in a subfolder. A doc moved in from `docs/tmp/` shows as added anyway, since git applies the pathspec before it looks for renames. `--no-renames` makes a rename inside `specs/` or `plans/` show as added too.
   3. Only when there are some, run `node scripts/spec-review-check.mjs <paths>`.
 - **`scripts/spec-review-check.mjs`** reads the log and blocks (exit 1) when an added doc's key has neither:
   - a completed review: a `start` and a `done` for one agent id, nor
@@ -275,6 +277,12 @@ Each new hook is a `command` hook on `"$CLAUDE_PROJECT_DIR"/.claude/hooks/<scrip
   - `/clear` starts a new `session_id`, so a doc written before it is no longer gated by Stop.
 - **A release warning can go unseen.** It waits for the session's next prompt that doesn't start with `<`. A `/loop` iteration or a scheduled task with plain text is such a prompt, so the warning prints there, maybe while the owner is away. After `/clear` the session id changes, and a pending warning is never shown. The pre-commit check still blocks the doc's commit.
 - **A hand-edited log can hide or slow a warning.** The fast path compares counts, so a stray `announced` line hides one pending warning. A `release` line with a key that isn't a doc key never gets its `announced` line, so every later prompt of that session pays the full lookup (about 0.2 s at 5,000 lines). Neither can happen without a hand edit: the hooks write `announced` only after a `release`, and `release` only for doc keys.
+- **Same-named docs in two worktrees share a key.** A review or waiver of one settles the other, at the Stop gate (same session) and at the commit (any time). Dated file names make this rare.
+- **The guard and the deny rule match any `.claude/state` folder,** Claude Code's own one in the home directory included. Read it with the Read or Grep tools.
+- **A background subagent that Writes a spec or plan** gets its parent blocked at the parent's next turn end, while the subagent may still be writing. A `write` line's agent field is `-`, so the gate can't tell who wrote it.
+- **A named (teammate) reviewer that runs past 45 minutes** gets one block that asks for a review already running. Its `background_tasks` entry carries a task id, not the agent id (Recording).
+- **A release warning can be stale.** It still prints when the doc was reviewed between the release and the owner's next plain prompt.
+- **A worktree branched before this shipped runs its own older `.githooks/pre-commit`,** because `core.hooksPath` is relative and resolves per worktree. Its doc commits get no check until it takes main.
 
 ## Phases
 
@@ -375,6 +383,7 @@ Cases that must exist:
     - another session's writes;
     - the reviewer is running per `background_tasks`;
     - reviewed (a `start` after `t0` plus its `done`), including a `done` logged before its `start` (a foreground reviewer);
+    - reviewed earlier in this session, before its first `write`, then rewritten with Write;
     - waived;
     - the doc was deleted;
     - an empty or malformed payload, or a missing log (exit 0);

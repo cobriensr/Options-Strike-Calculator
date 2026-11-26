@@ -152,7 +152,7 @@ When in doubt, write the plan. A plan doc is ~10 minutes; rediscovering scope is
 - One review per doc. Re-review only when the fixes changed the design, and at most twice; then hand it over with what's still open.
 - For a spec written during brainstorming, the spec-reviewer replaces the builder check: its report also covers what a builder would have to guess.
 - For a plan, run writing-plans' self-review first, then the spec-reviewer. This overrides that skill's "not a subagent dispatch" line.
-- Skip it for an edit that only records status (an "As built" note, a checked box) and for docs outside those two folders, such as `docs/tmp/` reports.
+- Skip it for an edit that only records status (an "As built" note, a checked box) and for docs outside those two folders, such as `docs/tmp/` reports. Make such edits with Edit: the gate counts a Write of a spec or plan as a new doc.
 
 ### Tests Are Mandatory (TDD Preferred)
 
