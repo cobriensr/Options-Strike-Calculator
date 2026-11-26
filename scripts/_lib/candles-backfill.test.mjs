@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  DayFailure,
   WRITE_BATCH,
   classifyFailure,
   runDays,
@@ -18,6 +19,8 @@ import {
   INDEXES,
   UW_CANDLE_LIMIT,
   UW_USER_AGENT,
+  extremesFor,
+  fetchSchwabDailyCandles,
   fetchSchwabDailyCloses,
   fetchUwCandles,
   loadSchwabCloses,
@@ -26,6 +29,7 @@ import {
   processIndexDay,
   ratioFor,
   ratioLines,
+  regularBars,
   summarizeCandleRun,
   toEtfRows,
   toIndexRows,
@@ -433,6 +437,188 @@ describe('fetchSchwabDailyCloses', () => {
   });
 });
 
+/** A daily candle whose close, high and low differ, as a real day's do. */
+function rangedCandle(date, close, high, low) {
+  return { ...dailyCandle(date, close), high, low };
+}
+
+describe('fetchSchwabDailyCandles', () => {
+  beforeEach(() => atTime(TODAY));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the close, high and low of each candle from one response, keyed on the ET date', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        candles: [
+          rangedCandle(D1, 6401.28, 6420.5, 6390.25),
+          rangedCandle(D2, 6455.92, 6470, 6430.75),
+        ],
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const candles = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect([...candles]).toEqual([
+      [D1, { close: 6401.28, high: 6420.5, low: 6390.25 }],
+      [D2, { close: 6455.92, high: 6470, low: 6430.75 }],
+    ]);
+  });
+
+  it('asks for the same padded daily range, with the token, as the closes call did', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ candles: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchSchwabDailyCandles('tok', '$NDX', D1, D2);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(url);
+    expect(parsed.pathname).toBe('/marketdata/v1/pricehistory');
+    expect(parsed.searchParams.get('symbol')).toBe('$NDX');
+    expect(parsed.searchParams.get('frequencyType')).toBe('daily');
+    expect(Number(parsed.searchParams.get('startDate'))).toBe(
+      Date.parse(`${D1}T00:00:00Z`) - 2 * 86_400_000,
+    );
+    expect(init.headers.Authorization).toBe('Bearer tok');
+  });
+
+  it('leaves out a candle with no usable close, as the closes call does', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          candles: [
+            rangedCandle(D1, 6401.28, 6420.5, 6390.25),
+            rangedCandle(D2, 0, 6470, 6430.75),
+            rangedCandle('2026-08-14', null, 6470, 6430.75),
+          ],
+        }),
+      ),
+    );
+
+    const candles = await fetchSchwabDailyCandles(
+      'tok',
+      '$SPX',
+      D1,
+      '2026-08-14',
+    );
+
+    expect([...candles.keys()]).toEqual([D1]);
+  });
+
+  it.each([
+    ['a missing high', { high: undefined }],
+    ['a zero low', { low: 0 }],
+    ['a text high', { high: 'abc' }],
+    ['a high under the low', { high: 6000, low: 6100 }],
+    ['an infinite high', { high: Number.POSITIVE_INFINITY }],
+  ])(
+    'keeps the close but reads %s as no daily range',
+    async (_label, overrides) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          jsonResponse({
+            candles: [
+              {
+                ...rangedCandle(D1, 6401.28, 6420.5, 6390.25),
+                ...overrides,
+              },
+            ],
+          }),
+        ),
+      );
+
+      const candles = await fetchSchwabDailyCandles('tok', '$SPX', D1, D1);
+
+      expect(candles.get(D1)).toEqual({
+        close: 6401.28,
+        high: null,
+        low: null,
+      });
+    },
+  );
+
+  it('throws on an HTTP error, naming the status and masking token-like text', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 401,
+        text: async () => 'Unauthorized abcdefghijklmnopqrstuvwxyz012345',
+      })),
+    );
+
+    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
+      (e) => e,
+    );
+
+    expect(err.message).toContain('pricehistory $SPX HTTP 401');
+    expect(err.message).toContain('Unauthorized [redacted]');
+  });
+
+  it('throws a SyntaxError for a body with no candles array', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ symbol: '$SPX' })),
+    );
+
+    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
+      (e) => e,
+    );
+
+    expect(err).toBeInstanceOf(SyntaxError);
+    expect(err.message).toContain('no candles array');
+  });
+
+  it('throws a SyntaxError for a candle that lands on a non-trading day', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          candles: [
+            {
+              ...rangedCandle(D1, 1, 2, 0.5),
+              datetime: Date.parse('2026-08-10T00:00:00Z'),
+            },
+          ],
+        }),
+      ),
+    );
+
+    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
+      (e) => e,
+    );
+
+    expect(err).toBeInstanceOf(SyntaxError);
+    expect(err.message).toContain('not a trading day');
+  });
+
+  it('is what fetchSchwabDailyCloses reads: its closes are the candles closes, from one call', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        candles: [
+          rangedCandle(D1, 6401.28, 6420.5, 6390.25),
+          rangedCandle(D2, 6455.92, 6470, 6430.75),
+        ],
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const closes = await fetchSchwabDailyCloses('tok', '$SPX', D1, D2);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect([...closes]).toEqual([
+      [D1, 6401.28],
+      [D2, 6455.92],
+    ]);
+  });
+});
+
 describe('loadSchwabCloses', () => {
   beforeEach(() => atTime(TODAY));
   afterEach(() => {
@@ -466,6 +652,61 @@ describe('loadSchwabCloses', () => {
     expect([...closes.keys()]).toEqual(['$SPX', 'SPY', '$NDX', 'QQQ']);
     expect(closes.get('$SPX').closes.get(D1)).toBe(6401.28);
     expect(closes.get('QQQ').closes.get(D2)).toBe(577);
+  });
+
+  it('stores each symbol as its closes and its extremes, from the one call', async () => {
+    const fetchMock = vi.fn(async (url) => {
+      const symbol = new URL(url).searchParams.get('symbol');
+      return jsonResponse({
+        candles: Object.entries(FIXTURE_CLOSES).map(([date, row]) =>
+          rangedCandle(date, row[symbol], row[symbol] + 11, row[symbol] - 7),
+        ),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const closes = await loadSchwabCloses(fakeRedis(), creds, D1, D2);
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const spx = closes.get('$SPX');
+    expect(Object.keys(spx).sort()).toEqual(['closes', 'extremes']);
+    expect(spx.closes).toBeInstanceOf(Map);
+    expect([...spx.closes]).toEqual([
+      [D1, 6401.28],
+      [D2, 6455.92],
+    ]);
+    expect(spx.extremes.get(D1)).toEqual({
+      high: 6401.28 + 11,
+      low: 6401.28 - 7,
+    });
+    expect(spx.extremes.get(D2)).toEqual({
+      high: 6455.92 + 11,
+      low: 6455.92 - 7,
+    });
+    expect(closes.get('QQQ').extremes.get(D1)).toEqual({
+      high: 573.2 + 11,
+      low: 573.2 - 7,
+    });
+  });
+
+  it('keeps a close whose candle has no usable range, and leaves that date out of the extremes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          candles: [
+            rangedCandle(D1, 100, 110, 90),
+            { ...rangedCandle(D2, 101, 110, 90), high: null },
+          ],
+        }),
+      ),
+    );
+
+    const closes = await loadSchwabCloses(fakeRedis(), creds, D1, D2);
+
+    const spx = closes.get('$SPX');
+    expect([...spx.closes.keys()]).toEqual([D1, D2]);
+    expect([...spx.extremes.keys()]).toEqual([D1]);
   });
 
   it('records one symbol failing without losing the others', async () => {
@@ -641,6 +882,91 @@ describe('ratioLines', () => {
     );
     expect(lines.at(-1)).not.toContain('\n');
   });
+});
+
+describe('extremesFor', () => {
+  /** schwabClosesMap, with extremes on each index symbol. */
+  function withExtremes() {
+    const closes = schwabClosesMap();
+    closes.get('$SPX').extremes = new Map([
+      [D1, { high: 6420.5, low: 6390.25 }],
+    ]);
+    closes.get('$NDX').extremes = new Map([
+      [D1, { high: 23600, low: 23400.5 }],
+    ]);
+    return closes;
+  }
+
+  it("is the index's daily high and low for the date, each symbol from its own Schwab index", () => {
+    const closes = withExtremes();
+
+    expect(extremesFor(closes, 'SPX', D1)).toEqual({
+      high: 6420.5,
+      low: 6390.25,
+    });
+    expect(extremesFor(closes, 'NDX', D1)).toEqual({
+      high: 23600,
+      low: 23400.5,
+    });
+  });
+
+  it('throws a DayFailure, by name, for a date with no extremes', () => {
+    const err = catchError(() => extremesFor(withExtremes(), 'SPX', D2));
+
+    expect(err).toBeInstanceOf(DayFailure);
+    expect(classifyFailure(err).kind).toBe('other');
+    expect(err.message).toBe(
+      `no extremes for SPX on ${D2}: Schwab has no $SPX daily high and low for ${D2}`,
+    );
+  });
+
+  it('throws a DayFailure for closes loaded without extremes', () => {
+    const err = catchError(() => extremesFor(schwabClosesMap(), 'NDX', D1));
+
+    expect(err).toBeInstanceOf(DayFailure);
+    expect(err.message).toContain('Schwab has no $NDX daily high and low');
+  });
+
+  it('keeps the kind of a Schwab fetch failure and says which call failed', () => {
+    const closes = schwabClosesMap({
+      $SPX: {
+        failure: { kind: 'timeout', detail: 'The operation timed out' },
+      },
+    });
+
+    const err = catchError(() => extremesFor(closes, 'SPX', D1));
+
+    expect(err).toBeInstanceOf(DayFailure);
+    expect(classifyFailure(err).kind).toBe('timeout');
+    expect(err.message).toBe(
+      `no extremes for SPX on ${D1}: Schwab $SPX daily history failed: ` +
+        'The operation timed out',
+    );
+  });
+
+  it('throws a DayFailure when the symbol was never loaded', () => {
+    const err = catchError(() => extremesFor(new Map(), 'SPX', D1));
+
+    expect(err).toBeInstanceOf(DayFailure);
+    expect(err.message).toContain('no extremes for SPX');
+  });
+
+  it.each([
+    ['no high', { high: null, low: 6390.25 }],
+    ['a zero low', { high: 6420.5, low: 0 }],
+    ['a NaN high', { high: Number.NaN, low: 6390.25 }],
+  ])(
+    'refuses an extremes entry with %s, as ratioFor refuses a zero close',
+    (_label, extremes) => {
+      const closes = schwabClosesMap();
+      closes.get('$SPX').extremes = new Map([[D1, extremes]]);
+
+      const err = catchError(() => extremesFor(closes, 'SPX', D1));
+
+      expect(err).toBeInstanceOf(DayFailure);
+      expect(err.message).toContain('Schwab has no $SPX daily high and low');
+    },
+  );
 });
 
 // ── Bar mapping ────────────────────────────────────────────
@@ -836,6 +1162,65 @@ describe('toIndexRows', () => {
     const { rows, dropped } = toIndexRows('SPX', D1, input, 10);
     expect(rows).toHaveLength(2);
     expect(rows.length + dropped).toBe(input.length);
+  });
+});
+
+describe('regularBars', () => {
+  it('keeps the regular-session bars, oldest first, and leaves out pre- and post-market', () => {
+    const input = [
+      bar('2026-08-12T20:00:00Z', { market_time: 'po' }),
+      bar('2026-08-12T13:31:00Z'),
+      bar('2026-08-12T08:00:00Z', { market_time: 'pr' }),
+      bar('2026-08-12T13:30:00Z'),
+    ];
+
+    const picked = regularBars(input, D1);
+
+    expect(picked.map(({ bar: b }) => b.start_time)).toEqual([
+      '2026-08-12T13:30:00Z',
+      '2026-08-12T13:31:00Z',
+    ]);
+    expect(picked.map(({ ts }) => ts)).toEqual([
+      Date.parse('2026-08-12T13:30:00Z'),
+      Date.parse('2026-08-12T13:31:00Z'),
+    ]);
+  });
+
+  it('is the regular rows toIndexRows maps, malformed bars, repeated minutes and off-date bars included', () => {
+    const input = [
+      bar('2026-08-12T13:30:00Z'),
+      bar('2026-08-12T13:30:00Z', { close: '999' }),
+      bar('2026-08-12T13:31:00Z', { volume: 10.5 }),
+      bar('2026-08-12T13:32:00Z', { market_time: 'rth' }),
+      bar('2026-08-12T13:33:00Z', { close: 'x' }),
+      bar('2026-08-12T13:34:00Z'),
+      bar('2026-08-13T13:30:00Z'),
+      bar('soon'),
+      bar('2026-08-12T07:00:00Z', { market_time: 'pr' }),
+      bar('2026-08-12T20:30:00Z', { market_time: 'po' }),
+    ];
+
+    const mapped = toIndexRows('SPX', D1, input, 10)
+      .rows.filter((row) => row.market_time === 'r')
+      .map((row) => row.timestamp);
+    const regular = regularBars(input, D1).map(({ ts }) =>
+      new Date(ts).toISOString(),
+    );
+
+    expect(regular).toEqual([
+      '2026-08-12T13:30:00.000Z',
+      '2026-08-12T13:34:00.000Z',
+    ]);
+    expect(regular).toEqual(mapped);
+    // The first bar of a repeated minute wins, as in toIndexRows.
+    expect(regularBars(input, D1)[0].bar.close).toBe('637.30');
+  });
+
+  it('is empty for no bars, and for a day with only extended-hours bars', () => {
+    expect(regularBars([], D1)).toEqual([]);
+    expect(
+      regularBars([bar('2026-08-12T08:00:00Z', { market_time: 'pr' })], D1),
+    ).toEqual([]);
   });
 });
 

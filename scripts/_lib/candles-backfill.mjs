@@ -7,8 +7,9 @@
  *
  *   - planCandleDays: the flags and the trading days to fill;
  *   - the per-day ratio: loadSchwabCloses fetches the daily closes of $SPX,
- *     SPY, $NDX and QQQ from Schwab, ratioFor reads SPX close ÷ SPY close
- *     (NDX ÷ QQQ) for a date, ratioLines prints the table for review;
+ *     SPY, $NDX and QQQ from Schwab (and the highs and lows with them),
+ *     ratioFor reads SPX close ÷ SPY close (NDX ÷ QQQ) for a date, ratioLines
+ *     prints the table for review, extremesFor reads the index's daily range;
  *   - the bar mapping, mirroring api/cron/fetch-etf-candles-1m.ts and
  *     api/cron/fetch-spx-candles-1m.ts: toEtfRows, toIndexRows;
  *   - ETF_TARGET and INDEX_TARGET: each table's real unique key, for
@@ -95,21 +96,28 @@ export function planCandleDays(argv) {
 
 // ── Schwab daily closes and the per-day ratio ──────────────
 
+/** A price Schwab can have traded at: a finite number above 0. */
+function isUsablePrice(value) {
+  return Number.isFinite(value) && value > 0;
+}
+
 /**
- * Schwab's daily closes of `symbol` from `from` to `to` (YYYY-MM-DD, ET), as a
- * Map of ET date → close. One /pricehistory call: daily candles over the range
- * padded by two days each side (the candle stamp is a midnight of some zone,
- * and the date it names is read in ET below, the way fetch-outcomes.ts reads
- * it), never past now.
+ * Schwab's daily candles of `symbol` from `from` to `to` (YYYY-MM-DD, ET), as
+ * a Map of ET date → `{ close, high, low }`. One /pricehistory call: daily
+ * candles over the range padded by two days each side (the candle stamp is a
+ * midnight of some zone, and the date it names is read in ET below, the way
+ * fetch-outcomes.ts reads it), never past now.
  *
  * Throws on an HTTP error (the status and a masked body), a network error or
  * timeout (the fetch's own), a body that isn't JSON or has no `candles` array
  * (a SyntaxError), and a candle that lands on a day that isn't a trading day
  * (a SyntaxError: the stamp-to-date mapping is wrong, which would shift every
  * ratio a day). A candle with no usable close (not a finite number above 0)
- * is left out, so its date reads as having no close.
+ * is left out, so its date reads as having no close. A candle whose high and
+ * low are not both usable (finite, above 0, low not over high) keeps its close
+ * and has `high` and `low` null, so its date reads as having no daily range.
  */
-export async function fetchSchwabDailyCloses(accessToken, symbol, from, to) {
+export async function fetchSchwabDailyCandles(accessToken, symbol, from, to) {
   const params = new URLSearchParams({
     symbol,
     periodType: 'year',
@@ -136,9 +144,9 @@ export async function fetchSchwabDailyCloses(accessToken, symbol, from, to) {
       `Schwab pricehistory ${symbol}: no candles array in the response`,
     );
   }
-  const closes = new Map();
+  const candles = new Map();
   for (const candle of body.candles) {
-    if (!Number.isFinite(candle?.close) || candle.close <= 0) continue;
+    if (!isUsablePrice(candle?.close)) continue;
     const date = getETDateStr(new Date(candle.datetime));
     if (!isTradingDay(date)) {
       throw new SyntaxError(
@@ -146,9 +154,40 @@ export async function fetchSchwabDailyCloses(accessToken, symbol, from, to) {
           `${candle.datetime} reads as ${date}, not a trading day`,
       );
     }
-    closes.set(date, candle.close);
+    const hasRange =
+      isUsablePrice(candle.high) &&
+      isUsablePrice(candle.low) &&
+      candle.low <= candle.high;
+    candles.set(date, {
+      close: candle.close,
+      high: hasRange ? candle.high : null,
+      low: hasRange ? candle.low : null,
+    });
   }
-  return closes;
+  return candles;
+}
+
+/**
+ * Schwab's daily closes of `symbol` from `from` to `to`, as a Map of ET date →
+ * close: fetchSchwabDailyCandles' close of each candle, with its errors.
+ */
+export async function fetchSchwabDailyCloses(accessToken, symbol, from, to) {
+  const candles = await fetchSchwabDailyCandles(accessToken, symbol, from, to);
+  return closesOf(candles);
+}
+
+/** The ET date → close Map of a daily-candle Map. */
+function closesOf(candles) {
+  return new Map([...candles].map(([date, { close }]) => [date, close]));
+}
+
+/** The ET date → `{ high, low }` Map of the candles that have a daily range. */
+function extremesOf(candles) {
+  const extremes = new Map();
+  for (const [date, { high, low }] of candles) {
+    if (high !== null && low !== null) extremes.set(date, { high, low });
+  }
+  return extremes;
 }
 
 /** A thrown error as the `{ kind, detail }` a missing ratio carries. */
@@ -158,11 +197,12 @@ function failureOf(err) {
 }
 
 /**
- * Schwab's daily closes for the four symbols, `from` to `to`, as a Map of
- * Schwab symbol → `{ closes: Map<date, close> }` or `{ failure: { kind,
- * detail } }`. Never throws: a symbol whose call fails is that failure, and
- * when the token itself can't be had (SchwabAuthError) all four are. A
- * failure surfaces as the failed days that needed it (ratioFor), so the run
+ * Schwab's daily history for the four symbols, `from` to `to`, as a Map of
+ * Schwab symbol → `{ closes: Map<date, close>, extremes: Map<date, { high,
+ * low }> }` or `{ failure: { kind, detail } }`. One call per symbol gives both
+ * maps. Never throws: a symbol whose call fails is that failure, and when the
+ * token itself can't be had (SchwabAuthError) all four are. A failure surfaces
+ * as the failed days that needed it (ratioFor, extremesFor), so the run
  * reports it by name instead of ending.
  *
  * `redis` is an Upstash client; `creds` is `{ clientId, clientSecret }`.
@@ -180,8 +220,10 @@ export async function loadSchwabCloses(redis, creds, from, to) {
   }
   for (const symbol of SCHWAB_SYMBOLS) {
     try {
+      const candles = await fetchSchwabDailyCandles(token, symbol, from, to);
       closes.set(symbol, {
-        closes: await fetchSchwabDailyCloses(token, symbol, from, to),
+        closes: closesOf(candles),
+        extremes: extremesOf(candles),
       });
     } catch (err) {
       closes.set(symbol, { failure: failureOf(err) });
@@ -190,16 +232,19 @@ export async function loadSchwabCloses(redis, creds, from, to) {
   return closes;
 }
 
+/** A failed Schwab history entry as the `{ kind, detail }` a missing value carries. */
+function historyFailure(entry, schwabSymbol) {
+  return {
+    kind: entry.failure.kind,
+    detail: `Schwab ${schwabSymbol} daily history failed: ${entry.failure.detail}`,
+  };
+}
+
 /** One Schwab close: `{ close }`, or `{ failure }` saying why there is none. */
 function closeOf(closes, schwabSymbol, date) {
   const entry = closes.get(schwabSymbol);
   if (entry?.failure) {
-    return {
-      failure: {
-        kind: entry.failure.kind,
-        detail: `Schwab ${schwabSymbol} daily history failed: ${entry.failure.detail}`,
-      },
-    };
+    return { failure: historyFailure(entry, schwabSymbol) };
   }
   const close = entry?.closes.get(date);
   if (!Number.isFinite(close) || close <= 0) {
@@ -244,6 +289,34 @@ export function ratioFor(closes, symbol, date) {
     );
   }
   return outcome;
+}
+
+/**
+ * The daily high and low of the index (`$SPX` / `$NDX`) on `date`, `{ high,
+ * low }`, from Schwab's daily history (loadSchwabCloses). Throws a DayFailure
+ * when there are none, like ratioFor: the kind that of the Schwab failure
+ * behind it, `other` for a date Schwab has no high and low for.
+ */
+export function extremesFor(closes, symbol, date) {
+  const { schwabIndex } = INDEXES.find((i) => i.symbol === symbol);
+  const entry = closes.get(schwabIndex);
+  let failure;
+  if (entry?.failure) {
+    failure = historyFailure(entry, schwabIndex);
+  } else {
+    const extremes = entry?.extremes?.get(date);
+    if (isUsablePrice(extremes?.high) && isUsablePrice(extremes?.low)) {
+      return { high: extremes.high, low: extremes.low };
+    }
+    failure = {
+      kind: 'other',
+      detail: `Schwab has no ${schwabIndex} daily high and low for ${date}`,
+    };
+  }
+  throw new DayFailure(
+    failure.kind,
+    `no extremes for ${symbol} on ${date}: ${failure.detail}`,
+  );
 }
 
 /**
@@ -392,6 +465,19 @@ export function toIndexRows(symbol, date, bars, ratio) {
     ndx_schwab_price: null,
   }));
   return { rows, dropped };
+}
+
+/**
+ * The regular-session bars of ET `date` that toIndexRows maps, as selectBars'
+ * `{ bar, ts }` pairs, oldest first: the same selectBars call, the same
+ * well-formed filter, the market_time 'r' bars of it. The fit (index-candle-fit)
+ * reads these, so what it fits is what toIndexRows writes as regular minutes.
+ * toIndexRows does not call this: it maps every session.
+ */
+export function regularBars(bars, date) {
+  return selectBars(bars, date, isIndexBar).picked.filter(
+    ({ bar }) => bar.market_time === 'r',
+  );
 }
 
 // ── Writes ─────────────────────────────────────────────────
