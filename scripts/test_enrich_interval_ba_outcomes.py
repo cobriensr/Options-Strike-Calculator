@@ -24,10 +24,7 @@ Run from the repo root with the ml venv:
 from __future__ import annotations
 
 import csv
-import http.server
-import re
 import sys
-import threading
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -37,17 +34,25 @@ from unittest.mock import MagicMock
 import duckdb
 import psycopg2
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import enrich_interval_ba_outcomes as mod  # noqa: E402
+from _ba_test_support import (  # noqa: E402
+    DAY,
+    DAY_ISO,
+    EPOCH,
+    EXPORT_SCHEMA,
+    at,
+    export_row,
+    fake_s3,  # noqa: F401  (a fixture: pytest finds it by name)
+    local_connection,
+    s3_connection,
+    write_export,
+)
 
-DAY = date(2026, 11, 17)  # a Tuesday: CST, so the 15:00 CT close is 21:00 UTC
-DAY_ISO = DAY.isoformat()
 CLOSE = datetime(2026, 11, 17, 21, 0, tzinfo=UTC)
-EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 SPXW_C = 'SPXW261117C06700000'
 SPXW_P = 'SPXW261117P06600000'
@@ -55,11 +60,6 @@ SPX_C = 'SPX261117C06700000'  # root SPX: another product
 SPY_C = 'SPY261117C00670000'
 
 LAYOUTS = ['naive', 'tz']
-
-
-def at(clock: str, day: date = DAY) -> datetime:
-    """An aware UTC instant on `day` from 'HH:MM:SS[.ffffff]'."""
-    return datetime.fromisoformat(f'{day.isoformat()}T{clock}+00:00')
 
 
 # --- the tape ---------------------------------------------------------------------------------
@@ -126,13 +126,6 @@ def write_tape(
     finally:
         db.close()
     return path.as_posix()
-
-
-def local_connection() -> duckdb.DuckDBPyConnection:
-    """A DuckDB connection under a session zone that is not UTC."""
-    db = duckdb.connect()
-    db.execute("SET TimeZone='America/Chicago'")
-    return db
 
 
 @pytest.fixture
@@ -423,74 +416,8 @@ def test_object_exists_takes_only_a_404_for_missing_and_raises_every_other_failu
 
 # --- the two sources ------------------------------------------------------------------------------
 
-# The columns of the tool's export, in its order (spec 6.5). test_export_columns_match_the_tool
-# holds this copy to the tool's own schema.
-_UTC_US = pa.timestamp('us', tz='UTC')
-EXPORT_SCHEMA = pa.schema(
-    [
-        ('option_chain', pa.string()),
-        ('ticker', pa.string()),
-        ('option_type', pa.string()),
-        ('strike', pa.decimal128(10, 3)),
-        ('expiry', pa.date32()),
-        ('bucket_start', _UTC_US),
-        ('bucket_end', _UTC_US),
-        ('fired_at', _UTC_US),
-        ('ratio_pct', pa.decimal128(5, 2)),
-        ('ask_premium', pa.decimal128(14, 2)),
-        ('total_premium', pa.decimal128(14, 2)),
-        ('trade_count', pa.int32()),
-        ('top_trade_premium', pa.decimal128(14, 2)),
-        ('top_trade_size', pa.int32()),
-        ('top_trade_executed_at', _UTC_US),
-        ('top_trade_is_sweep', pa.bool_()),
-        ('top_trade_is_floor', pa.bool_()),
-        ('underlying_price', pa.decimal128(10, 2)),
-        ('confluence_tickers', pa.list_(pa.string())),
-    ]
-)
-
-
-def export_row(
-    chain: str,
-    fired_clock: str,
-    spot: str | None,
-    *,
-    total: str = '300000.00',
-    expiry: date = DAY,
-) -> dict[str, object]:
-    fired = at(fired_clock, expiry)
-    bucket = fired - timedelta(seconds=fired.timestamp() % 300)
-    return {
-        'option_chain': chain,
-        'ticker': chain[:-15],
-        'option_type': chain[-9],
-        'strike': Decimal('6700.000'),
-        'expiry': expiry,
-        'bucket_start': bucket,
-        'bucket_end': bucket + timedelta(seconds=300),
-        'fired_at': fired,
-        'ratio_pct': Decimal('80.00'),
-        'ask_premium': Decimal(total) * Decimal('0.8'),
-        'total_premium': Decimal(total),
-        'trade_count': 3,
-        'top_trade_premium': Decimal('100000.00'),
-        'top_trade_size': 10,
-        'top_trade_executed_at': fired,
-        'top_trade_is_sweep': False,
-        'top_trade_is_floor': False,
-        'underlying_price': Decimal(spot) if spot is not None else None,
-        'confluence_tickers': [],
-    }
-
-
-def write_export(
-    tmp_path: Path, rows: list[dict[str, object]], schema: pa.Schema = EXPORT_SCHEMA
-) -> str:
-    path = tmp_path / f'replay-{DAY_ISO}.parquet'
-    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
-    return path.as_posix()
-
+# The replay export's schema, export_row and write_export are in _ba_test_support (shared with the
+# analyze scripts' tests). test_export_columns_match_the_tool holds the schema copy to the tool's.
 
 TABLE_COLUMNS = (
     'id',
@@ -505,6 +432,7 @@ TABLE_COLUMNS = (
     'trade_count',
     'underlying_price',
     'top_trade_is_sweep',
+    'top_trade_is_floor',
 )
 
 
@@ -530,6 +458,7 @@ def table_row(
         'trade_count': 3,
         'underlying_price': Decimal(spot) if spot is not None else None,
         'top_trade_is_sweep': False,
+        'top_trade_is_floor': False,
     }
 
 
@@ -586,6 +515,38 @@ def test_export_filters_by_ticker_expiry_and_limit_in_fired_order(tmp_path, con)
     assert [a['option_chain'] for a in both_days] == [SPXW_P, SPXW_C, 'SPXW261118C06700000']
     assert [a['option_chain'] for a in one_day] == [SPXW_P, SPXW_C]
     assert [a['option_chain'] for a in first] == [SPXW_P]
+
+
+def test_export_reads_every_ticker_in_one_call_when_none_is_named(tmp_path, con):
+    url = write_export(
+        tmp_path,
+        [
+            export_row(SPXW_C, '20:55:00', '6710.00'),
+            export_row(SPY_C, '20:51:00', '670.00'),
+            export_row('QQQ261117P00590000', '20:52:00', '590.00'),
+        ],
+    )
+
+    alerts = mod.fetch_export_alerts(con, url, None, None, None, None)
+
+    assert [a['ticker'] for a in alerts] == ['SPY', 'QQQ', 'SPXW']  # in fired order
+
+
+def test_export_alerts_carry_both_top_trade_flags(tmp_path, con):
+    url = write_export(
+        tmp_path,
+        [
+            export_row(SPXW_C, '20:50:00', '6701.00', top_trade_is_sweep=True),
+            export_row(SPXW_P, '20:51:00', '6701.00', top_trade_is_floor=True),
+        ],
+    )
+
+    alerts = mod.fetch_export_alerts(con, url, 'SPXW', None, None, None)
+
+    assert [(a['top_trade_is_sweep'], a['top_trade_is_floor']) for a in alerts] == [
+        (True, False),
+        (False, True),
+    ]
 
 
 def test_table_fetch_does_not_drop_rows_with_a_null_spot(monkeypatch):
@@ -930,7 +891,6 @@ def test_no_matching_alerts_exits_with_a_message(run, monkeypatch):
 @pytest.mark.parametrize(
     'argv',
     [
-        ['--source', 'export'],  # no end date: no object to read
         ['--source', 'table', '--export-end', DAY_ISO],  # an end date the table ignores
         ['--source', 'export', '--export-end', '2026-13-45'],  # not a date
         ['--source', 'files'],
@@ -949,16 +909,117 @@ def test_a_missing_export_names_the_key_it_looked_for(run):
         mod.main(['--source', 'export', '--export-end', DAY_ISO])
 
 
-def test_an_export_without_the_columns_the_script_reads_names_them(run):
-    narrow = pa.schema(
-        [f for f in EXPORT_SCHEMA if f.name not in ('fired_at', 'underlying_price')]
-    )
+def test_export_end_with_table_source_exits_2(run):
+    with pytest.raises(SystemExit) as stopped:
+        mod.main(['--source', 'table', '--export-end', DAY_ISO])
+
+    assert stopped.value.code == 2
+    assert not (run / 'out').exists()
+
+
+def never_open_the_database(monkeypatch) -> MagicMock:
+    """psycopg2.connect raises: an export-mode run must read R2 only."""
+    opened = MagicMock(side_effect=AssertionError('the database was opened'))
+    monkeypatch.setattr(psycopg2, 'connect', opened)
+    return opened
+
+
+def test_the_default_source_is_the_export_and_never_the_database(run, monkeypatch):
+    write_tape(run, CLOSE_TAPE)
+    write_export(run, [export_row(SPXW_C, '20:50:00', '6701.00')])
+    opened = never_open_the_database(monkeypatch)
+
+    assert mod.parse_args([]).source == 'export'
+    assert mod.main([]) == 0
+
+    opened.assert_not_called()
+    assert {r['alert_id'] for r in read_rows(outcome_csv(run / 'out', export=True))} == {
+        f'{SPXW_C}@{int(at("20:50:00").timestamp()) // 300 * 300}'
+    }
+
+
+def test_export_end_defaults_to_the_newest_replay_object(run, con, capsys):
+    write_tape(run, CLOSE_TAPE)
+    write_export(run, [export_row(SPXW_P, '20:50:00', '6701.00')], end='2026-11-16')
+    write_export(run, [export_row(SPXW_C, '20:50:00', '6701.00')], end='2026-11-17')
+    # Names that are not a replay date: never the newest.
+    (run / 'replay-latest.parquet').write_bytes(b'x')
+    (run / 'replay-2026-11-30.parquet.bak').write_bytes(b'x')
+
+    assert mod.newest_export_end(con) == '2026-11-17'
+    assert mod.main([]) == 0
+
+    out = capsys.readouterr().out
+    assert 'Export: research/interval-ba/replay-2026-11-17.parquet (the newest)' in out
+    assert {r['option_chain'] for r in read_rows(outcome_csv(run / 'out', export=True))} == {
+        SPXW_C
+    }
+    (summary,) = (run / 'out').glob('interval-ba-outcomes-summary-export-2*.md')
+    assert 'research/interval-ba/replay-2026-11-17.parquet' in summary.read_text('utf-8')
+
+
+def test_a_named_export_end_is_taken_even_when_a_newer_one_exists(run, con, capsys):
+    write_tape(run, CLOSE_TAPE)
+    write_export(run, [export_row(SPXW_P, '20:50:00', '6701.00')], end='2026-11-16')
+    write_export(run, [export_row(SPXW_C, '20:50:00', '6701.00')], end='2026-11-17')
+
+    assert mod.main(['--export-end', '2026-11-16']) == 0
+
+    out = capsys.readouterr().out
+    assert 'Export: research/interval-ba/replay-2026-11-16.parquet\n' in out
+    assert {r['option_chain'] for r in read_rows(outcome_csv(run / 'out', export=True))} == {
+        SPXW_P
+    }
+
+
+def test_no_replay_object_exits_with_a_message_naming_the_prefix(run):
+    with pytest.raises(SystemExit, match=r'No replay object under research/interval-ba/ in R2'):
+        mod.main([])
+
+    assert not list((run / 'out').glob('*.csv'))
+
+
+def test_outcomes_csv_discovery_follows_the_name_the_script_writes(tmp_path):
+    for name in (
+        'interval-ba-outcomes-20261120-100000.csv',
+        'interval-ba-outcomes-20261126-101500.csv',  # SPXW, table: the newest of its kind
+        'interval-ba-outcomes-export-20261126-120000.csv',
+        'interval-ba-outcomes-export-spy-20261126-121000.csv',
+        'interval-ba-outcomes-spy-20261126-130000.csv',
+        'interval-ba-outcomes-20261126-140000.csv.partial',  # a run that died
+        'interval-ba-outcomes-summary-20261126-101500.md',
+    ):
+        (tmp_path / name).write_text('x', encoding='utf-8')
+
+    def newest(ticker: str, export: bool) -> str | None:
+        found = mod.newest_outcomes_csv(tmp_path, ticker, export)
+        return found.name if found else None
+
+    assert newest('SPXW', False) == 'interval-ba-outcomes-20261126-101500.csv'
+    assert newest('SPXW', True) == 'interval-ba-outcomes-export-20261126-120000.csv'
+    assert newest('SPY', False) == 'interval-ba-outcomes-spy-20261126-130000.csv'
+    assert newest('SPY', True) == 'interval-ba-outcomes-export-spy-20261126-121000.csv'
+    assert newest('QQQ', False) is None
+    assert newest('QQQ', True) is None
+    assert mod.outcomes_prefix('SPXW', False) == 'interval-ba-outcomes-'
+    assert mod.outcomes_prefix('SPY', True) == 'interval-ba-outcomes-export-spy-'
+
+
+@pytest.mark.parametrize(
+    'missing',
+    [
+        ('fired_at', 'underlying_price'),
+        ('top_trade_is_floor',),  # which the cuts analysis reads
+    ],
+)
+def test_an_export_without_the_columns_the_script_reads_names_them(run, missing):
+    narrow = pa.schema([f for f in EXPORT_SCHEMA if f.name not in missing])
     rows = [
         {k: v for k, v in export_row(SPXW_C, '20:50:00', '6701.00').items() if k in narrow.names}
     ]
     write_export(run, rows, narrow)
 
-    with pytest.raises(SystemExit, match='fired_at, underlying_price'):
+    with pytest.raises(SystemExit, match=', '.join(missing)):
         mod.main(['--source', 'export', '--export-end', DAY_ISO])
 
 
@@ -999,100 +1060,16 @@ def test_export_url_without_a_bucket_exits_naming_the_variable(monkeypatch, valu
 # --- over s3:// against a fake S3 on loopback ---------------------------------------------------
 
 
-class FakeS3:
-    """A bucket on 127.0.0.1 for DuckDB's httpfs, started for one test and closed in its
-    teardown. `objects` maps '/bucket/key' to bytes, served with HEAD and ranged GET. A path in
-    `forbidden` answers 403, every other path 404. Nothing leaves the loopback interface."""
-
-    def __init__(self) -> None:
-        self.objects: dict[str, bytes] = {}
-        self.forbidden: set[str] = set()
-        outer = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def _send(self, status: int, body: bytes, extra: dict[str, str] | None = None):
-                self.send_response(status)
-                self.send_header('Content-Type', 'application/octet-stream')
-                self.send_header('Content-Length', str(len(body)))
-                for name, value in (extra or {}).items():
-                    self.send_header(name, value)
-                self.end_headers()
-                if self.command != 'HEAD':
-                    self.wfile.write(body)
-
-            def _serve(self) -> None:
-                path = self.path.split('?', 1)[0]
-                if path in outer.forbidden:
-                    self._send(403, b'<Error><Code>AccessDenied</Code></Error>')
-                    return
-                data = outer.objects.get(path)
-                if data is None:
-                    self._send(404, b'<Error><Code>NoSuchKey</Code></Error>')
-                    return
-                meta = {
-                    'Accept-Ranges': 'bytes',
-                    'ETag': '"fake"',
-                    'Last-Modified': 'Tue, 17 Nov 2026 21:00:00 GMT',
-                }
-                span = re.match(r'bytes=(\d*)-(\d*)', self.headers.get('Range') or '')
-                if span is None:
-                    meta['Content-Length'] = str(len(data))
-                    self._send(200, data, meta)
-                    return
-                if span[1] == '':  # a suffix range: the last N bytes
-                    start, end = max(len(data) - int(span[2]), 0), len(data) - 1
-                else:
-                    start = int(span[1])
-                    end = min(int(span[2]) if span[2] else len(data) - 1, len(data) - 1)
-                meta['Content-Range'] = f'bytes {start}-{end}/{len(data)}'
-                self._send(206, data[start : end + 1], meta)
-
-            do_GET = do_HEAD = _serve
-
-            def log_message(self, *_args) -> None:  # keep pytest's output clean
-                pass
-
-        self._server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        self.port = self._server.server_address[1]
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-
-    def close(self) -> None:
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=10)
-
-
-@pytest.fixture
-def fake_s3():
-    server = FakeS3()
-    try:
-        yield server
-    finally:
-        server.close()
-
-
 @pytest.fixture
 def s3_run(monkeypatch, tmp_path, fake_s3):
-    """main() reading `s3://bucket/...` from the fake S3. r2_url and export_url are the real
-    ones (the bucket comes from the environment); only the connection is swapped."""
+    """main() reading `s3://bucket/...` from the fake S3 (in _ba_test_support). r2_url and
+    export_url are the real ones (the bucket comes from the environment); only the connection is
+    swapped."""
     opened: list[duckdb.DuckDBPyConnection] = []
 
     def connect(**_limits) -> duckdb.DuckDBPyConnection:
-        db = local_connection()
+        db = s3_connection(fake_s3)
         opened.append(db)
-        try:
-            db.execute('SET autoinstall_known_extensions = false')  # LOAD must not reach out
-            db.execute('SET autoload_known_extensions = false')
-            db.execute('LOAD httpfs')
-        except duckdb.Error as exc:
-            pytest.skip(f'httpfs is not installed here: {exc}')
-        db.execute(f"SET s3_endpoint='127.0.0.1:{fake_s3.port}'")
-        db.execute('SET s3_use_ssl = false')
-        db.execute("SET s3_url_style = 'path'")
-        db.execute("SET s3_region = 'auto'")
-        db.execute("SET s3_access_key_id = 'fake'")
-        db.execute("SET s3_secret_access_key = 'fake'")
         return db
 
     monkeypatch.setenv('R2_BUCKET_FULLTAPE', 'bucket')
@@ -1171,3 +1148,41 @@ def test_over_s3_the_export_is_read_and_a_missing_one_names_its_key(s3_run):
         ('5', '6710.00'),
         ('10', '6720.00'),
     ]
+
+
+def replay_key(end: str) -> str:
+    return f'/bucket/research/interval-ba/replay-{end}.parquet'
+
+
+def test_over_s3_the_newest_replay_object_is_listed_and_taken(s3_run, capsys):
+    """The default --export-end is a wildcard LIST of the prefix: glob() of one key would not ask
+    the bucket at all."""
+    objects = s3_run.s3.objects
+    objects[tape_key(DAY_ISO)] = Path(write_tape(s3_run.dir, CLOSE_TAPE)).read_bytes()
+    objects[replay_key('2026-11-16')] = Path(
+        write_export(s3_run.dir, [export_row(SPXW_P, '20:50:00', '6701.00')], end='2026-11-16')
+    ).read_bytes()
+    objects[replay_key(DAY_ISO)] = Path(
+        write_export(s3_run.dir, [export_row(SPXW_C, '20:50:00', '6701.00')])
+    ).read_bytes()
+    # Neighbours under the same prefix that are not a replay date.
+    objects['/bucket/research/interval-ba/replay-2026-11-30.parquet.bak'] = b'x'
+    objects['/bucket/research/interval-ba/notes.parquet'] = b'x'
+    objects['/bucket/research/other/replay-2026-12-31.parquet'] = b'x'
+
+    assert mod.newest_export_end(s3_run.connect()) == DAY_ISO
+    assert mod.main([]) == 0
+
+    assert 'Export: research/interval-ba/replay-2026-11-17.parquet (the newest)' in (
+        capsys.readouterr().out
+    )
+    assert {r['option_chain'] for r in read_rows(outcome_csv(s3_run.dir / 'out', export=True))} == {
+        SPXW_C
+    }
+
+
+def test_over_s3_no_replay_object_exits_with_a_message_naming_the_prefix(s3_run):
+    s3_run.s3.objects['/bucket/research/interval-ba/replay-2026-11-30.parquet.bak'] = b'x'
+
+    with pytest.raises(SystemExit, match=r'No replay object under research/interval-ba/ in R2'):
+        mod.main([])

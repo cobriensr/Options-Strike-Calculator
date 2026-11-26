@@ -25,13 +25,17 @@ compare with CSVs written by the one before it:
     want of a spot, in the per-day lines and the summary.
 
 Sources (``--source``):
+  export  the full-year replay in R2, research/interval-ba/replay-<end>.parquet, written by
+          scripts/interval_ba_tape.py: one rule all year and no gaps. This is the default.
+          ``--export-end`` names one; without it the newest in R2 is taken (a wildcard list
+          of the prefix) and its key is printed. The export has no table ids, so ``alert_id``
+          is "<option_chain>@<bucket_start in epoch seconds>", the table's unique key, and the
+          files are named interval-ba-outcomes-export-*.
   table   interval_ba_alerts in Neon, read only: the live record, plus what the nightly tape
-          step added to it. This is the default.
-  export  the full-year replay in R2, research/interval-ba/replay-<--export-end>.parquet,
-          written by scripts/interval_ba_tape.py: one rule all year. It has no table ids, so
-          ``alert_id`` is "<option_chain>@<bucket_start in epoch seconds>", the table's
-          unique key, and the files are named interval-ba-outcomes-export-*. The analyze_*
-          scripts join ``alert_id`` to table ids: give them the table's CSV only.
+          step added to it. It has the live feed's gaps (live rows stay the record, and missed
+          alerts are added only from 2026-10-29), so a study of the whole year reads the export.
+analyze_interval_ba_cuts.py and analyze_confluence_vs_solo.py read the same two sources, through
+the reader in this file, and take the outcomes CSV that matches their source.
 
 Data source for the tape: fulltape/{date}-fulltape.parquet in R2 (the R2_* variables, from
 .env.local), through ml/src/utils/r2.py. DuckDB reads only the columns it needs. Each print
@@ -51,7 +55,7 @@ Prints a final summary to stdout: median forward % returns at T+5/15/30/60
 
 Usage:
     ml/.venv/Scripts/python scripts/enrich_interval_ba_outcomes.py \\
-        [--source table|export] [--export-end 2026-11-25] \\
+        [--source export|table] [--export-end 2026-11-25] \\
         [--from-date 2026-01-02] [--to-date 2026-05-11] \\
         [--limit-alerts N] [--dry-run]
 """
@@ -107,8 +111,9 @@ OCC_SUFFIX_LEN = 15
 # test_export_columns_match_the_tool holds this copy to the tool's own.
 #   option_chain string, ticker string, option_type string, strike decimal(10,3), expiry date,
 #   bucket_start timestamp(us, UTC), fired_at timestamp(us, UTC), ratio_pct decimal(5,2),
-#   total_premium decimal(14,2), trade_count int32, underlying_price decimal(10,2) NULLABLE,
-#   top_trade_is_sweep bool
+#   total_premium decimal(14,2), trade_count int32, top_trade_is_sweep bool,
+#   top_trade_is_floor bool, underlying_price decimal(10,2) NULLABLE
+# The two analyze_* scripts read the export through this file's reader, so this is the one copy.
 EXPORT_PREFIX = 'research/interval-ba/'
 EXPORT_COLUMNS = (
     'option_chain',
@@ -121,8 +126,9 @@ EXPORT_COLUMNS = (
     'ratio_pct',
     'total_premium',
     'trade_count',
-    'underlying_price',
     'top_trade_is_sweep',
+    'top_trade_is_floor',
+    'underlying_price',
 )
 
 SKIPPED_NOTE = 'no spot in the row or on the tape'
@@ -301,7 +307,7 @@ def fetch_alerts(
     sql = (
         'SELECT id, option_chain, ticker, option_type, strike, expiry, '
         'fired_at, ratio_pct, total_premium, trade_count, underlying_price, '
-        'top_trade_is_sweep '
+        'top_trade_is_sweep, top_trade_is_floor '
         'FROM interval_ba_alerts'
     )
     if where:
@@ -329,19 +335,22 @@ def export_url(end: str) -> str:
 def fetch_export_alerts(
     con,
     url: str,
-    ticker: str,
+    ticker: str | None,
     from_date: str | None,
     to_date: str | None,
     limit_alerts: int | None,
 ) -> list[dict]:
     """The export's alerts, shaped like fetch_alerts' rows: the same keys and Python types.
 
-    The export has no ids, so `id` is the table's unique key, the contract and its bucket.
-    Times leave DuckDB as epoch microseconds (a TIMESTAMPTZ needs pytz to come out as a
-    datetime) and become aware UTC datetimes here.
+    `ticker` None reads every ticker in one call. The export has no ids, so `id` is the
+    table's unique key, the contract and its bucket. Times leave DuckDB as epoch microseconds
+    (a TIMESTAMPTZ needs pytz to come out as a datetime) and become aware UTC datetimes here.
     """
-    where = ['ticker = $ticker']
-    params: dict[str, object] = {'url': url, 'ticker': ticker}
+    where = ['true']
+    params: dict[str, object] = {'url': url}
+    if ticker is not None:
+        where.append('ticker = $ticker')
+        params['ticker'] = ticker
     if from_date:
         where.append('expiry >= CAST($from_date AS DATE)')
         params['from_date'] = from_date
@@ -351,7 +360,8 @@ def fetch_export_alerts(
     sql = (
         'SELECT option_chain, ticker, option_type, strike, expiry, '
         'epoch_us(fired_at) AS fired_us, ratio_pct, total_premium, trade_count, '
-        'underlying_price, top_trade_is_sweep, epoch_us(bucket_start) AS bucket_us '
+        'underlying_price, top_trade_is_sweep, top_trade_is_floor, '
+        'epoch_us(bucket_start) AS bucket_us '
         'FROM read_parquet($url) WHERE ' + ' AND '.join(where) +
         ' ORDER BY fired_at ASC, option_chain ASC'
     )
@@ -386,15 +396,61 @@ def check_export_columns(con, url: str, key: str) -> None:
         sys.exit(f'{key} lacks column(s) this script reads: {", ".join(missing)}')
 
 
+_EXPORT_NAME = re.compile(r'replay-(\d{4}-\d{2}-\d{2})\.parquet$')
+
+
+def newest_export_end(con) -> str:
+    """The end date of the newest replay object in R2, by a wildcard list of the prefix.
+
+    glob() of one s3:// key never asks the bucket, but a pattern with a `*` issues a LIST, so
+    `replay-*.parquet` finds every export. Names that do not end in a date are left out. Exits
+    when the prefix holds no replay object. Needs list permission on the R2 token.
+    """
+    pattern = export_url('*')
+    rows = con.execute('SELECT file FROM glob($pattern)', {'pattern': pattern}).fetchall()
+    ends = [m[1] for (name,) in rows if (m := _EXPORT_NAME.search(name))]
+    if not ends:
+        sys.exit(f'No replay object under {EXPORT_PREFIX} in R2 (replay-<date>.parquet)')
+    return max(ends)
+
+
+def resolve_export_end(con, export_end: str | None) -> str:
+    """`--export-end` as given, else the newest replay object's date. Prints the chosen key."""
+    end = export_end or newest_export_end(con)
+    print(f'Export: {export_key(end)}' + ('' if export_end else ' (the newest)'))
+    return end
+
+
+def read_export_alerts(
+    con,
+    end: str,
+    ticker: str | None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    limit_alerts: int | None = None,
+) -> list[dict]:
+    """The one reader of the replay export, for this script and the two analyze_* scripts.
+
+    Exits, naming the key, when the object is not in R2, and names any column the scripts read
+    that it lacks. `ticker` None takes every ticker.
+    """
+    key = export_key(end)
+    url = export_url(end)
+    if not object_exists(con, url):
+        sys.exit(f'No export object at {key} in R2')
+    check_export_columns(con, url, key)
+    return fetch_export_alerts(con, url, ticker, from_date, to_date, limit_alerts)
+
+
+def open_connection():
+    """DuckDB over the R2 tape, at the limits the nightly tool uses (a shared box)."""
+    return fulltape_connection(threads=4, memory_limit='3000MiB')
+
+
 def load_alerts(con, args: argparse.Namespace, ticker: str) -> list[dict]:
     if args.source == 'export':
-        key = export_key(args.export_end)
-        url = export_url(args.export_end)
-        if not object_exists(con, url):
-            sys.exit(f'No export object at {key} in R2')
-        check_export_columns(con, url, key)
-        return fetch_export_alerts(
-            con, url, ticker, args.from_date, args.to_date, args.limit_alerts,
+        return read_export_alerts(
+            con, args.export_end, ticker, args.from_date, args.to_date, args.limit_alerts,
         )
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
@@ -405,30 +461,66 @@ def load_alerts(con, args: argparse.Namespace, ticker: str) -> list[dict]:
         conn.close()
 
 
-def _iso_date(text: str) -> str:
+def outcomes_prefix(ticker: str, export: bool) -> str:
+    """The start of an outcomes CSV's name: interval-ba-outcomes[-export][-<ticker>]-.
+
+    SPXW from the table keeps the original name with no ticker, so existing CSVs and the
+    analyze_* discovery need no migration; the other tickers carry a slug."""
+    kind = '-export' if export else ''
+    slug = '' if ticker == 'SPXW' else f'-{ticker.lower()}'
+    return f'interval-ba-outcomes{kind}{slug}-'
+
+
+def newest_outcomes_csv(out_dir: Path, ticker: str, export: bool) -> Path | None:
+    """The newest outcomes CSV this script wrote for that ticker and source, or None.
+
+    The stamp (digits) follows the prefix right away, which keeps the files of a longer prefix
+    out: "-spy-" and "-export-" files share the SPXW table prefix up to there."""
+    prefix = outcomes_prefix(ticker, export)
+    names = sorted(out_dir.glob(f'{prefix}*.csv'), reverse=True)
+    for path in names:
+        if path.name[len(prefix):].split('-')[0].isdigit():
+            return path
+    return None
+
+
+def iso_date(text: str) -> str:
     try:
         return date.fromisoformat(text).isoformat()
     except ValueError:
         raise argparse.ArgumentTypeError(f'{text!r} is not a YYYY-MM-DD date') from None
 
 
-def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+def add_source_arguments(parser: argparse.ArgumentParser) -> None:
+    """--source and --export-end, the same on this script and the two analyze_* scripts."""
     parser.add_argument(
         '--source',
-        choices=('table', 'export'),
-        default='table',
+        choices=('export', 'table'),
+        default='export',
         help=(
-            'Where the alerts come from: the interval_ba_alerts table (default) or the '
-            "tool's full-year export in R2 (needs --export-end)."
+            "Where the alerts come from: the tool's full-year replay export in R2 (default) "
+            'or the interval_ba_alerts table, which has the live feed gaps.'
         ),
     )
     parser.add_argument(
         '--export-end',
-        type=_iso_date,
+        type=iso_date,
         default=None,
-        help='With --source export: the --end date of the export object to read.',
+        help=(
+            'With --source export: the --end date of the export object to read. '
+            'Default: the newest research/interval-ba/replay-<date>.parquet in R2.'
+        ),
     )
+
+
+def check_source_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.source == 'table' and args.export_end is not None:
+        parser.error('--export-end goes with --source export')
+
+
+def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_source_arguments(parser)
     parser.add_argument(
         '--ticker',
         type=str,
@@ -442,10 +534,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         '--dry-run', action='store_true', help='Skip CSV/MD writes.',
     )
     args = parser.parse_args(argv)
-    if args.source == 'export' and args.export_end is None:
-        parser.error('--source export needs --export-end')
-    if args.source == 'table' and args.export_end is not None:
-        parser.error('--export-end goes with --source export')
+    check_source_arguments(parser, args)
     return args
 
 
@@ -465,8 +554,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     load_env()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    con = fulltape_connection(threads=4, memory_limit='3000MiB')
+    con = open_connection()
     try:
+        if args.source == 'export':
+            args.export_end = resolve_export_end(con, args.export_end)
         alerts = load_alerts(con, args, ticker)
         if not alerts:
             sys.exit('No alerts matched the filter')
@@ -492,14 +583,12 @@ def enrich(
         by_date[date_iso].append(a)
 
     stamp = datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')
-    # Back-compat: SPXW from the table writes to the original (no-ticker) filename so the
-    # existing CSV history and downstream consumers (analyze_*) don't need path migration.
-    # Non-SPXW tickers get a ticker slug in the filename so the auto-discovery in
-    # analyze_interval_ba_cuts.py still picks up the SPXW file by default. The export's files
-    # carry `-export` before the ticker slug, which both of those discoveries skip.
+    # The names are outcomes_prefix's: the analyze_* scripts find the CSV by them. The summary's
+    # carry `-export` and the ticker slug the same way.
+    export = args.source == 'export'
+    kind = '-export' if export else ''
     slug = '' if ticker == 'SPXW' else f'-{ticker.lower()}'
-    kind = '-export' if args.source == 'export' else ''
-    csv_path = OUT_DIR / f'interval-ba-outcomes{kind}{slug}-{stamp}.csv'
+    csv_path = OUT_DIR / f'{outcomes_prefix(ticker, export)}{stamp}.csv'
     md_path = OUT_DIR / f'interval-ba-outcomes-summary{kind}{slug}-{stamp}.md'
     # Both are written under a .partial name and renamed once the run is through, so a run
     # that dies leaves no file the analyze_* scripts' `*.csv` discovery could take for the

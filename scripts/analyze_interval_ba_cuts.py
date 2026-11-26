@@ -1,14 +1,19 @@
 #!/usr/bin/env python
 """Empirical edge analysis on SPXW Interval B/A alerts, 5 cuts deep.
 
-Reads:
-  - interval_ba_alerts (DB) for the alert universe (option_type, ratio_pct,
-    top_trade_is_sweep, hour-of-day of fired_at)
-  - docs/tmp/interval-ba-outcomes-*.csv (latest) for the forward-return
-    paths at T+5/15/30/60/EOD
+Reads the alert universe (option_type, ratio_pct, top_trade_is_sweep, hour-of-day of fired_at)
+from the source named by --source, and the forward-return paths at T+5/15/30/60/EOD from the
+outcomes CSV that enrich_interval_ba_outcomes.py wrote for that source:
+  - export (default): the full-year replay in R2, research/interval-ba/replay-<end>.parquet,
+    one rule all year and no live-feed gaps (--export-end names one, else the newest). The
+    database is never opened. CSV: docs/tmp/interval-ba-outcomes-export[-<ticker>]-*.csv.
+  - table: interval_ba_alerts (DB), the live record, which has the live feed's gaps (a gap day
+    loses alerts and so their confluence partners). CSV:
+    docs/tmp/interval-ba-outcomes[-<ticker>]-*.csv.
+The newest CSV of the right kind is taken unless --csv names one.
 
 Produces (in docs/tmp/):
-  - interval-ba-analysis-{stamp}.md — markdown tables for each cut
+  - interval-ba-analysis[-export][-<ticker>]-{stamp}.md — markdown tables for each cut
 
 Five cuts run sequentially against the alert × forward-return join:
 
@@ -37,24 +42,29 @@ Five cuts run sequentially against the alert × forward-return join:
      vs non-sweep alerts.
 
 Usage:
-    python3 scripts/analyze_interval_ba_cuts.py [--csv PATH]
+    ml/.venv/Scripts/python scripts/analyze_interval_ba_cuts.py \\
+        [--source export|table] [--export-end 2026-11-25] [--ticker SPXW] [--csv PATH]
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import os
 import pathlib
 import re
 import statistics as st
 import sys
 from collections import defaultdict
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import psycopg2
+
+# The export reader, the --source flags and the CSV names live in the outcome script, which
+# writes the files this one reads. Run as a script, scripts/ is on sys.path.
+import enrich_interval_ba_outcomes as eio
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
@@ -106,7 +116,24 @@ def fmt_int(n: float) -> str:
     return f'{int(n)}'
 
 
-def load_alert_meta(conn, ticker: str) -> dict[int, dict]:
+def alert_meta(
+    chain, opt_type, fired_at, ratio_pct, total_prem, is_sweep, is_floor,
+) -> dict:
+    """One alert's metadata, the same from either source."""
+    ct_hour = fired_at.astimezone(_CT).hour if fired_at else None
+    return {
+        'chain': chain,
+        'option_type': opt_type,
+        'fired_at': fired_at,
+        'ct_hour': ct_hour,
+        'ratio_pct': float(ratio_pct) if ratio_pct is not None else None,
+        'total_premium': float(total_prem) if total_prem is not None else 0.0,
+        'is_sweep': bool(is_sweep) if is_sweep is not None else False,
+        'is_floor': bool(is_floor) if is_floor is not None else False,
+    }
+
+
+def load_alert_meta(conn, ticker: str) -> dict[int | str, dict]:
     """Pull per-alert metadata that the CSV doesn't carry."""
     with conn.cursor() as cur:
         cur.execute(
@@ -122,27 +149,36 @@ def load_alert_meta(conn, ticker: str) -> dict[int, dict]:
         for r in cur.fetchall():
             (alert_id, chain, opt_type, fired_at, ratio_pct, total_prem,
              is_sweep, is_floor) = r
-            ct_hour = fired_at.astimezone(_CT).hour if fired_at else None
-            out[alert_id] = {
-                'chain': chain,
-                'option_type': opt_type,
-                'fired_at': fired_at,
-                'ct_hour': ct_hour,
-                'ratio_pct': float(ratio_pct) if ratio_pct is not None else None,
-                'total_premium': float(total_prem) if total_prem is not None else 0.0,
-                'is_sweep': bool(is_sweep) if is_sweep is not None else False,
-                'is_floor': bool(is_floor) if is_floor is not None else False,
-            }
+            out[alert_id] = alert_meta(
+                chain, opt_type, fired_at, ratio_pct, total_prem, is_sweep, is_floor,
+            )
         return out
 
 
-def load_forward_paths(csv_path: pathlib.Path) -> dict[int, dict[int, float]]:
-    """Return {alert_id: {t_minutes: pct_change}}."""
-    paths: dict[int, dict[int, float]] = defaultdict(dict)
+def export_alert_meta(rows: list[dict]) -> dict[int | str, dict]:
+    """The same metadata from the export's alerts, keyed by their `<chain>@<bucket epoch>` id."""
+    return {
+        r['id']: alert_meta(
+            r['option_chain'], r['option_type'], r['fired_at'], r['ratio_pct'],
+            r['total_premium'], r['top_trade_is_sweep'], r['top_trade_is_floor'],
+        )
+        for r in rows
+    }
+
+
+def load_forward_paths(
+    csv_path: pathlib.Path,
+    key: Callable[[str], int | str] = int,
+) -> dict[int | str, dict[int, float]]:
+    """Return {alert_id: {t_minutes: pct_change}}.
+
+    `key` reads the CSV's alert_id: the table's integer id (the default), or str for the
+    export's `<chain>@<bucket epoch>`."""
+    paths: dict[int | str, dict[int, float]] = defaultdict(dict)
     with csv_path.open() as f:
         r = csv.DictReader(f)
         for row in r:
-            alert_id = int(row['alert_id'])
+            alert_id = key(row['alert_id'])
             t = int(row['t_minutes'])
             pct = float(row['pct_change'])
             paths[alert_id][t] = pct
@@ -167,8 +203,8 @@ def eod_pct(path: dict[int, float]) -> float | None:
 
 
 def cut_hit_rate_with_baseline(
-    alerts: dict[int, dict],
-    paths: dict[int, dict[int, float]],
+    alerts: dict[int | str, dict],
+    paths: dict[int | str, dict[int, float]],
     md: list[str],
 ) -> None:
     """Hit rate of CALL alerts (SPX up at horizon) vs unconditional baseline.
@@ -240,8 +276,8 @@ def cut_hit_rate_with_baseline(
 
 
 def cut_magnitude_conditional(
-    alerts: dict[int, dict],
-    paths: dict[int, dict[int, float]],
+    alerts: dict[int | str, dict],
+    paths: dict[int | str, dict[int, float]],
     md: list[str],
 ) -> None:
     md.append('## 2. Magnitude conditional on direction\n')
@@ -300,8 +336,8 @@ def cut_magnitude_conditional(
 
 
 def cut_hour_of_day(
-    alerts: dict[int, dict],
-    paths: dict[int, dict[int, float]],
+    alerts: dict[int | str, dict],
+    paths: dict[int | str, dict[int, float]],
     md: list[str],
 ) -> None:
     md.append('## 3. Hour-of-day (CT fired_at)\n')
@@ -373,8 +409,8 @@ def cut_hour_of_day(
 
 
 def cut_ratio_percentile(
-    alerts: dict[int, dict],
-    paths: dict[int, dict[int, float]],
+    alerts: dict[int | str, dict],
+    paths: dict[int | str, dict[int, float]],
     md: list[str],
 ) -> None:
     md.append('## 4. Ratio percentile (does higher ratio = bigger edge?)\n')
@@ -431,8 +467,8 @@ def cut_ratio_percentile(
 
 
 def cut_sweep_vs_nonsweep(
-    alerts: dict[int, dict],
-    paths: dict[int, dict[int, float]],
+    alerts: dict[int | str, dict],
+    paths: dict[int | str, dict[int, float]],
     md: list[str],
 ) -> None:
     md.append('## 5. Sweep vs non-sweep top trade\n')
@@ -475,8 +511,9 @@ def cut_sweep_vs_nonsweep(
     md.append('')
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    eio.add_source_arguments(parser)
     parser.add_argument(
         '--ticker',
         type=str,
@@ -487,58 +524,63 @@ def main() -> int:
         '--csv',
         type=str,
         default=None,
-        help='Path to outcomes CSV. Default: newest under docs/tmp/.',
+        help='Path to outcomes CSV. Default: newest under docs/tmp/ for the source.',
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    eio.check_source_arguments(parser, args)
     ticker = args.ticker.upper()
+    export = args.source == 'export'
     load_env()
 
-    # SPXW writes to the legacy no-ticker filename; SPY/QQQ stamp the
-    # slug into both the outcomes CSV and the analysis MD so the two
-    # tickers' outputs don't collide.
+    # SPXW writes to the legacy no-ticker filename; SPY/QQQ stamp the slug into both the
+    # outcomes CSV and the analysis MD so the two tickers' outputs don't collide. The export
+    # source's files carry `-export` ahead of the slug (eio.outcomes_prefix).
     slug = '' if ticker == 'SPXW' else f'-{ticker.lower()}'
+    kind = '-export' if export else ''
     if args.csv:
         csv_path = pathlib.Path(args.csv)
     else:
-        raw = sorted(
-            glob.glob(str(OUT_DIR / f'interval-ba-outcomes{slug}-*.csv')),
-            reverse=True,
-        )
-        # When ticker == SPXW, the legacy glob "interval-ba-outcomes-*"
-        # also picks up ticker-slugged SPY/QQQ files. SPXW filenames have
-        # a year-prefixed stamp ("...-2026...") right after the prefix;
-        # ticker files have a letter ("...-spy-..."). Filter accordingly.
-        candidates = (
-            [p for p in raw if pathlib.Path(p).name.split('-')[3].isdigit()]
-            if slug == ''
-            else raw
-        )
-        if not candidates:
+        found = eio.newest_outcomes_csv(OUT_DIR, ticker, export)
+        if found is None:
             sys.exit(
-                f'No outcomes CSV found under docs/tmp/ for ticker={ticker}',
+                f'No {"export " if export else ""}outcomes CSV found under docs/tmp/ '
+                f'for ticker={ticker}',
             )
-        csv_path = pathlib.Path(candidates[0])
+        csv_path = found
     if not csv_path.exists():
         sys.exit(f'CSV missing: {csv_path}')
 
     print(f'Loading paths from {csv_path.name}…')
-    paths = load_forward_paths(csv_path)
+    # The CSV's alert_id is the table's integer id, or the export's `<chain>@<epoch>` string.
+    paths = load_forward_paths(csv_path, key=str if export else int)
     print(f'  {len(paths)} alerts with forward path')
 
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        print(f'Loading {ticker} alert metadata from DB…')
-        alerts = load_alert_meta(conn, ticker)
+    source_note = ''
+    if export:
+        con = eio.open_connection()
+        try:
+            end = eio.resolve_export_end(con, args.export_end)
+            print(f'Reading {ticker} alerts from the export…')
+            alerts = export_alert_meta(eio.read_export_alerts(con, end, ticker))
+        finally:
+            con.close()
         print(f'  {len(alerts)} alerts total')
-    finally:
-        conn.close()
+        source_note = f' Alerts from the replay export `{eio.export_key(end)}`.'
+    else:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            print(f'Loading {ticker} alert metadata from DB…')
+            alerts = load_alert_meta(conn, ticker)
+            print(f'  {len(alerts)} alerts total')
+        finally:
+            conn.close()
 
     md: list[str] = []
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     md.append(f'# {ticker} Interval B/A — empirical edge analysis ({stamp})\n')
     md.append(
         f'_Joined {len(alerts)} {ticker} alerts against {len(paths)} '
-        f'forward-return paths from `{csv_path.name}`._\n',
+        f'forward-return paths from `{csv_path.name}`.{source_note}_\n',
     )
 
     cut_hit_rate_with_baseline(alerts, paths, md)
@@ -548,7 +590,7 @@ def main() -> int:
     cut_sweep_vs_nonsweep(alerts, paths, md)
 
     output = '\n'.join(md)
-    out_path = OUT_DIR / f'interval-ba-analysis{slug}-{stamp}.md'
+    out_path = OUT_DIR / f'interval-ba-analysis{kind}{slug}-{stamp}.md'
     out_path.write_text(output, encoding='utf-8')
     print(f'\nwrote {out_path}')
     print('\n' + output)
