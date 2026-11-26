@@ -89,14 +89,16 @@ _LAYOUT_SQL = {
 }
 
 
-def write_tape(tmp_path: Path, rows: list[dict[str, object]], layout: str = 'tz') -> str:
-    """Write the rows, in list order, as that day's Full Tape parquet and return its path.
+def write_tape(
+    tmp_path: Path, rows: list[dict[str, object]], layout: str = 'tz', day: date = DAY
+) -> str:
+    """Write the rows, in list order, as `day`'s Full Tape parquet and return its path.
 
     The time goes in as epoch microseconds, so the stored instant is exact: make_timestamp
     gives the naive UTC wall clock, and timezone('UTC', ...) the same instant as a TIMESTAMPTZ.
     """
     time_type, number, time_sql = _LAYOUT_SQL[layout]
-    path = tmp_path / f'{DAY_ISO}-fulltape.parquet'
+    path = tmp_path / f'{day.isoformat()}-fulltape.parquet'
     db = duckdb.connect()
     try:
         db.execute(
@@ -818,17 +820,63 @@ def test_a_missing_tape_day_is_skipped_by_name_and_the_other_days_still_run(
     assert mod.main(['--source', 'table']) == 0
 
     assert {r['alert_id'] for r in read_rows(outcome_csv(run / 'out'))} == {'1'}
-    assert f'{next_day.isoformat()}  SKIP: tape not in R2' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f'{next_day.isoformat()}  SKIP: tape not in R2' in out
+    assert f'{DAY_ISO}  alerts=   1' in out
 
 
-def test_a_tape_with_no_prints_of_the_root_skips_the_day(run, monkeypatch, capsys):
-    write_tape(run, [tick('20:50:00', SPY_C, '670.00')])
-    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00')])
+def test_a_day_with_no_prints_of_the_root_is_skipped_while_another_day_is_read(
+    run, monkeypatch, capsys
+):
+    write_tape(run, CLOSE_TAPE)
+    next_day = DAY + timedelta(days=1)
+    write_tape(run, [tick('20:50:00', SPY_C, '670.00')], day=next_day)  # no SPXW print
+    row = table_row(2, 'SPXW261118C06700000', '20:50:00', '6701.00')
+    row['expiry'] = next_day
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00'), row])
 
-    mod.main(['--source', 'table'])
+    assert mod.main(['--source', 'table']) == 0
 
-    assert read_rows(outcome_csv(run / 'out')) == []
-    assert f'{DAY_ISO}  SKIP: no SPXW prints on the tape' in capsys.readouterr().out
+    assert {r['alert_id'] for r in read_rows(outcome_csv(run / 'out'))} == {'1'}
+    out = capsys.readouterr().out
+    assert f'{next_day.isoformat()}  SKIP: no SPXW prints on the tape' in out
+    assert f'{DAY_ISO}  alerts=   1' in out
+
+
+def test_a_run_that_read_no_day_exits_non_zero_and_leaves_no_csv_or_md(run, monkeypatch):
+    """A 404 also answers a wrong bucket or endpoint: all days "missing" must not look valid."""
+    next_day = DAY + timedelta(days=1)
+    write_tape(run, [tick('20:50:00', SPY_C, '670.00')], day=next_day)  # no SPXW print
+    row = table_row(2, 'SPXW261118C06700000', '20:50:00', '6701.00')
+    row['expiry'] = next_day
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00'), row])  # DAY: no tape
+
+    with pytest.raises(SystemExit, match=r'No day read: all 2 day\(s\) were skipped'):
+        mod.main(['--source', 'table'])
+
+    out = run / 'out'
+    assert not list(out.glob('*.csv'))
+    assert not list(out.glob('*.md'))
+    assert len(list(out.glob('interval-ba-outcomes-2*.csv.partial'))) == 1
+
+
+@pytest.mark.parametrize('days', [1, 3])
+def test_a_run_whose_every_day_is_missing_from_the_bucket_exits_non_zero(
+    run, monkeypatch, days
+):
+    rows = []
+    for n in range(days):
+        day = DAY + timedelta(days=n)
+        row = table_row(n + 1, f'SPXW{day:%y%m%d}C06700000', '20:50:00', '6701.00')
+        row['expiry'] = day
+        rows.append(row)
+    fake_table(monkeypatch, rows)
+
+    with pytest.raises(SystemExit, match=rf'No day read: all {days} day\(s\) were skipped'):
+        mod.main(['--source', 'table'])
+
+    assert not list((run / 'out').glob('*.csv'))
+    assert not list((run / 'out').glob('*.md'))
 
 
 def test_an_unreadable_tape_stops_the_run_instead_of_reading_as_a_missing_day(

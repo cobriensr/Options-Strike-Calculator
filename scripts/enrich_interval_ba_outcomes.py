@@ -42,7 +42,9 @@ Outputs (under docs/tmp/, per project memory feedback_scratch_files_in_docs_tmp)
   - interval-ba-outcomes[-export][-<ticker>]-{stamp}.csv: one row per (alert, t_minutes)
   - interval-ba-outcomes-summary[-export][-<ticker>]-{stamp}.md: aggregate tables
 Each is written under a ``.partial`` name and renamed when the run finishes, so a run that
-dies leaves nothing the analyze_* scripts' ``*.csv`` discovery can pick up.
+dies leaves nothing the analyze_* scripts' ``*.csv`` discovery can pick up. So does a run that
+reads no day's tape at all (every day missing from R2 or without prints of the root, as a wrong
+bucket or endpoint gives): it exits non-zero. Some days read and some skipped exits 0.
 
 Prints a final summary to stdout: median forward % returns at T+5/15/30/60
 + EOD, split by severity and option_type.
@@ -548,6 +550,7 @@ def enrich(
             ],
         )
 
+    days_read = 0
     try:
         for date_iso, day_alerts in sorted(by_date.items()):
             tape = r2_url(date_iso)
@@ -558,6 +561,7 @@ def enrich(
             if not len(series):
                 print(f'  {date_iso}  SKIP: no {ticker} prints on the tape')
                 continue
+            days_read += 1
             eod_utc = session_close_utc(date_iso)
             eod_us = epoch_us(eod_utc)
             skipped_day = 0
@@ -611,6 +615,14 @@ def enrich(
     finally:
         if csv_file is not None:
             csv_file.close()
+
+    if not days_read:
+        # A 404 also answers a wrong bucket or endpoint, so a run whose every day was skipped
+        # would otherwise exit 0 with an empty CSV that looks valid. The .partial files stay.
+        sys.exit(
+            f'No day read: all {len(by_date)} day(s) were skipped (tape not in R2, or no '
+            f'{ticker} prints on it). Check R2_BUCKET_FULLTAPE and R2_ENDPOINT_URL.',
+        )
 
     # Aggregate summary tables.
     md_lines = ['# Interval B/A — forward-return experiment\n']
