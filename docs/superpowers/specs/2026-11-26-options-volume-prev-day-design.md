@@ -151,6 +151,14 @@ Each phase touches 5 files or fewer.
   - `--undo-file F --apply` restores the backup;
   - the database identity and no-echo rules are those in `scripts/_lib/db-host.ts` and the stale-range tool.
 - **Production run (owner gates):** the dry run first. Then hand-recompute two rows from the raw reply, one in the stuck 10-01..11-13 block and one that was right. Then the owner's OK, then one date, then `--all`.
+- **As built (feat/opt-prev-day-2, not run against any database):**
+  - The commands are in the header of `scripts/repair-options-volume.ts`. A dry run needs `--source`; `--apply` also needs `--plan F` and the same `--source`.
+  - The plan and the backup record the source's sha256, and an apply refuses a different file. This is stricter than the spec's "re-plans, refuses unless the plan still matches", and it is checked before the database is read.
+  - `--all` follows the plan's scope, not the number of dates that need a write: a plan made with `--date`, or with `--since` and `--until` naming one date, applies without it.
+  - All the chunks of an apply or an undo run in one `sql.transaction`, so a failure part-way writes nothing. A date that changed after the read is skipped by its guard, listed, and makes the exit code 1.
+  - A value that does not fit its column (a ratio of 100 or more, a premium of 1e12 or more, a count past INTEGER) stops the run and names the date and the column. Nothing is clamped.
+  - `databaseOf` moved from `stale-opening-range.ts` to `db-host.ts` so both tools share one identity rule; the old module re-exports it.
+  - `MARKET_CLOSED_DATES` starts at 2025-04-18, and no closure between 2025-02-18 and then is missing, but the closures before that are not in it. The saved reply starts 2024-11-27, so a `training_features` date whose previous day was a closure in that stretch (2024-11-29, 2024-12-26, 2025-01-02, 2025-01-10, 2025-01-21 and 2025-02-18) would take the closed day as its previous day, find no source row there, and have its `prev_day_opt_*` set to NULL. The report lists it under "No source row for the previous trading day". If `training_features` holds any of those dates, add the closures to the calendar first.
 
 ### Phase 3: the ML reads the morning-safe group
 
