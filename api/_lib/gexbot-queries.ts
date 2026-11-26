@@ -62,6 +62,19 @@ export interface SnapshotsLatestRow {
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
+  /**
+   * The vendor's level strikes, as sent (price levels, not flows). The state
+   * major call and put come from the orderflow payload; the four classic
+   * majors (positive and negative, by volume and by open interest) come from
+   * the classic `gex_zero` capture. fetch-gexbot-fast writes all six each
+   * minute.
+   */
+  zeroMcall: number | null;
+  zeroMput: number | null;
+  majorPosVol: number | null;
+  majorPosOi: number | null;
+  majorNegVol: number | null;
+  majorNegOi: number | null;
   /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
   minDte: number | null;
 }
@@ -197,6 +210,12 @@ interface RawSnapshotsRow {
   one_dexoflow: unknown;
   one_gexoflow: unknown;
   one_cvroflow: unknown;
+  zero_mcall: unknown;
+  zero_mput: unknown;
+  major_pos_vol: unknown;
+  major_pos_oi: unknown;
+  major_neg_vol: unknown;
+  major_neg_oi: unknown;
   min_dte: unknown;
 }
 
@@ -239,6 +258,8 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
         s.z_mlgamma, s.z_msgamma, s.zcvr, s.zgr, s.zvanna, s.zcharm,
         s.o_mlgamma, s.o_msgamma, s.ocvr, s.ogr, s.ovanna, s.ocharm,
         s.one_dexoflow, s.one_gexoflow, s.one_cvroflow,
+        s.zero_mcall, s.zero_mput,
+        s.major_pos_vol, s.major_pos_oi, s.major_neg_vol, s.major_neg_oi,
         s.min_dte
       FROM gexbot_snapshots s, bounds b
       WHERE s.captured_at >= b.now_ts - INTERVAL '15 minutes'
@@ -270,6 +291,12 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
     oneDexoflow: toNum(r.one_dexoflow),
     oneGexoflow: toNum(r.one_gexoflow),
     oneCvroflow: toNum(r.one_cvroflow),
+    zeroMcall: toNum(r.zero_mcall),
+    zeroMput: toNum(r.zero_mput),
+    majorPosVol: toNum(r.major_pos_vol),
+    majorPosOi: toNum(r.major_pos_oi),
+    majorNegVol: toNum(r.major_neg_vol),
+    majorNegOi: toNum(r.major_neg_oi),
     minDte: toNum(r.min_dte),
   }));
 }

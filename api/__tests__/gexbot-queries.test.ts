@@ -76,6 +76,85 @@ describe('gexbot-queries', () => {
       expect(row!.zvanna).toBeNull();
       expect(row!.capturedAt).toBe('2026-05-19T14:00:00.000Z');
     });
+
+    // The six level columns the ladder reads. A distinct value per column, so
+    // a field wired to the wrong column fails on its own assertion.
+    it('maps each level field from its own column, NUMERIC-as-string included', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          ticker: 'SPX',
+          captured_at: new Date('2026-11-25T15:00:00Z'),
+          zero_mcall: '6010.50',
+          zero_mput: '5950',
+          major_pos_vol: '6000',
+          major_pos_oi: 6025,
+          major_neg_vol: '5975.25',
+          major_neg_oi: '5900',
+        },
+      ]);
+      const [row] = await getLatestSnapshots();
+      expect(row).toMatchObject({
+        zeroMcall: 6010.5,
+        zeroMput: 5950,
+        majorPosVol: 6000,
+        majorPosOi: 6025,
+        majorNegVol: 5975.25,
+        majorNegOi: 5900,
+      });
+    });
+
+    it('keeps a null level column null, field by field', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          ticker: 'SPX',
+          captured_at: new Date('2026-11-25T15:00:00Z'),
+          zero_mcall: null,
+          zero_mput: '5950',
+          major_pos_vol: null,
+          major_pos_oi: '6025',
+          major_neg_vol: null,
+          major_neg_oi: '5900',
+        },
+      ]);
+      const [row] = await getLatestSnapshots();
+      expect(row).toMatchObject({
+        zeroMcall: null,
+        zeroMput: 5950,
+        majorPosVol: null,
+        majorPosOi: 6025,
+        majorNegVol: null,
+        majorNegOi: 5900,
+      });
+    });
+
+    it('gives null for a level column the row does not carry', async () => {
+      mockSql.mockResolvedValueOnce([
+        { ticker: 'VIX', captured_at: new Date('2026-11-25T15:00:00Z') },
+      ]);
+      const [row] = await getLatestSnapshots();
+      expect(row!.zeroMcall).toBeNull();
+      expect(row!.zeroMput).toBeNull();
+      expect(row!.majorPosVol).toBeNull();
+      expect(row!.majorPosOi).toBeNull();
+      expect(row!.majorNegVol).toBeNull();
+      expect(row!.majorNegOi).toBeNull();
+    });
+
+    it('selects the six level columns', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getLatestSnapshots();
+      const text = (mockSql.mock.calls[0]?.[0] as string[]).join('?');
+      for (const column of [
+        'zero_mcall',
+        'zero_mput',
+        'major_pos_vol',
+        'major_pos_oi',
+        'major_neg_vol',
+        'major_neg_oi',
+      ]) {
+        expect(text).toMatch(new RegExp(`\\bs\\.${column}\\b`));
+      }
+    });
   });
 
   // ── getVelocityTape (row mapping; the SQL is proven in the pglite test) ──
