@@ -787,6 +787,7 @@ describe('a dry run', () => {
     const result = await dry({ date: '2026-05-22' });
 
     const plan = readJson<{
+      note: string;
       database: string;
       scope: {
         date: string | null;
@@ -797,6 +798,11 @@ describe('a dry run', () => {
       rows: Array<{ id: number; kind: string; after: Record<string, string> }>;
       features: Array<{ date: string; pickId: number }>;
     }>(result.planFile);
+    // The note is what the owner reads in the file: what an apply checks, and
+    // that a plan for more than one date needs --all.
+    expect(plan.note).toMatch(/the values it holds now/);
+    expect(plan.note).toMatch(/more than one date/);
+    expect(plan.note).toContain('--all');
     // The host and the database name, never the user or the password.
     expect(plan.database).toBe('ep-plan.neon.tech/neondb');
     expect(plan.scope).toEqual({
@@ -912,6 +918,18 @@ describe('apply', () => {
       JSON.stringify({
         note: 'n',
         createdAt: 'now',
+        scope: { date: null, since: null, until: null },
+        summary: 's',
+        rows: [],
+        features: [],
+      }),
+    ],
+    [
+      'a plan in the earlier format, which recorded dbHost, not database',
+      JSON.stringify({
+        note: 'n',
+        createdAt: 'now',
+        dbHost: 'ep-plan.neon.tech',
         scope: { date: null, since: null, until: null },
         summary: 's',
         rows: [],
@@ -1273,6 +1291,22 @@ describe('the plan an apply is held to', () => {
     },
   );
 
+  it('applies a plan file whose note is an earlier wording: the note is text for the owner, not a check', async () => {
+    const planned = await dry({ date: '2026-05-22' });
+    const file = readJson<Record<string, unknown>>(planned.planFile);
+    writeFileSync(
+      planned.planFile ?? '',
+      JSON.stringify({
+        ...file,
+        note: 'What a dry run would write. `--apply --plan <this file>` plans afresh and writes only if every row and its new values are the same as here.',
+      }),
+    );
+
+    const result = await apply(planned.planFile);
+
+    expect(result.applied).toMatchObject({ planned: 3, written: 3 });
+  });
+
   it('refuses when a row’s stored values changed to another stale value since the dry run', async () => {
     const planned = await dry({ date: '2026-05-22' });
     // Row 11 still needs the same repair, but it no longer holds what the
@@ -1292,24 +1326,26 @@ describe('the plan an apply is held to', () => {
   });
 
   it.each([
-    ['its consumed value', 'MODERATE', '0.6000', 'MODERATE/0.6000'],
-    ['its signal', 'GREEN', '0.5000', 'GREEN/0.5000'],
+    ['its consumed value', "'MODERATE'", '0.6000', 'MODERATE/0.6000'],
+    ['its signal', "'GREEN'", '0.5000', 'GREEN/0.5000'],
+    // A NULL is written as the word, as the row messages do, not as `null`.
+    ['both cleared to NULL', 'NULL', 'NULL', 'NULL/NULL'],
   ])(
     'refuses when the features row changed since the dry run too: %s',
     async (_label, signal, consumed, shownNow) => {
       const planned = await dry({ date: '2026-05-22' });
       // The pick row (12) and its features row moved together, so the copy is
       // still planned: the rows would be repaired and the features copied from
-      // values nobody reviewed.
+      // values nobody reviewed. `signal` and `consumed` are SQL literals.
       await db.query(
         `UPDATE market_snapshots
-            SET opening_range_signal = '${signal}',
+            SET opening_range_signal = ${signal},
                 opening_range_pct_consumed = ${consumed}
           WHERE id = 12`,
       );
       await db.query(
         `UPDATE training_features
-            SET opening_range_signal = '${signal}',
+            SET opening_range_signal = ${signal},
                 opening_range_pct_consumed = ${consumed}
           WHERE date = '2026-05-22'`,
       );
@@ -1677,6 +1713,17 @@ describe('undo', () => {
       }),
     ],
     [
+      'a backup in the earlier format, which recorded dbHost, not database',
+      JSON.stringify({
+        note: 'n',
+        createdAt: 'now',
+        dbHost: 'ep-plan.neon.tech',
+        scope: 'all',
+        rows: [],
+        features: [],
+      }),
+    ],
+    [
       'a features entry with no pick row',
       JSON.stringify({
         note: 'n',
@@ -1731,11 +1778,13 @@ describe('undo', () => {
       const file = join(backupDir, 'not-a-backup.json');
       writeFileSync(file, content);
       const stored = await dump();
+      statements.length = 0;
 
       await expect(runUndo({ file, apply: true })).rejects.toThrow(
         /not-a-backup\.json is not a backup this script wrote/,
       );
 
+      expect(statements).toEqual([]);
       expect(await dump()).toEqual(stored);
       expect(updateSizes).toEqual([]);
     },

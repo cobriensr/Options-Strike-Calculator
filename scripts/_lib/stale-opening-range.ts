@@ -31,9 +31,10 @@
  *   before the fix, the same row is an incomplete-range. Counted and listed,
  *   never written.
  * Rebase, lag and incomplete-range all yield to evidence of a carried-over
- * range: a row that holds the previous trading date's own range (the range most
- * of that date's rows from 10:00 ET on hold, within 0.05) is stale whatever
- * window it falls in by chance, and is repaired.
+ * range: a row that holds the previous trading date's own range (the range the
+ * most of that date's rows from 10:00 ET on hold, at least two of them, with no
+ * other range holding as many; matched within 0.05) is stale whatever window it
+ * falls in by chance, and is repaired.
  * - incomplete-range: a live row from 10:00 ET on, saved before the live fix
  *   (2026-11-23), whose range is narrower than the complete one only by the last
  *   seconds of the 9:55 bar (it sits between the range through the 9:50 bar,
@@ -168,9 +169,11 @@ const TOLERANCE_CENTS = Math.round(STALE_TOLERANCE * 100);
 export const FIRST_CANDLE_DATE = '2026-03-05';
 /**
  * The first date the live page keeps its range current (phase 1 of the spec,
- * shipped for the open of Monday 2026-11-23). A row saved before it that is
- * narrower than the complete range only by the 9:55 bar's last seconds is an
- * incomplete-range row; from this date on it is a stale repair.
+ * shipped for the open of Monday 2026-11-23). A live row saved before it at or
+ * after 9:00 CT that is narrower than the complete range only by the 9:55 bar's
+ * last seconds is an incomplete-range row, written like a repair. From this date
+ * on such a row at 9:00 CT is a lag (a page that answered a bar behind: counted,
+ * never written), and after 9:00 CT it is a stale repair.
  */
 export const LIVE_FIX_DATE = '2026-11-23';
 /** The history candle length, minutes. */
@@ -702,6 +705,10 @@ const sameOr = (a: OrValues, b: OrValues): boolean =>
 const showOr = (v: OrValues): string =>
   `${v.high ?? 'NULL'}/${v.low ?? 'NULL'}/${v.consumed ?? 'NULL'}/${v.signal ?? 'NULL'}`;
 
+/** `signal/consumed` of a features row, NULL written out, for a message. */
+const showFeature = (v: { signal: string | null; consumed: string | null }) =>
+  `${v.signal ?? 'NULL'}/${v.consumed ?? 'NULL'}`;
+
 /**
  * Whether the date's features row follows the pick row, the row
  * `build-features` takes (the repair never changes which one: it reads none of
@@ -1215,7 +1222,7 @@ type PlanFile = z.infer<typeof PlanSchema>;
 const BACKUP_NOTE =
   'Backup of the opening-range columns a repair replaced. `--undo-file <this file> --apply` restores them, each only where the row still holds the new values.';
 const PLAN_NOTE =
-  'What a dry run would write. `--apply --plan <this file>` plans afresh and writes only if every row and its new values are the same as here.';
+  'What a dry run would write. `--apply --plan <this file>` plans afresh and writes only if every row, the values it holds now and its new values are the same as here, and the file was written for this database. A plan that covers more than one date also needs `--all`: apply one date first.';
 
 /**
  * A new JSON file, written with `wx`: a file already there is never
@@ -1281,10 +1288,24 @@ function readFileAs<T>(file: string, schema: z.ZodType<T>, what: string): T {
  * The database a URL names: its host and its database name, `host/name`. A
  * Neon project can hold several databases on one host, so the host alone does
  * not say which one a file was written for. Never the user or the password.
+ *
+ * A URL whose password holds a `/`, `?` or `#` after a numeric-looking prefix
+ * (`postgres://owner:12/34@host/db`) parses with the user as the host and the
+ * rest of the password in the path, which would print both. It cannot connect,
+ * but the refusal in `requireSameDatabase` prints what this returns, to stderr.
+ * An `@` with no user and no password parsed means the userinfo was cut short
+ * that way, so it is the sentinel, as a URL that does not parse is.
  */
 export function databaseOf(url: string | undefined): string {
   try {
     const parsed = new URL(url ?? '');
+    if (
+      parsed.username === '' &&
+      parsed.password === '' &&
+      url?.includes('@')
+    ) {
+      throw new Error('userinfo was cut short');
+    }
     return `${parsed.hostname}${parsed.pathname}`;
   } catch {
     return '(DATABASE_URL missing or not a URL)';
@@ -1497,7 +1518,7 @@ export function comparePlan(
       !sameNumeric(was.before.consumed, copy.before.consumed)
     ) {
       problems.push(
-        `the features row for ${date} changed since the dry run (${was.before.signal}/${was.before.consumed} then, ${copy.before.signal}/${copy.before.consumed} now)`,
+        `the features row for ${date} changed since the dry run (${showFeature(was.before)} then, ${showFeature(copy.before)} now)`,
       );
     }
   }

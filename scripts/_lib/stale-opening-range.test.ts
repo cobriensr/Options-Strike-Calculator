@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 import { parseEntryTimeMinutes } from '../../src/utils/entry-time.js';
 import type { SlotCandle } from '../../src/utils/snapshot-slot.js';
 import {
+  databaseOf,
   formatApplyReport,
   formatReport,
   parseArgs,
@@ -1636,6 +1637,88 @@ describe('the per-date table and the lists by id', () => {
     );
     expect(out).toMatch(/2026-02-11\s+ambiguous-own-range[^\n]*\(1\)[^\n]*957/);
     expect(out).toMatch(/2026-05-01\s+no-as-of-state[^\n]*\(2\)[^\n]*954, 955/);
+  });
+});
+
+// ── The database a file is written for ──────────────────────────────────────
+
+/**
+ * `databaseOf` names the database in a plan or backup file, and in the message
+ * that refuses a file written for another one, which goes to stderr. It must
+ * never carry the user or any part of the password, whatever the URL looks like.
+ */
+describe('databaseOf', () => {
+  const SENTINEL = '(DATABASE_URL missing or not a URL)';
+
+  it.each([
+    [
+      'a Neon URL with query parameters',
+      'postgresql://owner:s3cret@ep-plan-123.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require',
+      'ep-plan-123.us-east-2.aws.neon.tech/neondb',
+    ],
+    [
+      'a password with an unencoded @',
+      'postgres://owner:p@ss@ep-plan.neon.tech/neondb',
+      'ep-plan.neon.tech/neondb',
+    ],
+    [
+      'a percent-encoded password',
+      'postgres://owner:p%40ss@ep-plan.neon.tech/neondb',
+      'ep-plan.neon.tech/neondb',
+    ],
+    [
+      'a port',
+      'postgres://owner:pw@ep-plan.neon.tech:5432/neondb',
+      'ep-plan.neon.tech/neondb',
+    ],
+    [
+      'a password and no user',
+      'postgres://:pw@ep-plan.neon.tech/neondb',
+      'ep-plan.neon.tech/neondb',
+    ],
+    [
+      'a user and no password',
+      'postgres://owner@ep-plan.neon.tech/neondb',
+      'ep-plan.neon.tech/neondb',
+    ],
+    [
+      'no credentials at all',
+      'postgres://ep-plan.neon.tech/neondb',
+      'ep-plan.neon.tech/neondb',
+    ],
+  ])('is host/name, with no user or password, for %s', (_label, url, named) => {
+    const result = databaseOf(url);
+
+    expect(result).toBe(named);
+    expect(result).not.toMatch(/owner|s3cret|pw|p@ss|%40/);
+  });
+
+  it('tells two databases on one host apart', () => {
+    expect(databaseOf('postgres://o:p@ep-plan.neon.tech/neondb')).not.toBe(
+      databaseOf('postgres://o:p@ep-plan.neon.tech/otherdb'),
+    );
+  });
+
+  it.each([
+    ['a slash', 'postgres://owner:12/34@ep-plan.neon.tech/neondb'],
+    ['a question mark', 'postgres://owner:12?34@ep-plan.neon.tech/neondb'],
+    ['a hash', 'postgres://owner:12#34@ep-plan.neon.tech/neondb'],
+  ])(
+    'gives the sentinel, never the user or part of the password, when %s cuts a numeric-looking password short',
+    (_label, url) => {
+      const result = databaseOf(url);
+
+      expect(result).toBe(SENTINEL);
+      expect(result).not.toMatch(/owner|34|12/);
+    },
+  );
+
+  it.each([
+    ['undefined', undefined],
+    ['an empty string', ''],
+    ['text that is not a URL', 'not a url'],
+  ])('gives the sentinel for %s', (_label, url) => {
+    expect(databaseOf(url)).toBe(SENTINEL);
   });
 });
 
