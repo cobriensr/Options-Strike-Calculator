@@ -37,7 +37,7 @@ EDA and statistical analyses (Python `analyze_*`, TypeScript `analyze-*`). Outpu
 - `analyze_silent_boom_multileg.py`: multi-leg signal correlation
 - `analyze_cross_symbol_confluence.py`: SPY/QQQ/IWM joint signals
 - `analyze_interval_ba_cuts.py`: the five cuts of the Interval B/A alerts (hit rate, magnitude, hour of day, ratio, sweep) over their forward paths. Reads the full-year replay export by default (`--source export`, newest `research/interval-ba/replay-<date>.parquet` unless `--export-end YYYY-MM-DD`; the database is never opened) and the newest `interval-ba-outcomes-export-*.csv`. `--source table` reads `interval_ba_alerts` and the newest `interval-ba-outcomes-*.csv`, which have the live feed's gaps. Also `--ticker` and `--csv`
-- `analyze_confluence_vs_solo.py`: SPXW alerts with an SPY or QQQ partner within `--window-sec` vs. alone, over the same forward paths. The same `--source export|table` and `--export-end` as the cuts script; the export gives the partners the live feed missed on its gap days
+- `analyze_confluence_vs_solo.py`: SPXW alerts with an SPY or QQQ partner in the `--window-sec` up to their own `fired_at` (backward only, inclusive; a methodology change of 2026-11-26, earlier reports counted partners up to the window after the alert and are not comparable) vs. alone, over the same forward paths. The same `--source export|table` and `--export-end` as the cuts script; the export gives the partners the live feed missed on its gap days
 
 ### Audit / verify (`audit-*`, `check-*`, `verify-*`, `grade-*`)
 

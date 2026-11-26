@@ -2,8 +2,10 @@
 from the replay export.
 
 The alerts are 240 SPXW alerts a call and a put in turn, 70 s apart. Every 4th has an SPY partner
-30 s before it (a 2way), every 8th also a QQQ partner 20 s after (a 3way), the rest are solo. The
-same alerts are given to the script as table rows (psycopg2.connect returns a fake cursor) and as
+30 s before it (a 2way), every 8th also a QQQ partner 20 s before it (a 3way), the rest are solo.
+The partners all come before their alert, so the table output is the same under the old rule (a
+partner within 90 s either side) and the new one (90 s back to the alert, inclusive). The same
+alerts are given to the script as table rows (psycopg2.connect returns a fake cursor) and as
 a replay export parquet (real DuckDB over a local file), so the two sources can be held to the
 same tables. An export-mode run never opens the database: psycopg2.connect raises there.
 
@@ -77,7 +79,7 @@ def make_alerts() -> list[dict]:
         if i % 4 == 0:
             add('SPY', cp, fired - timedelta(seconds=30), 600 + i)
         if i % 8 == 0:
-            add('QQQ', cp, fired + timedelta(seconds=20), 500 + i)
+            add('QQQ', cp, fired - timedelta(seconds=20), 500 + i)
     rows.sort(key=lambda r: r['fired_at'])
     for position, row in enumerate(rows):
         row['id'] = position + 1
@@ -127,7 +129,8 @@ def write_outcomes(path: Path, alerts: list[dict], *, export: bool) -> Path:
 
 
 def partner_case(partner_ticker: str, partner_type: str, seconds_before: int) -> list[dict]:
-    """One SPXW call and one partner `seconds_before` it. Table ids in fired order."""
+    """One SPXW call and one partner `seconds_before` it (negative: after it). Table ids in
+    fired order; a partner at the same instant sorts after the SPXW alert."""
     spxw = {
         'id': 0, 'ticker': 'SPXW', 'option_type': 'C', 'chain': 'SPXW261117C06700000',
         'fired_at': at('15:00:00'),
@@ -216,10 +219,12 @@ def both_sources(run):
 
 
 # What the script wrote for these alerts from the table before the export source existed: the
-# output of the version at 8c2e33f56 over this fixture, with the stamp replaced.
+# output of the version at 8c2e33f56 over this fixture, with the stamp replaced. The tables are
+# that version's byte for byte (every partner here comes before its alert, so the backward-only
+# rule tags them as the old +-90 s rule did); only the window sentence of the header is new.
 TABLE_GOLDEN = '''# SPXW confluence vs solo — SPX forward-return comparison (STAMP)
 
-_Joined 240 SPXW alerts against the forward-return paths in `interval-ba-outcomes-20261126-100000.csv`. Confluence-window = 90s around each SPXW fired_at moment. All cohorts 0DTE × 0DTE × 0DTE._
+_Joined 240 SPXW alerts against the forward-return paths in `interval-ba-outcomes-20261126-100000.csv`. Confluence-window = 90s before each SPXW fired_at (inclusive; a partner that fired after the alert does not count). All cohorts 0DTE × 0DTE × 0DTE._
 
 ## Cohort counts
 
@@ -415,7 +420,7 @@ def test_confluence_export_source_tags_partners_from_the_replay(
 
 def test_confluence_an_spy_and_a_qqq_partner_make_a_3way(run):
     alerts = partner_case('SPY', 'C', 30)
-    qqq = {**alerts[0], 'ticker': 'QQQ', 'chain': 'QQQ261117C00500000', 'fired_at': at('15:00:20')}
+    qqq = {**alerts[0], 'ticker': 'QQQ', 'chain': 'QQQ261117C00500000', 'fired_at': at('14:59:40')}
     alerts.append(qqq)
     write_export(run, export_rows(alerts))
     touch(run / 'out', EXPORT_CSV)
@@ -423,6 +428,131 @@ def test_confluence_an_spy_and_a_qqq_partner_make_a_3way(run):
     acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
 
     assert counts_of(report(run / 'out', export=True)) == {'3way': 1, '2way': 0, 'solo': 0}
+
+
+def _partner_alerts(partners: list[tuple[str, str, int]]) -> list[dict]:
+    """One SPXW call at 15:00:00 and a partner for each (ticker, type, seconds before it); a
+    negative number is after it. Table ids in fired order, the SPXW alert first on a tie."""
+    spxw = {
+        'id': 0, 'ticker': 'SPXW', 'option_type': 'C', 'chain': 'SPXW261117C06700000',
+        'fired_at': at('15:00:00'),
+    }  # fmt: skip
+    others = [
+        {
+            'id': 0, 'ticker': ticker, 'option_type': cp,
+            'chain': f'{ticker}261117{cp}00600000',
+            'fired_at': at('15:00:00') - timedelta(seconds=seconds),
+        }  # fmt: skip
+        for ticker, cp, seconds in partners
+    ]
+    alerts = sorted([spxw, *others], key=lambda a: a['fired_at'])
+    for position, a in enumerate(alerts):
+        a['id'] = position + 1
+    return alerts
+
+
+@pytest.mark.parametrize('source', ['export', 'table'])
+@pytest.mark.parametrize(
+    ('partners', 'cohort'),
+    [
+        ([('SPY', 'C', 30)], '2way'),  # 30 s before counts
+        ([('SPY', 'C', -30)], 'solo'),  # 30 s after does not: that would be look-ahead
+        ([('SPY', 'C', 90)], '2way'),  # exactly 90 s before counts
+        ([('SPY', 'C', 91)], 'solo'),
+        ([('SPY', 'C', 0)], '2way'),  # the same instant counts
+        ([('SPY', 'C', -90)], 'solo'),  # the old +-90 s rule counted this one
+        ([('SPY', 'C', 30), ('QQQ', 'C', -30)], '2way'),  # a QQQ after it does not make a 3way
+        ([('SPY', 'C', 30), ('QQQ', 'C', 60)], '3way'),
+    ],
+)
+def test_confluence_counts_only_partners_at_or_before_the_alert(
+    run, monkeypatch, source, partners, cohort
+):
+    alerts = _partner_alerts(partners)
+    touch(run / 'out', TABLE_CSV, EXPORT_CSV)
+    if source == 'export':
+        write_export(run, export_rows(alerts))
+        argv = ['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)]
+    else:
+        use_table(monkeypatch, alerts)
+        argv = ['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)]
+
+    acs.main(argv)
+
+    expected = {'3way': 0, '2way': 0, 'solo': 0}
+    expected[cohort] = 1
+    assert counts_of(report(run / 'out', export=source == 'export')) == expected
+
+
+@pytest.mark.parametrize('partner_first', [False, True])
+def test_a_partner_at_the_same_instant_counts_whichever_sorts_first(partner_first):
+    alerts = _partner_alerts([('SPY', 'C', 0)])  # the SPXW alert sorts first on the tie
+    if partner_first:
+        alerts.reverse()
+
+    assert acs.tag_spxw_alerts_by_confluence(alerts, 90) == {
+        next(a['id'] for a in alerts if a['ticker'] == 'SPXW'): '2way'
+    }
+
+
+def test_confluence_tags_match_the_exports_column_at_90_s(run):
+    """A SPXW alert is `solo` exactly when the export's confluence_tickers is empty, `3way` when
+    it holds SPY and QQQ, and `2way` otherwise. The column is the replay's own `_confluence`
+    (nightly/src/interval_ba_replay.py, imported read-only here), so this holds the script's
+    rule to the replay's and the live detector's, edges and ties included."""
+    import interval_ba_tape  # noqa: F401  (it loads the replay module and registers it)
+
+    replay = sys.modules['interval_ba_replay']
+    groups = [  # (SPXW type, partners as (ticker, type, seconds before); negative: after)
+        ('C', [('SPY', 'C', 90), ('QQQ', 'C', 30)]),  # both, one on the 90 s edge: 3way
+        ('P', [('SPY', 'P', 91)]),  # a second past the edge: solo
+        ('C', [('SPY', 'C', -30)]),  # after the alert only: solo
+        ('P', [('QQQ', 'P', 90)]),  # the edge: 2way
+        ('C', [('SPY', 'C', 0)]),  # the same instant: 2way
+        ('P', [('SPY', 'C', 30)]),  # the other direction: solo
+        ('C', [('SPY', 'C', 30), ('QQQ', 'C', -30)]),  # SPY before, QQQ after: 2way
+        ('C', []),  # no partner at all: solo
+    ]
+    base = at('14:30:00')
+    alerts: list[dict] = []
+    for g, (spxw_type, partners) in enumerate(groups):
+        t = base + timedelta(minutes=10 * g)
+        alerts.append(
+            {'ticker': 'SPXW', 'option_type': spxw_type, 'fired_at': t,
+             'chain': f'SPXW261117{spxw_type}{(6000 + g) * 1000:08d}'}  # fmt: skip
+        )
+        for ticker, cp, seconds in partners:
+            alerts.append(
+                {'ticker': ticker, 'option_type': cp, 'fired_at': t - timedelta(seconds=seconds),
+                 'chain': f'{ticker}261117{cp}{(600 + g) * 1000:08d}'}  # fmt: skip
+            )
+    alerts.sort(key=lambda a: a['fired_at'])
+    column = replay._confluence([(a['fired_at'], a['ticker'], a['option_type']) for a in alerts])
+    rows = [
+        export_row(a['chain'], a['fired_at'].strftime('%H:%M:%S'), None, confluence_tickers=list(c))
+        for a, c in zip(alerts, column, strict=True)
+    ]
+    path = write_export(run, rows)
+
+    con = local_connection()
+    try:
+        sql = 'SELECT option_chain, confluence_tickers FROM read_parquet($p)'
+        in_export = dict(con.execute(sql, {'p': path}).fetchall())
+        read = eio.read_export_alerts(con, DAY_ISO, None)
+    finally:
+        con.close()
+    tags = acs.tag_spxw_alerts_by_confluence(read, 90)
+
+    def from_column(partners: list[str]) -> str:
+        if not partners:
+            return 'solo'
+        return '3way' if {'SPY', 'QQQ'} <= set(partners) else '2way'
+
+    by_chain = {a['option_chain']: tags[a['id']] for a in read if a['id'] in tags}
+    assert by_chain == {
+        a['chain']: from_column(in_export[a['chain']]) for a in alerts if a['ticker'] == 'SPXW'
+    }
+    assert set(by_chain.values()) == {'solo', '2way', '3way'}  # the groups cover every tag
 
 
 def test_a_live_gap_makes_a_partnered_alert_solo_from_the_table_and_2way_from_the_export(

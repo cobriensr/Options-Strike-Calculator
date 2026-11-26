@@ -8,11 +8,21 @@ If true, the confluence cohort should beat solo SPXW on hit-rate
 and/or magnitude at the same forward horizons.
 
 For every SPXW alert (SPY, SPXW and QQQ alerts are read for the partners), we tag it with the
-strongest confluence it participated in within a 90s window:
+strongest confluence it participated in within the 90s window up to and including its own
+fired_at. Partners are same-direction alerts of the other tickers:
 
   - 3way: confluence across SPY + SPXW + QQQ
   - 2way: SPXW + (SPY OR QQQ), same option_type
   - solo: no other-ticker alert within the window, same direction
+
+METHODOLOGY CHANGE (2026-11-26, interval-ba-rebuild task 14). The window is BACKWARD ONLY: a
+partner counts when fired_at - window <= its fired_at <= fired_at, inclusive at both ends. It
+used to be +-window, which counted a partner that fired up to 90 s AFTER the SPXW alert: look-
+ahead (the 2026-11-21 recheck found the 05-12 lift rested on it). Backward only is the live
+rule (uw-stream recent_fires.lookup_confluence) and the replay's (`_confluence` in
+nightly/src/interval_ba_replay.py, which fills the export's confluence_tickers column), so a
+tag here is `solo` exactly when that column is empty. Reports written before this change are not
+comparable with the ones after it.
 
 Then we join against the SPX forward-return paths from the
 enrich_interval_ba_outcomes CSV and compare distributions at T+15 /
@@ -119,18 +129,22 @@ def tag_spxw_alerts_by_confluence(
 ) -> dict[int | str, str]:
     """Return {spxw_alert_id: 'solo' | '2way' | '3way'}.
 
-    For each SPXW alert, scans the ±window_sec band of alerts for
-    same-direction OTHER-ticker alerts. The tag reflects the maximum
-    cross-ticker coverage seen in that band:
+    `alerts` is sorted by fired_at. For each SPXW alert at time t, the partners are the
+    same-direction OTHER-ticker alerts with t - window_sec <= fired_at <= t: backward only,
+    inclusive at both ends, as the live detector and the replay's `_confluence` count them.
+    (METHODOLOGY CHANGE 2026-11-26: it used to scan t +- window_sec, which counted a partner
+    that fired after the alert, a look-ahead. Tags from before and after are not comparable.)
+    The tag reflects the cross-ticker coverage in that band:
       - 3way: at least one SPY AND at least one QQQ
       - 2way: at least one SPY OR QQQ (not both)
       - solo: neither SPY nor QQQ within the window
     """
     out: dict[int | str, str] = {}
     n = len(alerts)
-    # Index alerts by their epoch for binary-search style scan, but at
-    # this scale (~18k alerts) a linear sweep is fine.
-    epochs = [a['fired_at'].timestamp() for a in alerts]
+    # Epoch microseconds as integers: the 90 s edge must compare exactly, which float seconds
+    # may not. A linear sweep is fine at this scale (~18k alerts).
+    epochs = [eio.epoch_us(a['fired_at']) for a in alerts]
+    window_us = window_sec * 1_000_000
 
     for i, a in enumerate(alerts):
         if a['ticker'] != 'SPXW':
@@ -139,9 +153,9 @@ def tag_spxw_alerts_by_confluence(
         opt = a['option_type']
         has_spy = False
         has_qqq = False
-        # Scan backwards
+        # Scan backwards: everything up to window_sec before t (and equal to t).
         j = i - 1
-        while j >= 0 and t - epochs[j] <= window_sec:
+        while j >= 0 and t - epochs[j] <= window_us:
             b = alerts[j]
             if b['option_type'] == opt and b['ticker'] != 'SPXW':
                 if b['ticker'] == 'SPY':
@@ -149,9 +163,10 @@ def tag_spxw_alerts_by_confluence(
                 elif b['ticker'] == 'QQQ':
                     has_qqq = True
             j -= 1
-        # Scan forwards
+        # Scan forwards only over alerts at the same instant, which sort after this one by
+        # chance and count like the ones sorted before it. A later alert never counts.
         j = i + 1
-        while j < n and epochs[j] - t <= window_sec:
+        while j < n and epochs[j] <= t:
             b = alerts[j]
             if b['option_type'] == opt and b['ticker'] != 'SPXW':
                 if b['ticker'] == 'SPY':
@@ -272,7 +287,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     md.append(
         f'_Joined {len(spxw_tags)} SPXW alerts against the forward-return '
         f'paths in `{csv_path.name}`.{source_note} Confluence-window = {args.window_sec}s '
-        f'around each SPXW fired_at moment. All cohorts 0DTE × 0DTE × 0DTE._\n',
+        f'before each SPXW fired_at (inclusive; a partner that fired after the alert does '
+        f'not count). All cohorts 0DTE × 0DTE × 0DTE._\n',
     )
     md.append('## Cohort counts\n')
     md.append('| cohort | n SPXW alerts |')
