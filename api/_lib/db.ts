@@ -30,16 +30,34 @@ import { MIGRATIONS } from './db-migrations.js';
 import { DB_RETRY_ATTEMPTS } from './constants.js';
 import { metrics } from './sentry.js';
 import { TransientDbError } from './transient-db-error.js';
+import { trimUrlEnds } from './url-ends.js';
 
 export type { Migration } from './db-migrations.js';
 export { TransientDbError };
 
 let _db: NeonQueryFunction<false, false> | null = null;
 
+/**
+ * What getDb throws in place of an error that would carry the connection
+ * string, which holds the password. No `cause`: it would hold the same text.
+ */
+const URL_REJECTED = 'DATABASE_URL is not a URL the database driver accepts';
+
 export function getDb() {
   if (!_db) {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL not configured');
+    // `new URL` drops a tab, CR and LF inside a string without a word, so the
+    // driver builds a client from a URL that holds one. The first query then
+    // sends the raw string as a request header, Node rejects a header value with
+    // a NUL, CR or LF, and the error it throws holds the whole string. So such a
+    // URL is refused here, before the client exists. Only a tab, LF, CR and space
+    // at the two ends are let go, and nothing more: a trailing newline is what
+    // `echo "$URL" | vercel env add` leaves, and refusing it would take
+    // production down.
+    if (/[\0\r\n]/.test(trimUrlEnds(url))) {
+      throw new Error(URL_REJECTED);
+    }
     try {
       _db = neon(url);
     } catch (err) {
@@ -49,12 +67,14 @@ export function getDb() {
       // an error that echoes the URL does not pass: a fixed message replaces it,
       // with no `cause` (which would hold the same text). Any other error goes
       // up as it is (the driver's other constructor errors name no URL, and a
-      // test's database block must reach the test by name). A URL the driver
-      // accepts is untouched, and nothing is cached, so the next call retries.
+      // test's database block must reach the test by name). The other way a URL
+      // reaches an error, a NUL, CR or LF inside it, is refused above. A URL the
+      // driver accepts is untouched, and nothing is cached, so the next call
+      // retries.
       const message = err instanceof Error ? err.message : String(err);
       if (!message.includes(url)) throw err;
       // eslint-disable-next-line preserve-caught-error -- the cause is the text to hide
-      throw new Error('DATABASE_URL is not a URL the database driver accepts');
+      throw new Error(URL_REJECTED);
     }
   }
   return _db;

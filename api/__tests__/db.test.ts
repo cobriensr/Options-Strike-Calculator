@@ -138,6 +138,86 @@ describe('db.ts', () => {
       expect(() => getDb()).toThrow('DATABASE_URL not configured');
     });
 
+    function failureOf(run: () => unknown): Error {
+      try {
+        run();
+      } catch (err) {
+        return err as Error;
+      }
+      throw new Error('getDb was expected to throw and did not');
+    }
+
+    // `new URL` drops a tab, CR and LF inside a string without a word, so the
+    // driver builds a client from such a URL. The first query then sends the raw
+    // string as a request header, which Node rejects with an error that holds
+    // the whole string, and the driver rethrows it. getDb refuses it first.
+    describe('a URL with a NUL, CR or LF inside', () => {
+      const REFUSED = 'DATABASE_URL is not a URL the database driver accepts';
+      const WITH_SECRET = 'postgres://owner:s3cret@ep-plan.neon.tech/neondb';
+
+      // restoreAllMocks does not clear the call history of a vi.fn(), and these
+      // tests assert on how often neon() was called.
+      beforeEach(() => {
+        vi.mocked(neon).mockClear();
+      });
+
+      it.each([
+        ['a line feed', 'postgres://owner:s3\ncret@ep-plan.neon.tech/neondb'],
+        [
+          'a carriage return',
+          'postgres://owner:s3\rcret@ep-plan.neon.tech/neondb',
+        ],
+        ['a NUL', 'postgres://owner:s3\0cret@ep-plan.neon.tech/neondb'],
+      ])(
+        'throws the fixed message, with no cause and without calling neon(), for %s',
+        (_label, url) => {
+          process.env.DATABASE_URL = url;
+
+          const failure = failureOf(() => getDb());
+
+          expect(failure.message).toBe(REFUSED);
+          expect('cause' in failure).toBe(false);
+          for (const part of ['owner', 's3', 'cret', 'ep-plan']) {
+            expect(failure.message).not.toContain(part);
+          }
+          expect(neon).not.toHaveBeenCalled();
+        },
+      );
+
+      it('caches nothing: the next call, with the URL fixed, builds a client', () => {
+        process.env.DATABASE_URL = 'postgres://owner:s3\ncret@ep-plan/neondb';
+        expect(() => getDb()).toThrow(REFUSED);
+
+        process.env.DATABASE_URL = WITH_SECRET;
+
+        expect(getDb()).toBe(mockSql);
+        expect(neon).toHaveBeenCalledTimes(1);
+      });
+
+      // `echo "$URL" | vercel env add` leaves a newline after the value, and a
+      // refusal here would take production down: it passes, as it always did.
+      it.each([
+        ['one trailing line feed', `${WITH_SECRET}\n`],
+        ['a trailing CR LF', `${WITH_SECRET}\r\n`],
+        [
+          'spaces and tabs at both ends, and a trailing line feed',
+          ` \t${WITH_SECRET}\t \n`,
+        ],
+      ])('passes %s to neon() unchanged', (_label, url) => {
+        process.env.DATABASE_URL = url;
+
+        expect(getDb()).toBe(mockSql);
+        expect(neon).toHaveBeenCalledWith(url);
+      });
+
+      it('trims only a tab, LF, CR and space at the ends: a NUL at the end is refused', () => {
+        process.env.DATABASE_URL = `${WITH_SECRET}\0`;
+
+        expect(() => getDb()).toThrow(REFUSED);
+        expect(neon).not.toHaveBeenCalled();
+      });
+    });
+
     describe('when the driver rejects the connection string', () => {
       // `neon()` re-parses the URL and, on failure, throws a message that ends
       // with the whole connection string: user and password included. getDb
@@ -150,15 +230,6 @@ describe('db.ts', () => {
             `Database connection string provided to \`neon()\` is not a valid URL. Connection string: ${URL_WITH_SECRET}`,
           );
         });
-      }
-
-      function failureOf(run: () => unknown): Error {
-        try {
-          run();
-        } catch (err) {
-          return err as Error;
-        }
-        throw new Error('getDb was expected to throw and did not');
       }
 
       it('throws a fixed message with no part of the URL in it', () => {
