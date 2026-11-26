@@ -451,6 +451,16 @@ const UNUSABLE_BY_SHAPE: Array<[label: string, url: string, tokens: string[]]> =
       'postgres://owner:pw@ep-plan.neon.tech/neondb@x',
       ['owner', 'pw', '@x'],
     ],
+    [
+      'a line feed inside, which the URL parser drops without a word',
+      'postgres://owner:s3\ncret@ep-plan.neon.tech/neondb',
+      ['owner', 's3', 'cret'],
+    ],
+    [
+      'a NUL inside',
+      'postgres://owner:s3\0cret@ep-plan.neon.tech/neondb',
+      ['owner', 's3', 'cret'],
+    ],
   ];
 
 const progressLines = (): string[] =>

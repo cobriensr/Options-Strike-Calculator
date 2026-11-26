@@ -1864,6 +1864,18 @@ const AWKWARD_URLS: Array<
     true,
   ],
   [
+    'a line feed inside, which the URL parser drops without a word',
+    'postgres://owner:s3\ncret@ep-plan.neon.tech/neondb',
+    ['owner', 's3', 'cret'],
+    true,
+  ],
+  [
+    'a NUL inside',
+    'postgres://owner:s3\0cret@ep-plan.neon.tech/neondb',
+    ['owner', 's3', 'cret'],
+    true,
+  ],
+  [
     'a parameter after the database name',
     'postgres://owner:pw@ep-plan.neon.tech/neondb;password=x',
     ['owner', 'pw', 'password', '=x'],

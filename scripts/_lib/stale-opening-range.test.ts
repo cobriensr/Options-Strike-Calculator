@@ -1735,6 +1735,13 @@ describe('databaseOf', () => {
       'an @ after the database name',
       'postgres://owner:pw@ep-plan.neon.tech/neondb@x',
     ],
+    // The parser drops these without a word, so what it parsed is not what the
+    // string says; the shared test refuses them.
+    [
+      'a line feed inside',
+      'postgres://owner:s3\ncret@ep-plan.neon.tech/neondb',
+    ],
+    ['a NUL inside', 'postgres://owner:s3\0cret@ep-plan.neon.tech/neondb'],
     // The host is repeated after the `@`, so the shared test trusts it; the
     // older guard (no user, no password parsed, but an `@`) still takes it.
     [

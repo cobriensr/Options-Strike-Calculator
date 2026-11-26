@@ -135,10 +135,48 @@ describe('dbHost', () => {
  * `readableUrl` is the predicate `dbHost` and the stale-range tool's
  * `databaseOf` share: the parsed URL, when its host is what the raw string
  * says it is, else null. `dbHost` and `databaseOf` read the host and the path
- * from what it returns, so what they print can never disagree with each other
- * about which URLs are readable.
+ * from what it returns, so `databaseOf` refuses everything `dbHost` refuses.
+ * It also keeps one check of its own, an `@` with no user and no password
+ * parsed, so `postgres://@ep-plan.neon.tech/neondb` gives `dbHost` the host and
+ * `databaseOf` the sentinel: the safe way round.
  */
 describe('readableUrl', () => {
+  it.each([
+    ['one trailing line feed', 'postgres://ep-plan.neon.tech/neondb\n'],
+    ['a trailing CR LF', 'postgres://owner:pw@ep-plan.neon.tech/neondb\r\n'],
+    [
+      'spaces and tabs at both ends',
+      ' \tpostgres://owner:pw@ep-plan.neon.tech/neondb\t \n',
+    ],
+  ])(
+    'still reads a URL with %s: a trailing newline is what `vercel env add` leaves',
+    (_label, url) => {
+      expect(readableUrl(url)?.hostname).toBe('ep-plan.neon.tech');
+      expect(dbHost(url)).toBe('ep-plan.neon.tech');
+    },
+  );
+
+  it.each([
+    ['a line feed', 'postgres://owner:s3\ncret@ep-plan.neon.tech/neondb'],
+    ['a carriage return', 'postgres://owner:s3\rcret@ep-plan.neon.tech/neondb'],
+    ['a tab', 'postgres://owner:s3\tcret@ep-plan.neon.tech/neondb'],
+    ['a NUL', 'postgres://owner:s3\0cret@ep-plan.neon.tech/neondb'],
+    [
+      'a line feed in the host',
+      'postgres://owner:pw@ep-plan.neon\n.tech/neondb',
+    ],
+    [
+      'a NUL at the end, which is not trimmed',
+      'postgres://ep-plan.neon.tech/neondb\0',
+    ],
+  ])(
+    'gives null, and the placeholder from dbHost, for %s inside: the parser drops it, so what it parsed is not what the string says',
+    (_label, url) => {
+      expect(readableUrl(url)).toBeNull();
+      expect(dbHost(url)).toBe(UNREADABLE);
+    },
+  );
+
   it.each([
     [
       'postgresql://owner:s3cret@ep-plan-123.us-east-2.aws.neon.tech/neondb?sslmode=require',

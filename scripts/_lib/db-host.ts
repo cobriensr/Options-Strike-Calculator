@@ -20,11 +20,21 @@
  * costs nothing, and a leaked password does. No case folding: the host is
  * compared as the parser gave it.
  *
- * `readableUrl` is that test, and the stale-range tool's `databaseOf` takes the
- * same one, so the two cannot disagree about which URLs are readable. This file
- * imports nothing, so a script and its CLI test can take it without taking a
- * database client.
+ * The parser also drops a tab, CR and LF inside a string without a word, so a
+ * string that holds one parses as something it is not (a password with a line
+ * break in it reads as one without). A tab, CR, LF or NUL anywhere but the two
+ * ends is not readable either. A tab, LF, CR or space AT the ends is: a trailing
+ * newline is what `echo "$URL" | vercel env add` leaves.
+ *
+ * `readableUrl` is that test. The stale-range tool's `databaseOf` takes it and
+ * keeps one check of its own (an `@` with no user and no password parsed), so
+ * `databaseOf` refuses everything `dbHost` refuses, and `postgres://@host/db`
+ * besides: the host for `dbHost`, the sentinel for `databaseOf`, which is the
+ * safe way round. This file imports one pure helper (`trimUrlEnds`) and no
+ * database client, so a script and its CLI test can take it without one.
  */
+
+import { trimUrlEnds } from '../../api/_lib/url-ends.js';
 
 /**
  * What `dbHost` returns for a URL it will not read a host from. A script that
@@ -35,11 +45,13 @@ export const DB_HOST_UNREADABLE = '(DATABASE_URL not readable)';
 
 /**
  * The parsed URL, when its host is what the raw string says it is; null for a
- * URL that is missing, does not parse, has no host, or parses so that its
- * host is not what follows the last `@`.
+ * URL that is missing, does not parse, has no host, holds a tab, CR, LF or NUL
+ * away from its two ends, or parses so that its host is not what follows the
+ * last `@`.
  */
 export function readableUrl(databaseUrl: string | undefined): URL | null {
   const raw = databaseUrl ?? '';
+  if (/[\t\r\n\0]/.test(trimUrlEnds(raw))) return null;
   try {
     const parsed = new URL(raw);
     if (parsed.hostname === '') return null;
