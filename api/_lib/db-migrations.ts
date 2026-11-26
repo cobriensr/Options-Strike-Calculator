@@ -6200,4 +6200,32 @@ export const MIGRATIONS: Migration[] = [
           )`,
     ],
   },
+  {
+    id: 213,
+    description:
+      'Add the 15 prev_day_opt_* columns to training_features: the options volume, premium and open interest of the previous trading day, one for each opt_* column of #24 and of the same type. Morning models read these, because the same-day opt_* volume and premium are full-day totals, known only after the 16:00 ET close (spec: docs/superpowers/specs/2026-11-26-options-volume-prev-day-design.md, phase 1a). Nullable, no default, no backfill: NULL means not written yet. Nothing writes them until phase 1b, which must ship after this migration is applied, because its upsert names all 15 on every call.',
+    statements: (sql) => [
+      sql`SET LOCAL lock_timeout = '5s'`,
+      // The names and types are #24's, in its order, with the prefix. Adding
+      // a nullable column with no default only touches the catalog.
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS prev_day_opt_call_volume       INTEGER,
+          ADD COLUMN IF NOT EXISTS prev_day_opt_put_volume        INTEGER,
+          ADD COLUMN IF NOT EXISTS prev_day_opt_call_oi           INTEGER,
+          ADD COLUMN IF NOT EXISTS prev_day_opt_put_oi            INTEGER,
+          ADD COLUMN IF NOT EXISTS prev_day_opt_call_premium      DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS prev_day_opt_put_premium       DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS prev_day_opt_bullish_premium   DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS prev_day_opt_bearish_premium   DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS prev_day_opt_call_vol_ask      INTEGER,
+          ADD COLUMN IF NOT EXISTS prev_day_opt_put_vol_bid       INTEGER,
+          ADD COLUMN IF NOT EXISTS prev_day_opt_vol_pcr           DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS prev_day_opt_oi_pcr            DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS prev_day_opt_premium_ratio     DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS prev_day_opt_call_vol_vs_avg30 DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS prev_day_opt_put_vol_vs_avg30  DECIMAL(6,4)
+      `,
+    ],
+  },
 ];
