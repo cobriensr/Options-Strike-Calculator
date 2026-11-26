@@ -100,22 +100,25 @@ Each phase touches 5 files or fewer.
 **Pushed only after #213 is applied in production.**
 
 - **A pure mapper.** Extract the row-to-features code (`build-features-phase2.ts` ~:510-565) into an exported pure function: `optionsVolumeFeaturesFromRow(row, prefix: 'opt_' | 'prev_day_opt_'): FeatureRow`.
-  - It keeps today's parsing and today's rules:
+  - It keeps today's parsing and today's rules, with one change:
     - a zero becomes `null`;
-    - a ratio is set only when its denominator is above 0.
+    - a ratio is set only when both its sides are finite and its denominator is above 0, so a field that doesn't parse no longer makes a NaN ratio, which Postgres NUMERIC would store (0 of 227 production rows hold one). A zero numerator still gives 0.
   - The cron and the phase 2 repair both call it, so the two can't diverge.
 - **The previous row.** In the same reply, find the row whose own date is `priorTradingDay(dateStr)`, and set the 15 `prev_day_opt_*` from it.
   - The same-day `opt_*` keep coming from the row dated `dateStr`, as now.
   - Each lookup is independent: a missing same-day row leaves the previous-day values set, and the reverse.
-- **The miss report.** A missing previous-day row is reported like a missing same-day row: the same message shape, its own fingerprint (`options-volume-no-prev-row`), and the same live-date level rule (error for today's date, warning otherwise).
-- **The row count.** The current 45 rows already reach the previous trading day of the oldest date the guard accepts. 45 rows span at least 63 calendar days; the oldest previous day needed is at most 48 back. So leave the count alone and extend the existing window test to the previous day, so it fails if the count or the guard changes.
+- **The miss report.** The live-date level rule is the same for every report: error for today's date, warning otherwise.
+  - When both rows are missing, including an empty, non-array or malformed reply, send one `options-volume-no-row` report that names both dates, not two.
+  - A missing same-day row alone is reported as before, under `options-volume-no-row`.
+  - A missing previous-day row alone sends the same message shape under its own fingerprint, `options-volume-no-prev-row`.
+- **The row count.** The current 45 rows already reach the previous trading day of the oldest date the guard accepts: that row is at most 48 days back, and 49 calendar days hold at most 35 weekdays. So leave the count alone and extend the existing window test to the previous day. In that test, `oldest` equal to 44 pins the guard and `limit >= calendarDates` pins the count; the previous-day walk states the bound and pins the dates, but is looser, so it can't fail first.
 - **Upsert and completeness:** add the 15 to the INSERT, VALUES and `ON CONFLICT` lists with the same COALESCE rule, and to `NULLABLE_FEATURE_KEYS`. Extend the COALESCE assertions in `build-features.test.ts`.
 - **Tests (R4):**
   - previous-day values come from the previous trading day's row, across a weekend and across a holiday (use a real date in `MARKET_CLOSED_DATES`);
-  - each of the two rows missing, alone;
+  - each of the two rows missing alone, and both missing, which is one report;
   - a malformed previous row;
   - the extended window test;
-  - the mapper's table, which today's parsing tests already cover for the `opt_` prefix and which gets the same for `prev_day_opt_`;
+  - the mapper's table, which today's parsing tests already cover for the `opt_` prefix and which gets the same for `prev_day_opt_`, with a case for each of the five ratios where a side doesn't parse;
   - upstream failure sets **neither** group. The existing `optKeys` helper (~:2361) filters on `startsWith('opt_')`, so it must also catch `prev_day_opt_`, or the UW-down, non-2xx, bad-JSON and guard-skip tests won't notice;
   - mutants: the previous row taken by position (index 1) instead of by date; a calendar day instead of a trading day.
 
@@ -154,8 +157,8 @@ Each phase touches 5 files or fewer.
 Three commits, 5 files or fewer each.
 
 - **3a, groups and models:** `ml/src/utils/__init__.py`, `ml/src/phase2_early.py`, `ml/src/clustering.py` and the matching `ml/tests/`.
-  - `OPTIONS_VOLUME_FEATURES` becomes the morning-safe group: (i) or (ii), per the owner question above.
-  - A new `OPTIONS_VOLUME_EOD_FEATURES` holds the same-day columns that leak: volume, premium, ask/bid, the volume PCR, the premium ratio and the two `vs_avg30` ratios. Under (ii), the same-day open interest goes in it too.
+  - `OPTIONS_VOLUME_FEATURES` becomes the morning-safe group, as the owner decided (i) on 2026-11-26: today's `opt_call_oi`, `opt_put_oi` and `opt_oi_pcr`, which are known at the open, plus the 12 `prev_day_opt_*` columns that aren't open interest.
+  - A new `OPTIONS_VOLUME_EOD_FEATURES` holds the same-day columns that leak: volume, premium, ask/bid, the volume PCR, the premium ratio and the two `vs_avg30` ratios. The same-day open interest isn't in it: under (i) it stays in the morning-safe group.
   - `phase2_early.py` and `clustering.py` models read only the morning-safe group.
   - A test fails if any same-day leaking column reaches either model's feature list.
   - `clustering.py` also reads `opt_vol_pcr` by name to describe clusters (:460 profile, :885 heatmap). Switch those to `prev_day_opt_vol_pcr`, so a morning cluster is described with what was known that morning. Extend the leak test to those name reads.
