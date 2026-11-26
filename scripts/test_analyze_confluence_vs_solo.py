@@ -62,8 +62,9 @@ def touch(folder: Path, *names: str) -> None:
 # --- the alerts -------------------------------------------------------------------------------
 
 
-def make_alerts() -> list[dict]:
-    """The SPXW alerts and their partners, in fired order with the table's ids."""
+def make_alerts(qqq_seconds_before: int = 20) -> list[dict]:
+    """The SPXW alerts and their partners, in fired order with the table's ids. The QQQ partner
+    of every 8th SPXW alert fired `qqq_seconds_before` it (negative: after it)."""
     base = at('14:30:00')
     rows: list[dict] = []
 
@@ -79,7 +80,7 @@ def make_alerts() -> list[dict]:
         if i % 4 == 0:
             add('SPY', cp, fired - timedelta(seconds=30), 600 + i)
         if i % 8 == 0:
-            add('QQQ', cp, fired - timedelta(seconds=20), 500 + i)
+            add('QQQ', cp, fired - timedelta(seconds=qqq_seconds_before), 500 + i)
     rows.sort(key=lambda r: r['fired_at'])
     for position, row in enumerate(rows):
         row['id'] = position + 1
@@ -224,7 +225,7 @@ def both_sources(run):
 # rule tags them as the old +-90 s rule did); only the window sentence of the header is new.
 TABLE_GOLDEN = '''# SPXW confluence vs solo — SPX forward-return comparison (STAMP)
 
-_Joined 240 SPXW alerts against the forward-return paths in `interval-ba-outcomes-20261126-100000.csv`. Confluence-window = 90s before each SPXW fired_at (inclusive; a partner that fired after the alert does not count). All cohorts 0DTE × 0DTE × 0DTE._
+_Joined 240 SPXW alerts against the forward-return paths in `interval-ba-outcomes-20261126-100000.csv` (236 of 240 SPXW alerts joined a path). Confluence-window = 90s before each SPXW fired_at (inclusive; a partner that fired after the alert does not count). All cohorts 0DTE × 0DTE × 0DTE._
 
 ## Cohort counts
 
@@ -372,21 +373,23 @@ def test_confluence_export_source_gives_the_same_tables_and_never_opens_the_data
     # The same alerts, so the same tables: the string ids of the CSV join the export's alerts.
     assert tables_of(text) == tables_of(TABLE_GOLDEN)
     assert (
-        f'paths in `{EXPORT_CSV}`. Alerts from the replay export `{EXPORT_KEY}`. '
-        'Confluence-window = 90s'
+        f'paths in `{EXPORT_CSV}` (236 of 240 SPXW alerts joined a path). '
+        f'Alerts from the replay export `{EXPORT_KEY}`. Confluence-window = 90s'
     ) in text
 
 
 @pytest.mark.parametrize(
     ('partner', 'cohort', 'spxw_alerts'),
     [
-        (('SPY', 'C', 30), '2way', 1),  # the brief's case: a partner 30 s earlier
-        (('QQQ', 'C', 30), '2way', 1),
-        (None, 'solo', 1),  # the partner absent
-        (('SPY', 'P', 30), 'solo', 1),  # the other direction does not count
-        (('SPY', 'C', 90), '2way', 1),  # the window's edge counts
-        (('SPY', 'C', 91), 'solo', 1),  # a second past it does not
-        (('SPXW', 'C', 30), 'solo', 2),  # another SPXW alert is no partner (it is solo too)
+        pytest.param(('SPY', 'C', 30), '2way', 1, id='spy_30s_before'),
+        pytest.param(('QQQ', 'C', 30), '2way', 1, id='qqq_30s_before'),
+        pytest.param(None, 'solo', 1, id='no_partner'),
+        # A put partner of a call alert: a different option type, so it is no partner.
+        pytest.param(('SPY', 'P', 30), 'solo', 1, id='other_option_type'),
+        pytest.param(('SPY', 'C', 90), '2way', 1, id='90s_before_is_the_edge_and_counts'),
+        pytest.param(('SPY', 'C', 91), 'solo', 1, id='91s_before_is_past_the_edge'),
+        # Another SPXW alert is no partner (it is solo too).
+        pytest.param(('SPXW', 'C', 30), 'solo', 2, id='another_spxw_alert'),
     ],
 )
 def test_confluence_export_source_tags_partners_from_the_replay(
@@ -455,14 +458,18 @@ def _partner_alerts(partners: list[tuple[str, str, int]]) -> list[dict]:
 @pytest.mark.parametrize(
     ('partners', 'cohort'),
     [
-        ([('SPY', 'C', 30)], '2way'),  # 30 s before counts
-        ([('SPY', 'C', -30)], 'solo'),  # 30 s after does not: that would be look-ahead
-        ([('SPY', 'C', 90)], '2way'),  # exactly 90 s before counts
-        ([('SPY', 'C', 91)], 'solo'),
-        ([('SPY', 'C', 0)], '2way'),  # the same instant counts
-        ([('SPY', 'C', -90)], 'solo'),  # the old +-90 s rule counted this one
-        ([('SPY', 'C', 30), ('QQQ', 'C', -30)], '2way'),  # a QQQ after it does not make a 3way
-        ([('SPY', 'C', 30), ('QQQ', 'C', 60)], '3way'),
+        pytest.param([('SPY', 'C', 30)], '2way', id='30s_before_counts'),
+        # 30 s after does not: counting it would be look-ahead.
+        pytest.param([('SPY', 'C', -30)], 'solo', id='30s_after_does_not'),
+        pytest.param([('SPY', 'C', 90)], '2way', id='exactly_90s_before_counts'),
+        pytest.param([('SPY', 'C', 91)], 'solo', id='91s_before_does_not'),
+        pytest.param([('SPY', 'C', 0)], '2way', id='the_same_instant_counts'),
+        # The old +-90 s rule counted this one.
+        pytest.param([('SPY', 'C', -90)], 'solo', id='90s_after_does_not'),
+        pytest.param(
+            [('SPY', 'C', 30), ('QQQ', 'C', -30)], '2way', id='a_qqq_after_makes_no_3way'
+        ),
+        pytest.param([('SPY', 'C', 30), ('QQQ', 'C', 60)], '3way', id='spy_and_qqq_before'),
     ],
 )
 def test_confluence_counts_only_partners_at_or_before_the_alert(
@@ -509,7 +516,7 @@ def test_confluence_tags_match_the_exports_column_at_90_s(run):
         ('C', [('SPY', 'C', -30)]),  # after the alert only: solo
         ('P', [('QQQ', 'P', 90)]),  # the edge: 2way
         ('C', [('SPY', 'C', 0)]),  # the same instant: 2way
-        ('P', [('SPY', 'C', 30)]),  # the other direction: solo
+        ('P', [('SPY', 'C', 30)]),  # a call partner of a put alert: another option type, solo
         ('C', [('SPY', 'C', 30), ('QQQ', 'C', -30)]),  # SPY before, QQQ after: 2way
         ('C', []),  # no partner at all: solo
     ]
@@ -555,6 +562,60 @@ def test_confluence_tags_match_the_exports_column_at_90_s(run):
     assert set(by_chain.values()) == {'solo', '2way', '3way'}  # the groups cover every tag
 
 
+def test_the_cohort_counts_change_by_design_when_a_partner_comes_after_the_alert(run):
+    """Under the old +-90 s rule the 240-alert fixture had 30 3way, 30 2way and 180 solo: the
+    QQQ partner of every 8th alert fired 20 s AFTER it, and counted. Backward only, that QQQ
+    does not count, so those 30 are 2way (their SPY partner is before them): 0, 60, 180."""
+    alerts = make_alerts(qqq_seconds_before=-20)
+    write_export(run, export_rows(alerts))
+    write_outcomes(run / 'out' / EXPORT_CSV, alerts, export=True)
+
+    acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    assert counts_of(report(run / 'out', export=True)) == {'3way': 0, '2way': 60, 'solo': 180}
+
+
+def test_a_table_csv_with_the_export_source_joins_nothing_and_exits(run, both_sources):
+    """The old habit `--csv <table csv>` under the new default: integer ids against the export's
+    `<chain>@<epoch>` ids share nothing, and every cohort table would come out empty."""
+    with pytest.raises(SystemExit) as stopped:
+        acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / TABLE_CSV)])
+
+    message = str(stopped.value)
+    assert message.startswith('No alert joined a path: 240 alerts from the export source')
+    assert TABLE_CSV in message
+    assert '--csv' in message
+    assert '--source' in message
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+    psycopg2.connect.assert_not_called()
+
+
+def test_paths_of_alerts_not_in_the_export_do_not_count_as_joined(run, both_sources):
+    """A CSV from another run: paths for some of the SPXW alerts and for five that are not in
+    this export. A partial join runs, and the report counts the alerts that joined."""
+    first = both_sources[:100]
+    csv_path = write_outcomes(run / 'out' / EXPORT_CSV, first, export=True)
+    with csv_path.open('a', encoding='utf-8') as f:
+        for n in range(5):
+            f.write(f'SPXW261001C0600000{n}@1790000000,x,C,warning,x,30,x,6700.00,0.1000\n')
+    joined = sum(1 for a in first if a['ticker'] == 'SPXW' and a.get('has_path', True))
+
+    assert acs.main(['--export-end', DAY_ISO]) == 0
+
+    text = report(run / 'out', export=True)
+    assert f'({joined} of 240 SPXW alerts joined a path)' in text
+    assert joined < 240
+
+
+def test_the_report_and_output_say_how_many_spxw_alerts_joined_a_path(
+    run, capsys, both_sources
+):
+    acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    assert '236 of 240 SPXW alerts joined a path' in capsys.readouterr().out
+    assert '(236 of 240 SPXW alerts joined a path)' in report(run / 'out', export=True)
+
+
 def test_a_live_gap_makes_a_partnered_alert_solo_from_the_table_and_2way_from_the_export(
     run, monkeypatch
 ):
@@ -587,7 +648,7 @@ def test_export_end_defaults_to_the_newest_replay_object(run, capsys):
     text = report(run / 'out', export=True)
     assert counts_of(text) == {'3way': 0, '2way': 1, 'solo': 0}
     assert f'Alerts from the replay export `{EXPORT_KEY}`.' in text
-    assert f'paths in `{EXPORT_CSV}`.' in text
+    assert f'paths in `{EXPORT_CSV}` (' in text
 
 
 def test_no_replay_object_exits_with_a_message(run):

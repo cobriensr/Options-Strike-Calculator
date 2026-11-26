@@ -484,6 +484,21 @@ def newest_outcomes_csv(out_dir: Path, ticker: str, export: bool) -> Path | None
     return None
 
 
+def require_joined(joined: int, alerts: int, paths: int, csv_name: str, source: str) -> None:
+    """Exit when the alerts and the CSV's paths share no alert_id.
+
+    The two analyze_* scripts join the alerts of `source` to the paths of an outcomes CSV by
+    alert_id. A CSV of the other source (integer table ids against the export's
+    `<chain>@<epoch>`) or one from another run joins nothing, and the tables would come out
+    empty with exit 0. An empty alert set or an empty CSV is not this case: it passes."""
+    if alerts and paths and not joined:
+        sys.exit(
+            f'No alert joined a path: {alerts} alerts from the {source} source and {paths} paths '
+            f'in {csv_name} share no alert_id. The CSV is the other source\'s or from another '
+            f'run: check --csv against --source ({source}).',
+        )
+
+
 def iso_date(text: str) -> str:
     try:
         return date.fromisoformat(text).isoformat()

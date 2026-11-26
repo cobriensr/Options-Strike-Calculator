@@ -216,7 +216,7 @@ EXPORT_CSV = 'interval-ba-outcomes-export-20261126-110000.csv'
 # output of the version at 60512f1ed over this fixture, with the stamp replaced.
 TABLE_GOLDEN = '''# SPXW Interval B/A — empirical edge analysis (STAMP)
 
-_Joined 200 SPXW alerts against 189 forward-return paths from `interval-ba-outcomes-20261126-100000.csv`._
+_Joined 200 SPXW alerts against 189 forward-return paths from `interval-ba-outcomes-20261126-100000.csv` (189 of 200 alerts joined a path)._
 
 ## 1. Hit rate vs unconditional baseline
 
@@ -302,8 +302,8 @@ def test_cuts_export_source_reads_the_replay_and_never_the_database(run, both_so
     # The same 200 alerts, so the same five tables as from the table.
     assert tables_of(text) == tables_of(TABLE_GOLDEN)
     assert (
-        f'_Joined 200 SPXW alerts against 189 forward-return paths from `{EXPORT_CSV}`.'
-        f' Alerts from the replay export `{EXPORT_KEY}`._'
+        f'_Joined 200 SPXW alerts against 189 forward-return paths from `{EXPORT_CSV}`'
+        f' (189 of 200 alerts joined a path). Alerts from the replay export `{EXPORT_KEY}`._'
     ) in text
 
 
@@ -323,7 +323,7 @@ def test_the_source_defaults_to_the_export_and_its_newest_csv(run, both_sources,
     out = capsys.readouterr().out
     assert f'Export: {EXPORT_KEY} (the newest)' in out
     text = analysis_md(run / 'out', export=True).read_text('utf-8')
-    assert f'from `{EXPORT_CSV}`.' in text
+    assert f'from `{EXPORT_CSV}` (' in text
     assert f'Alerts from the replay export `{EXPORT_KEY}`.' in text
     assert '_Joined 200 SPXW alerts' in text  # the newest replay has all 200, not the older 50
 
@@ -344,6 +344,60 @@ def test_export_mode_takes_the_export_outcomes_csv_and_table_mode_skips_it(
 
     assert f'from `{EXPORT_CSV}`' in analysis_md(run / 'out', export=True).read_text('utf-8')
     assert f'from `{TABLE_CSV}`' in analysis_md(run / 'out').read_text('utf-8')
+
+
+def test_a_table_csv_with_the_export_source_joins_nothing_and_exits(run, capsys, both_sources):
+    """The old habit `--csv <table csv>` under the new default: integer ids against the export's
+    `<chain>@<epoch>` ids share nothing, and the tables would come out empty."""
+    with pytest.raises(SystemExit) as stopped:
+        cuts.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / TABLE_CSV)])
+
+    message = str(stopped.value)
+    assert message.startswith('No alert joined a path: 200 alerts from the export source')
+    assert TABLE_CSV in message
+    assert '--csv' in message
+    assert '--source' in message
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+    psycopg2.connect.assert_not_called()
+
+
+def test_the_cuts_header_and_output_say_how_many_alerts_joined_a_path(run, capsys, both_sources):
+    cuts.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    assert '189 of 200 alerts joined a path' in capsys.readouterr().out
+    assert '(189 of 200 alerts joined a path)' in (
+        analysis_md(run / 'out', export=True).read_text('utf-8')
+    )
+
+
+def test_an_outcomes_csv_with_no_rows_is_not_a_zero_join(run, both_sources):
+    """Nothing to join against is not a join that found nothing: the header says 0 of 200."""
+    (run / 'out' / EXPORT_CSV).write_text(
+        'alert_id,option_chain,option_type,severity,fired_at,t_minutes,ts_utc,spx_price,'
+        'pct_change\n',
+        encoding='utf-8',
+    )
+
+    assert cuts.main(['--export-end', DAY_ISO]) == 0
+
+    text = analysis_md(run / 'out', export=True).read_text('utf-8')
+    assert '(0 of 200 alerts joined a path)' in text
+
+
+def test_a_stale_export_csv_that_covers_some_alerts_still_runs(run, both_sources):
+    """A CSV from another run: paths for 113 of the 200 alerts, and for five that are not in
+    this export. A partial join is not an empty one: the header counts the alerts that joined
+    (113), not the paths (118)."""
+    csv_path = write_outcomes(run / 'out' / EXPORT_CSV, both_sources[:120], export=True)
+    with csv_path.open('a', encoding='utf-8') as f:
+        for n in range(5):
+            f.write(f'SPXW261001C0600000{n}@1790000000,x,C,warning,x,30,x,6700.00,0.1000\n')
+
+    assert cuts.main(['--export-end', DAY_ISO]) == 0
+
+    text = analysis_md(run / 'out', export=True).read_text('utf-8')
+    assert 'against 118 forward-return paths' in text
+    assert '(113 of 200 alerts joined a path)' in text
 
 
 def test_the_export_analysis_file_name_carries_export_and_the_ticker(run):

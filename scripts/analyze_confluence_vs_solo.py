@@ -261,6 +261,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     for k in ('3way', '2way', 'solo'):
         print(f'  {k}: {counts.get(k, 0):,}')
 
+    # A CSV of the other source (or another run) shares no alert_id with these alerts: every
+    # cohort table below would be empty with exit 0.
+    joined = sum(1 for alert_id in spxw_tags if paths.get(alert_id))
+    eio.require_joined(joined, len(spxw_tags), len(paths), csv_path.name, args.source)
+    print(f'  {joined} of {len(spxw_tags)} SPXW alerts joined a path')
+
     # Group SPXW alerts by tag, also by option_type
     by_cohort: dict[tuple[str, str, int], list[float]] = defaultdict(list)
     eod_by_cohort: dict[tuple[str, str], list[float]] = defaultdict(list)
@@ -286,7 +292,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     md.append(f'# SPXW confluence vs solo — SPX forward-return comparison ({stamp})\n')
     md.append(
         f'_Joined {len(spxw_tags)} SPXW alerts against the forward-return '
-        f'paths in `{csv_path.name}`.{source_note} Confluence-window = {args.window_sec}s '
+        f'paths in `{csv_path.name}` ({joined} of {len(spxw_tags)} SPXW alerts joined a path).'
+        f'{source_note} Confluence-window = {args.window_sec}s '
         f'before each SPXW fired_at (inclusive; a partner that fired after the alert does '
         f'not count). All cohorts 0DTE × 0DTE × 0DTE._\n',
     )

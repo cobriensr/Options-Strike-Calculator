@@ -575,12 +575,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             conn.close()
 
+    # A CSV of the other source (or another run) shares no alert_id with these alerts: the
+    # tables would be empty with exit 0.
+    joined = sum(1 for alert_id in alerts if alert_id in paths)
+    eio.require_joined(joined, len(alerts), len(paths), csv_path.name, args.source)
+    print(f'  {joined} of {len(alerts)} alerts joined a path')
+
     md: list[str] = []
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     md.append(f'# {ticker} Interval B/A — empirical edge analysis ({stamp})\n')
     md.append(
         f'_Joined {len(alerts)} {ticker} alerts against {len(paths)} '
-        f'forward-return paths from `{csv_path.name}`.{source_note}_\n',
+        f'forward-return paths from `{csv_path.name}` '
+        f'({joined} of {len(alerts)} alerts joined a path).{source_note}_\n',
     )
 
     cut_hit_rate_with_baseline(alerts, paths, md)
