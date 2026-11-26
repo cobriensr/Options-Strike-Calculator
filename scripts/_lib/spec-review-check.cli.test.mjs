@@ -270,6 +270,76 @@ describe('spec-review-check', () => {
       expect(headSubject(repo)).toBe('base');
     });
 
+    // A pathspec setting in the environment changes how git reads the hook's listing: literal or
+    // no-glob made it list nothing, so an unreviewed doc committed with no message; glob made `*`
+    // stop at a slash, so a doc in a subfolder escaped. The listing carries its own pathspec
+    // magic and turns the literal setting off for itself, so each setting blocks.
+    it.each([
+      ['GIT_LITERAL_PATHSPECS', SPEC],
+      ['GIT_NOGLOB_PATHSPECS', SPEC],
+      ['GIT_NOGLOB_PATHSPECS', PLAN],
+      ['GIT_GLOB_PATHSPECS', SPEC],
+      ['GIT_ICASE_PATHSPECS', SPEC],
+    ])('blocks an unreviewed doc under %s=1 (%s)', (setting, doc) => {
+      writeLog(repo, [entry('start', 'a1', 'specs/other.md')]);
+      stage(repo, doc);
+      review(repo);
+
+      const result = run(repo, 'git', ['commit', '-q', '-m', 'claude'], {
+        CLAUDECODE: '1',
+        [setting]: '1',
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(BLOCKED);
+      expect(result.stderr).toContain(`\n  ${doc}\n`);
+      expect(headSubject(repo)).toBe('base');
+    });
+
+    it.each([
+      'GIT_GLOB_PATHSPECS',
+      'GIT_NOGLOB_PATHSPECS',
+      'GIT_LITERAL_PATHSPECS',
+    ])(
+      'blocks a doc in a subfolder of specs/ under %s=1, as it does with no setting',
+      (setting) => {
+        // The key rule has no name for a nested doc, so the check says so.
+        const nested = 'docs/superpowers/specs/sub/deep.md';
+        writeLog(repo, REVIEWED);
+        stage(repo, nested);
+        review(repo);
+
+        const result = run(repo, 'git', ['commit', '-q', '-m', 'claude'], {
+          CLAUDECODE: '1',
+          [setting]: '1',
+        });
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(BLOCKED);
+        expect(result.stderr).toContain(`\n  ${nested}\n`);
+        expect(headSubject(repo)).toBe('base');
+      },
+    );
+
+    it.each([
+      'GIT_LITERAL_PATHSPECS',
+      'GIT_NOGLOB_PATHSPECS',
+      'GIT_GLOB_PATHSPECS',
+    ])('still lets a reviewed doc through under %s=1', (setting) => {
+      writeLog(repo, REVIEWED);
+      stage(repo, SPEC);
+      review(repo);
+
+      const result = run(repo, 'git', ['commit', '-q', '-m', 'claude'], {
+        CLAUDECODE: '1',
+        [setting]: '1',
+      });
+
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(headSubject(repo)).toBe('claude');
+    });
+
     it('blocks a commit that adds a plan with no review on record', () => {
       writeLog(repo, REVIEWED);
       stage(repo, PLAN);
@@ -506,8 +576,51 @@ describe('spec-review-check', () => {
 
       expect(before.status).toBe(1);
       expect(before.stderr).toContain(BLOCKED);
+      // Both of the check's blocks start with BLOCKED: this one must be the
+      // unreviewed doc, found in the main checkout's log, not a missing log.
+      expect(before.stderr).not.toContain('There is no review log');
       expect(during.stderr).not.toContain('spec-review gate');
       expect(during.status).toBe(0);
+    });
+
+    describe('a commit from a linked worktree, through the hook', () => {
+      /** A linked worktree of `repo`, with its own folder. */
+      function linkedWorktree() {
+        const worktree = path.join(makeTempDir('spec-review-wt-'), 'wt');
+        git(repo, 'worktree', 'add', '-q', '-b', 'side', worktree);
+        return worktree;
+      }
+
+      it('passes a doc that the main checkout log has reviewed', () => {
+        // git exports GIT_DIR to a hook in a linked worktree, and the log is
+        // found from the common dir: the CLI-only worktree case above runs
+        // without that environment.
+        const worktree = linkedWorktree();
+        writeLog(repo, REVIEWED);
+        stage(worktree, SPEC);
+        review(worktree);
+
+        const result = claudeCommit(worktree);
+
+        expect(result.stderr).toBe('');
+        expect(result.status).toBe(0);
+        expect(headSubject(worktree)).toBe('claude');
+      });
+
+      it('blocks a doc that the main checkout log has not reviewed, naming the doc', () => {
+        const worktree = linkedWorktree();
+        writeLog(repo, REVIEWED);
+        stage(worktree, PLAN);
+        review(worktree);
+
+        const result = claudeCommit(worktree);
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(BLOCKED);
+        expect(result.stderr).toContain(`\n  ${PLAN}\n`);
+        expect(result.stderr).not.toContain('There is no review log');
+        expect(headSubject(worktree)).toBe('base');
+      });
     });
   });
 });

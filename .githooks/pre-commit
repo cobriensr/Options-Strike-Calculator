@@ -21,8 +21,15 @@ done
 if [ -z "$replaying" ]; then
   # --no-renames: git would report a doc renamed inside specs/ or plans/ as a
   # rename, not an addition. A move in from outside them is an addition anyway.
-  # :(icase): the review hooks lower-case a path, so docs/.../X.MD is a doc too.
-  ADDED=$(git diff --cached --no-renames --name-only --diff-filter=A -- ':(icase)docs/superpowers/specs/*.md' ':(icase)docs/superpowers/plans/*.md') || exit 1
+  # :(glob,icase) carries its own pathspec magic, since a GIT_*_PATHSPECS setting in
+  # the environment would otherwise change what the listing reads: literal or noglob
+  # lists nothing, and glob stops a `*` at a slash, so a doc in a subfolder escapes
+  # (probed on git 2.55). icase: the review hooks lower-case a path, so
+  # docs/.../X.MD is a doc too. glob: `**/` is zero or more folders, whatever the
+  # setting. --no-literal-pathspecs turns the one global setting that magic does not
+  # override (literal) off for this call. GLOB with NOGLOB together still make git
+  # die, and `|| exit 1` blocks on that.
+  ADDED=$(git --no-literal-pathspecs diff --cached --no-renames --name-only --diff-filter=A -- ':(glob,icase)docs/superpowers/specs/**/*.md' ':(glob,icase)docs/superpowers/plans/**/*.md') || exit 1
   if [ -n "$ADDED" ]; then
     # One path per line: split on newlines only, so a name with a space stays
     # whole, and not on a glob character.
