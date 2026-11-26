@@ -276,11 +276,14 @@ export interface HistorySnapshot {
   /**
    * Identifies the as-of position, for React keys. It is the last bar ended by
    * the slot, or the first bar at the open. Its `time` is that bar's start: a
-   * bar before the slot (the 10:00 ET slot reads the 9:55 bar), or the slot
-   * itself at the open, where the first bar starts at the slot. Either way it
-   * is not the entry time: label the entry with the slot's own text. At the
-   * open its high, low and close are not yet known, so never read its prices:
-   * use `spot`, `runningOHLC` and `openingRange`.
+   * bar before a slot on a 5-minute mark with no missing bar (the 10:00 ET slot
+   * reads the 9:55 bar), earlier otherwise (a slot off the marks, or a missing
+   * bar). At the open it is the first bar's 9:30 ET start, which is the slot
+   * itself only for the 8:30 CT slot (an 8:33 CT slot is still at the open, and
+   * the bar starts three minutes before it). So it is not the entry time: label
+   * the entry with the slot's own text. At the open its high, low and close are
+   * not yet known, so never read its prices: use `spot`, `runningOHLC` and
+   * `openingRange`.
    */
   candle: HistoryCandle;
   /** Index of the last bar ended by the slot; -1 at the open. */
