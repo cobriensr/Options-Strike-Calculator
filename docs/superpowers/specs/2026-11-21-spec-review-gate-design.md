@@ -10,7 +10,7 @@ Built subagent-driven from `docs/superpowers/plans/2026-11-21-spec-review-gate.m
 
 - **Local `.claude` history** (not public):
   - what it holds: `hooks/_spec-review-lib.sh`, the five `hooks/spec-review-*.sh` hooks, `hooks/tests/spec-review-gate.test.mjs` and `spec-review-reminder.test.mjs`, the spec-review hunks of `settings.json`, and the agents-md skill's hook table;
-  - commits: the ones after `297a2bc`, up to `36e9344`, plus one `test(hooks)` follow-up. The `agents/*.md` commits in that range are other sessions' work.
+  - commits: the ones after `297a2bc`, up to `36e9344`, plus two `test(hooks)` follow-ups (`911e6fa`, `04898c2`). The `agents/*.md` commits in that range are other sessions' work.
 - **Main:**
   - what it holds: `scripts/_lib/spec-review-log.mjs` and its test, `scripts/spec-review-check.mjs`, `scripts/_lib/spec-review-check.cli.test.mjs`, `.githooks/pre-commit`, one `SPAWN_TEST_FILES` line in `vite.config.ts`, and `CLAUDE.md`;
   - commits: `930792427` to `b679a7b16` (rebased onto main 2026-11-26), one `test(githooks)` follow-up, and this note.
@@ -25,7 +25,7 @@ Built subagent-driven from `docs/superpowers/plans/2026-11-21-spec-review-gate.m
   - session `b9cb1791` reviewed `specs/gexbot-expected-move-net-vanna-2026-11-20.md`;
   - 23 minutes later it Wrote the doc to settle the findings;
   - the gate blocked it, and it ran a second review (about 7.5 minutes).
-- **Recorders need `CLAUDE_PROJECT_DIR`,** so a shell command can't forge a `start`, `done` or `waive` line. A `start` or `done` with no session id records `-`; the readers pair by agent id.
+- **Recorders need `CLAUDE_PROJECT_DIR`,** as the reminder already did. Running a recorder or the waiver script by hand from Claude's Bash tool records nothing, though a deliberate workaround still can (Known limits). A `start` or `done` with no session id records `-`; the readers pair by agent id.
 - **The commit check:**
   - It blocks a doc with no key, and the message says to rename it.
   - It lists added docs with `git --no-literal-pathspecs diff … ':(glob,icase)…'`, so a pathspec setting in the hook's environment can't empty the list or drop a doc (final review).
@@ -40,16 +40,17 @@ Built subagent-driven from `docs/superpowers/plans/2026-11-21-spec-review-gate.m
 - **Guard and waiver (2026-11-22):**
   - The deny rule refused a Write and an Edit in the log's folder, and the guard refused a shell command that named the log.
   - The owner typed the waiver phrase. The `waive` line landed, and the owner saw the message.
-- **Stop gate (2026-11-24):** a throwaway spec gave block, block, release. The release warning reached the session's next prompt, which led to the `<` rule above.
+- **Stop gate (2026-11-24):** a throwaway spec gave block, block, release, and the log lines were right. The owner didn't confirm seeing the Stop message on release, so the warning moved to the next prompt.
+- **Next-prompt warning (2026-11-25):** the release was announced at the session's next prompt and reached Claude as `additionalContext`. That prompt was a subagent's hand-back, which led to the `<` rule above. The owner seeing a warning on a plain prompt wasn't checked live. It uses the hook and channel that showed the owner the waiver message.
 - **Commit check:** no live check, by design. Its tests run the real hook through git, from the main checkout and from a linked worktree.
 
-**Cost** on a 5,000-line log:
+**Cost** on a 5,000-line log, as the hook test's timing comments record it:
 
-| Hook | Case | Time |
-| --- | --- | --- |
-| Waiver hook, every prompt | nothing pending | 23 ms |
-| Waiver hook, every prompt | one or twenty releases already announced | 30 ms |
-| Stop, every turn end | a session that wrote no doc | 23 ms (666 ms before the final fix wave's early exit) |
+| Hook                      | Case                                     | Time                                              |
+| ------------------------- | ---------------------------------------- | ------------------------------------------------- |
+| Waiver hook, every prompt | nothing pending                          | 26 ms                                             |
+| Waiver hook, every prompt | one or twenty releases already announced | 30 to 31 ms                                       |
+| Stop, every turn end      | a session that wrote no doc              | 39 to 54 ms (653 to 757 ms before the early exit) |
 
 The live log held about 80 lines after four days.
 
@@ -60,7 +61,7 @@ The live log held about 80 lines after four days.
 - When the log can't be written, the Stop's fail-open message uses the Stop channel that wasn't confirmed on screen. No other channel exists then.
 - The Stop reason prints the doc path as the log holds it.
 - A pending release behind 20 announced ones costs 3 to 7 s, once.
-- The hook test file stays one file, about 3,200 lines.
+- The hook test file stays one file, about 3,300 lines.
 - The new `.mjs` files aren't type-checked by the gate. The same holds for every `scripts/_lib` `.mjs` (`tsconfig.scripts.json` includes `.ts` only).
 
 ## Goal
