@@ -67,11 +67,17 @@ import { PGlite } from '@electric-sql/pglite';
 import { applyMigration } from '../../api/__tests__/pglite-migrations.js';
 
 const holder = vi.hoisted(() => ({ sql: null as unknown }));
-const { pause } = vi.hoisted(() => ({ pause: vi.fn(async () => undefined) }));
+const { pause, getDbSpy } = vi.hoisted(() => ({
+  pause: vi.fn(async () => undefined),
+  getDbSpy: vi.fn(),
+}));
 
 vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/_lib/db.js')>()),
-  getDb: () => holder.sql,
+  getDb: () => {
+    getDbSpy();
+    return holder.sql;
+  },
 }));
 vi.mock('node:timers/promises', () => ({ setTimeout: pause }));
 
@@ -567,6 +573,7 @@ beforeEach(async () => {
   answers.clear();
   fetchMock.mockClear();
   pause.mockClear();
+  getDbSpy.mockClear();
   vi.stubGlobal('fetch', fetchMock);
   progress = vi.spyOn(console, 'error').mockImplementation(() => undefined);
   process.env.OWNER_SECRET = SECRET;
@@ -1283,7 +1290,7 @@ describe('the plan an apply is held to', () => {
       statements.length = 0;
 
       await expect(apply(planned.planFile)).rejects.toThrow(
-        /written for the database ep-plan\.neon\.tech\/neondb, and DATABASE_URL names ep-/,
+        /written for the database ep-plan\.neon\.tech\/neondb, and DATABASE_URL names a different database or is not a usable URL\./,
       );
 
       expect(statements).toEqual([]);
@@ -1690,7 +1697,7 @@ describe('undo', () => {
         await expect(
           runUndo({ file: applied.backupFile ?? '', apply }),
         ).rejects.toThrow(
-          /written for the database ep-plan\.neon\.tech\/neondb, and DATABASE_URL names ep-/,
+          /written for the database ep-plan\.neon\.tech\/neondb, and DATABASE_URL names a different database or is not a usable URL\./,
         );
       }
     }
@@ -1794,6 +1801,254 @@ describe('undo', () => {
     await expect(
       runUndo({ file: join(backupDir, 'missing.json'), apply: true }),
     ).rejects.toThrow(/is not a backup this script wrote/);
+  });
+});
+
+// ── The database a file is checked against ──────────────────────────────────
+
+/**
+ * The rule: a value derived from the current DATABASE_URL is printed or written
+ * only after a query on that URL has succeeded. A URL that does not parse as
+ * the driver would is not trusted to split into host, name and credentials, so
+ * the refusals before any connection print only what the FILE recorded, and
+ * never the URL's own parts. Each URL below parses to something that carries
+ * part of the user or the password (or, for the last two, text after the
+ * database name); `tokens` are the parts that must not appear.
+ */
+const AWKWARD_URLS: Array<[label: string, url: string, tokens: string[]]> = [
+  [
+    'a slash after a numeric password prefix',
+    'postgres://owner:12/34@ep-plan.neon.tech/neondb',
+    ['owner', '12', '34'],
+  ],
+  [
+    'an @ in the password, then a slash',
+    'postgres://owner:p@ss/34@ep-plan.neon.tech/neondb',
+    ['owner', 'ss', '34'],
+  ],
+  [
+    'an @ in the password, then a question mark',
+    'postgres://owner:p@ss?34@ep-plan.neon.tech/neondb',
+    ['owner', 'ss', '34'],
+  ],
+  [
+    'an @ in the password, then a hash',
+    'postgres://owner:p@ss#34@ep-plan.neon.tech/neondb',
+    ['owner', 'ss', '34'],
+  ],
+  [
+    'an @ in the user',
+    'postgres://ow@ner/34@ep-plan.neon.tech/neondb',
+    ['ow', 'ner', '34'],
+  ],
+  [
+    'an @ after the database name',
+    'postgres://owner:pw@ep-plan.neon.tech/neondb@x',
+    ['owner', 'pw', '@x'],
+  ],
+  [
+    'a parameter after the database name',
+    'postgres://owner:pw@ep-plan.neon.tech/neondb;password=x',
+    ['owner', 'pw', 'password', '=x'],
+  ],
+];
+
+/** The tokens of a message once the file path and the recorded name are cut out. */
+const leaked = (message: string, file: string, tokens: string[]): string[] => {
+  const rest = message
+    .replace(file, '')
+    .replace('ep-plan.neon.tech/neondb', '');
+  return tokens.filter((token) => rest.includes(token));
+};
+
+/** A plan or backup file with its recorded `database` replaced. */
+function recordDatabase(file: string | null, database: string): void {
+  const parsed = readJson<Record<string, unknown>>(file);
+  writeFileSync(file ?? '', JSON.stringify({ ...parsed, database }));
+}
+
+const NO_DATABASE = '(DATABASE_URL missing or not a URL)';
+
+/** An apply of this plan file. */
+const applyFile = (planFile: string | null) =>
+  runRepair(options({ apply: true, planFile }));
+
+describe('the database check prints only what the file recorded', () => {
+  it.each(AWKWARD_URLS)(
+    'refuses an apply of a plan with no part of the user or password in the message: %s',
+    async (_label, url, tokens) => {
+      const planned = await dry({ date: '2026-05-22' });
+      process.env.DATABASE_URL = url;
+      statements.length = 0;
+      getDbSpy.mockClear();
+
+      const failure = await failureOf(applyFile(planned.planFile));
+
+      expect(failure.message).toMatch(
+        /written for the database ep-plan\.neon\.tech\/neondb, and DATABASE_URL names a different database or is not a usable URL\./,
+      );
+      expect(leaked(failure.message, planned.planFile ?? '', tokens)).toEqual(
+        [],
+      );
+      // Before any connection, and nothing written.
+      expect(getDbSpy).not.toHaveBeenCalled();
+      expect(statements).toEqual([]);
+      expect(backups()).toEqual([]);
+    },
+  );
+
+  it.each(AWKWARD_URLS)(
+    'refuses an undo, counting or restoring, with no part of the user or password in the message: %s',
+    async (_label, url, tokens) => {
+      const applied = await applyDate('2026-05-22');
+      const repaired = await dump();
+      process.env.DATABASE_URL = url;
+      statements.length = 0;
+      getDbSpy.mockClear();
+
+      for (const restore of [false, true]) {
+        const failure = await failureOf(
+          runUndo({ file: applied.backupFile ?? '', apply: restore }),
+        );
+
+        expect(failure.message).toMatch(
+          /written for the database ep-plan\.neon\.tech\/neondb, and DATABASE_URL names a different database or is not a usable URL\./,
+        );
+        expect(
+          leaked(failure.message, applied.backupFile ?? '', tokens),
+        ).toEqual([]);
+      }
+
+      expect(getDbSpy).not.toHaveBeenCalled();
+      expect(statements).toEqual([]);
+      expect(await dump()).toEqual(repaired);
+    },
+  );
+
+  it.each([
+    ['a usable URL', PLAN_DB],
+    ['no URL at all', 'not a url'],
+  ])(
+    'refuses a plan that records no database, with DATABASE_URL %s: the sentinel never matches',
+    async (_label, url) => {
+      const planned = await dry({ date: '2026-05-22' });
+      recordDatabase(planned.planFile, NO_DATABASE);
+      process.env.DATABASE_URL = url;
+      statements.length = 0;
+      getDbSpy.mockClear();
+
+      await expect(applyFile(planned.planFile)).rejects.toThrow(
+        /records no usable database name, so it cannot be matched to DATABASE_URL\. Nothing was written\./,
+      );
+
+      expect(getDbSpy).not.toHaveBeenCalled();
+      expect(statements).toEqual([]);
+      expect(backups()).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['a usable URL', PLAN_DB],
+    ['no URL at all', 'not a url'],
+  ])(
+    'refuses a backup that records no database, counting or restoring, with DATABASE_URL %s',
+    async (_label, url) => {
+      const applied = await applyDate('2026-05-22');
+      const repaired = await dump();
+      recordDatabase(applied.backupFile, NO_DATABASE);
+      process.env.DATABASE_URL = url;
+      statements.length = 0;
+      getDbSpy.mockClear();
+
+      for (const restore of [false, true]) {
+        await expect(
+          runUndo({ file: applied.backupFile ?? '', apply: restore }),
+        ).rejects.toThrow(/records no usable database name/);
+      }
+
+      expect(getDbSpy).not.toHaveBeenCalled();
+      expect(statements).toEqual([]);
+      expect(await dump()).toEqual(repaired);
+    },
+  );
+
+  it('refuses a plan for DATABASE_URL naming no usable database, saying so without echoing it', async () => {
+    const planned = await dry({ date: '2026-05-22' });
+    process.env.DATABASE_URL =
+      'postgres://owner:12/34@ep-plan.neon.tech/neondb';
+    statements.length = 0;
+    getDbSpy.mockClear();
+
+    const failure = await failureOf(applyFile(planned.planFile));
+
+    expect(failure.message).toMatch(
+      /DATABASE_URL names a different database or is not a usable URL/,
+    );
+    expect(
+      leaked(failure.message, planned.planFile ?? '', ['owner', '12', '34']),
+    ).toEqual([]);
+    expect(getDbSpy).not.toHaveBeenCalled();
+    expect(statements).toEqual([]);
+  });
+});
+
+describe('a dry run with no usable DATABASE_URL', () => {
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['not a URL', 'not a url'],
+    [
+      'a URL whose password is cut short',
+      'postgres://owner:12/34@ep-plan.neon.tech/neondb',
+    ],
+  ])(
+    'is refused before getDb(), naming no part of the URL: %s',
+    async (_label, url) => {
+      if (url === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = url;
+      getDbSpy.mockClear();
+
+      const failure = await failureOf(dry());
+
+      expect(failure.message).toBe(
+        'DATABASE_URL is missing or is not a usable database URL. Nothing was read or written.',
+      );
+      expect(getDbSpy).not.toHaveBeenCalled();
+      expect(statements).toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(plansOnDisk()).toEqual([]);
+    },
+  );
+
+  it('names the database in its result, the same name the plan file records', async () => {
+    const result = await dry({ date: '2026-05-22' });
+
+    expect(result.database).toBe('ep-plan.neon.tech/neondb');
+    expect(readJson<{ database: string }>(result.planFile).database).toBe(
+      result.database,
+    );
+  });
+
+  it('writes no plan and names no database when a read fails', async () => {
+    failWhen = (text) =>
+      /FROM market_snapshots/.test(text) ? new Error('connection lost') : null;
+
+    const failure = await failureOf(dry({ date: '2026-05-22' }));
+
+    expect(failure.message).toMatch(/connection lost/);
+    expect(plansOnDisk()).toEqual([]);
+  });
+
+  it('names the file’s database in an apply and in an undo', async () => {
+    const applied = await applyDate('2026-05-22');
+    const undone = await runUndo({
+      file: applied.backupFile ?? '',
+      apply: false,
+    });
+
+    expect(applied.database).toBe('ep-plan.neon.tech/neondb');
+    expect(readBackup(applied.backupFile).database).toBe(applied.database);
+    expect(undone.database).toBe('ep-plan.neon.tech/neondb');
   });
 });
 

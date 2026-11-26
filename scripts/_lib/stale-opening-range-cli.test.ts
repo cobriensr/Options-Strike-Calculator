@@ -8,7 +8,7 @@
  * boundaries are mocked with `vi.mock` (dotenv, the env-file lookup, `runRepair`
  * and `runUndo`, the DB client and the build-features cron the plan imports),
  * so no env file is read and no database or history endpoint is reached. The
- * real `parseArgs`, `USAGE`, `dbHost`, `historyOrigin`, the reports and the exit
+ * real `parseArgs`, `USAGE`, `historyOrigin`, the reports and the exit
  * codes run. The pure and SQL behaviour is in stale-opening-range.test.ts and
  * stale-opening-range-pglite.test.ts.
  */
@@ -98,12 +98,17 @@ const repairedDate: DatePlan = {
 
 const PLAN_FILE = `${BACKUP_DIR}/dry-run-2026-11-16-x.json`;
 
+// What the library names, after its first query succeeded. The CLI prints it
+// as it comes and never derives one from DATABASE_URL itself.
+const DATABASE = 'ep-test-1.neon.tech/db';
+
 const DRY_RESULT: RunResult = {
   apply: false,
   dates: [repairedDate],
   backupFile: null,
   planFile: PLAN_FILE,
   applied: null,
+  database: DATABASE,
 };
 
 const APPLIED: ApplyResult = {
@@ -122,6 +127,7 @@ const UNDO_RESULT: UndoResult = {
   changedSince: [],
   features: 1,
   featuresRestored: 1,
+  database: DATABASE,
 };
 
 const originalArgv = process.argv;
@@ -198,7 +204,10 @@ describe('repair-stale-opening-range CLI', () => {
       quiet: true,
     });
     const out = printed(log);
-    expect(out).toContain('Database host: ep-test-1.neon.tech');
+    // The name the run returned, once, before the report; not the URL's.
+    expect(out).toContain(`Database: ${DATABASE}`);
+    expect(out.indexOf('Database:')).toBeLessThan(out.indexOf('DRY RUN'));
+    expect(out).not.toContain('Database host');
     expect(out).toContain('DRY RUN');
     expect(out).toContain(`Plan file: ${PLAN_FILE}`);
     expect(out).toContain('id 41  2026-11-16 9:00 AM CT');
@@ -308,6 +317,7 @@ describe('repair-stale-opening-range CLI', () => {
     const out = printed(log);
     expect(out).toContain('UNDONE: 3 of 4 rows restored');
     expect(out).toContain('5');
+    expect(out).toContain(`Database: ${DATABASE}`);
     expect(out).not.toContain('History origin');
   });
 
@@ -352,6 +362,9 @@ describe('repair-stale-opening-range CLI', () => {
 
     expect(printed(error)).toContain('A fresh plan is not the plan in p.json');
     expect(printed(log)).not.toContain('APPLIED');
+    // No query succeeded, so no database is named from DATABASE_URL: the
+    // error message is all there is.
+    expect(printed(log)).not.toContain('Database');
     expect(exit).not.toHaveBeenCalled();
   });
 });

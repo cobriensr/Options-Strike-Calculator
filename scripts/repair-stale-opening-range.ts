@@ -25,8 +25,10 @@
  * /api/history at APP_URL with the cookie OWNER_SECRET (Schwab's 5-minute $SPX
  * bars, the candles the page computed its range from). APP_URL and OWNER_SECRET
  * are read only when such a date is planned, and the history origin goes to
- * stderr just before the first call. None of the three is printed: the database
- * host and the history origin are. It prints the counts, a per-date table, a
+ * stderr just before the first call. None of the three is printed as it is. The
+ * history origin is, and the database is named, `host/name`, in a "Database:"
+ * line after the run, once a query on DATABASE_URL has succeeded (a failed run
+ * names none). It prints the counts, a per-date table, a
  * block for every repair with the stored and the new values and the candles used
  * (so a row can be recomputed by hand), the lists by id (lag, look-ahead,
  * incomplete-range, the NULL-median rows and every other row left alone), the
@@ -62,7 +64,6 @@
 
 import { config } from 'dotenv';
 import { resolveEnvFile } from './_lib/anchor-backfill.js';
-import { dbHost } from './_lib/econ-label-backfill.js';
 import {
   USAGE,
   exitCodeOf,
@@ -82,9 +83,13 @@ async function main(): Promise<number> {
     return 0;
   }
   config({ path: resolveEnvFile(args.envFile, '.'), quiet: true });
-  console.log(`Database host: ${dbHost(process.env.DATABASE_URL)}`);
+  // The database is named by the run, after its queries have succeeded (an
+  // undo names the one its backup recorded), not read off DATABASE_URL here:
+  // a URL that cannot connect can parse so that part of the password lands in
+  // its host.
   if (args.undoFile != null) {
     const undone = await runUndo({ file: args.undoFile, apply: args.apply });
+    console.log(`Database: ${undone.database}`);
     console.log(formatUndoReport(undone));
     return exitCodeOfUndo(undone);
   }
@@ -97,6 +102,7 @@ async function main(): Promise<number> {
     all: args.all,
     backupDir: args.backupDir,
   });
+  console.log(`Database: ${result.database}`);
   console.log(formatReport(result));
   if (result.applied != null) console.log(formatApplyReport(result.applied));
   return exitCodeOf(result);

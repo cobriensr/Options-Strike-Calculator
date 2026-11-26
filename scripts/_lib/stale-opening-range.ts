@@ -93,12 +93,15 @@
  * Redis token record and may refresh it, which can race the crons, so this script
  * asks the app instead. The database's `spx_candles_1m` is SPY-translated and is
  * not them. The environment is DATABASE_URL, and APP_URL and OWNER_SECRET only
- * when a date from FIRST_CANDLE_DATE on is planned; none is printed (the database
- * host and the origin are).
+ * when a date from FIRST_CANDLE_DATE on is planned; none is printed as it is. The
+ * database is named, as `host/name`, and the origin goes to stderr, and the
+ * database name is derived from DATABASE_URL only after a query on it has
+ * succeeded (see `databaseOf`).
  *
  * The run. A dry run is the default: it writes a plan file (what it would write,
- * with the scope and the database, `host/name`, never the user or the password)
- * under the backup directory and nothing to the database. `--apply --plan F`
+ * with the scope and the database, `host/name`) under the backup directory and
+ * nothing to the database. It refuses before `getDb()` when DATABASE_URL names no
+ * usable database, without printing it. `--apply --plan F`
  * refuses first if F was written for another database, or if F's scope covers
  * more than one date and `--all` is not also given (the owner's rule: one date
  * first, then all; a `--date` plan, or a `--since` and `--until` naming one day,
@@ -1284,17 +1287,25 @@ function readFileAs<T>(file: string, schema: z.ZodType<T>, what: string): T {
   }
 }
 
+/** What `databaseOf` returns for a URL that is missing or does not parse. */
+const NO_DATABASE = '(DATABASE_URL missing or not a URL)';
+
 /**
- * The database a URL names: its host and its database name, `host/name`. A
- * Neon project can hold several databases on one host, so the host alone does
- * not say which one a file was written for. Never the user or the password.
+ * The database a URL names, `host/name`, read off a parse of the URL. A Neon
+ * project can hold several databases on one host, so the host alone does not
+ * say which one a file was written for.
  *
- * A URL whose password holds a `/`, `?` or `#` after a numeric-looking prefix
- * (`postgres://owner:12/34@host/db`) parses with the user as the host and the
- * rest of the password in the path, which would print both. It cannot connect,
- * but the refusal in `requireSameDatabase` prints what this returns, to stderr.
- * An `@` with no user and no password parsed means the userinfo was cut short
- * that way, so it is the sentinel, as a URL that does not parse is.
+ * This is a guess from a parse, not proof. A URL with an `@`, or a `/`, `?` or
+ * `#`, in the wrong place can parse so that the user or part of the password
+ * lands in the host or the path (`postgres://owner:12/34@host/db` gives the
+ * host `owner`, and `postgres://owner:p@ss/34@host/db` gives `ss/34@host/db`).
+ * The guard below turns the form that has no user and no password parsed, but
+ * an `@` in the string, into `NO_DATABASE`; the rest it cannot tell apart, and
+ * the rule does not lean on it. The rule: a value derived from the current
+ * DATABASE_URL is printed or written only after a query on that URL has
+ * succeeded, since a URL the driver connects with is not one of these. Before
+ * any connection, the refusals print the name a file recorded and never this
+ * one, and `NO_DATABASE` never matches.
  */
 export function databaseOf(url: string | undefined): string {
   try {
@@ -1308,16 +1319,36 @@ export function databaseOf(url: string | undefined): string {
     }
     return `${parsed.hostname}${parsed.pathname}`;
   } catch {
-    return '(DATABASE_URL missing or not a URL)';
+    return NO_DATABASE;
   }
 }
 
-/** Refuse a file written for another database than DATABASE_URL names. */
+/**
+ * Refuse a file written for another database than DATABASE_URL names, before
+ * any connection. The message carries the name the file recorded and never the
+ * one derived from DATABASE_URL, which no query has confirmed yet. A file that
+ * records no usable name, or a DATABASE_URL that gives none, never matches.
+ */
 function requireSameDatabase(file: string, recorded: string): void {
-  const current = databaseOf(process.env.DATABASE_URL);
-  if (recorded !== current) {
+  if (recorded === NO_DATABASE) {
     throw new Error(
-      `${file} was written for the database ${recorded}, and DATABASE_URL names ${current}. Nothing was written.`,
+      `${file} records no usable database name, so it cannot be matched to DATABASE_URL. Nothing was written.`,
+    );
+  }
+  // `recorded` is not `NO_DATABASE` here, so a DATABASE_URL that names none
+  // differs from it too: the sentinel can never match.
+  if (databaseOf(process.env.DATABASE_URL) !== recorded) {
+    throw new Error(
+      `${file} was written for the database ${recorded}, and DATABASE_URL names a different database or is not a usable URL. Nothing was written.`,
+    );
+  }
+}
+
+/** Refuse a dry run, before `getDb()`, when DATABASE_URL names no usable database. */
+function requireUsableDatabase(): void {
+  if (databaseOf(process.env.DATABASE_URL) === NO_DATABASE) {
+    throw new Error(
+      'DATABASE_URL is missing or is not a usable database URL. Nothing was read or written.',
     );
   }
 }
@@ -1360,6 +1391,11 @@ export interface RunResult {
   /** The plan file a dry run wrote, or the one `--plan` named. */
   planFile: string | null;
   applied: ApplyResult | null;
+  /**
+   * The database it read, `host/name`, derived from DATABASE_URL only after the
+   * reads succeeded. The CLI prints this, not a name of its own taken earlier.
+   */
+  database: string;
 }
 
 /** A date the run does not plan: today or later, or not a trading day. */
@@ -1549,8 +1585,8 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
     opts.planFile == null
       ? null
       : readFileAs(opts.planFile, PlanSchema, 'dry-run plan');
-  if (reviewed != null)
-    requireSameDatabase(opts.planFile ?? '', reviewed.database);
+  if (reviewed == null) requireUsableDatabase();
+  else requireSameDatabase(opts.planFile ?? '', reviewed.database);
   if (
     opts.apply &&
     reviewed != null &&
@@ -1578,6 +1614,9 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
     );
   }
   const plans = await planDates(sql, dates);
+  // Queries on this URL have succeeded (the dates, every date's rows): from
+  // here its name may be printed and written, and not before.
+  const database = databaseOf(process.env.DATABASE_URL);
 
   if (reviewed != null) {
     const problems = comparePlan(reviewed, plans);
@@ -1596,11 +1635,13 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
         backupFile: null,
         planFile: opts.planFile,
         applied: null,
+        database,
       };
     }
     const applied = await applyPlans(sql, plans, {
       backupDir: opts.backupDir,
       scope: scopeLabel(scope),
+      database,
     });
     return {
       apply: true,
@@ -1608,6 +1649,7 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
       backupFile: applied.backupFile,
       planFile: opts.planFile,
       applied,
+      database,
     };
   }
 
@@ -1618,7 +1660,7 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
     {
       note: PLAN_NOTE,
       createdAt: new Date().toISOString(),
-      database: databaseOf(process.env.DATABASE_URL),
+      database,
       scope,
       summary: planSummary(plans),
       rows: writesOf(plans),
@@ -1632,6 +1674,7 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
     backupFile: null,
     planFile,
     applied: null,
+    database,
   };
 }
 
@@ -1644,7 +1687,7 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
 async function applyPlans(
   sql: Sql,
   plans: readonly DatePlan[],
-  ctx: { backupDir: string; scope: string },
+  ctx: { backupDir: string; scope: string; database: string },
 ): Promise<ApplyResult> {
   const rows = writesOf(plans);
   const features = featureCopiesOf(plans);
@@ -1665,7 +1708,7 @@ async function applyPlans(
     {
       note: BACKUP_NOTE,
       createdAt: new Date().toISOString(),
-      database: databaseOf(process.env.DATABASE_URL),
+      database: ctx.database,
       scope: ctx.scope,
       rows,
       features,
@@ -1712,6 +1755,12 @@ export interface UndoResult {
   changedSince: number[];
   features: number;
   featuresRestored: number;
+  /**
+   * The database the backup was written for, as the file recorded it. It
+   * matched DATABASE_URL's, so it is the one named, and it is not taken from
+   * the URL.
+   */
+  database: string;
 }
 
 /**
@@ -1730,6 +1779,7 @@ export async function runUndo(opts: {
     apply: opts.apply,
     rows: parsed.rows.length,
     features: parsed.features.length,
+    database: parsed.database,
   };
   if (!opts.apply) {
     return { ...base, restored: 0, changedSince: [], featuresRestored: 0 };
