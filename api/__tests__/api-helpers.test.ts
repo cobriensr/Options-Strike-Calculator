@@ -76,6 +76,7 @@ vi.mock('../../src/data/marketHours.js', () => ({
 
 import {
   isOwner,
+  parseCookies,
   rejectIfNotOwner,
   OWNER_COOKIE,
   OWNER_COOKIE_MAX_AGE,
@@ -168,6 +169,77 @@ describe('api-helpers', () => {
         headers: { cookie: `other=val; ${OWNER_COOKIE}=secret123; another=x` },
       });
       expect(isOwner(req)).toBe(true);
+    });
+
+    // The one way an empty value could match: a cookie with no value against a
+    // secret that is the empty string. An empty OWNER_SECRET must lock
+    // everyone out, not let a bare `sc-owner=` in.
+    it.each([
+      ['an empty value', `${OWNER_COOKIE}=`],
+      ['no cookie at all', undefined],
+    ])(
+      'returns false when OWNER_SECRET is empty and the request has %s',
+      (_label, cookie) => {
+        process.env.OWNER_SECRET = '';
+        const req = mockRequest({
+          headers: cookie === undefined ? {} : { cookie },
+        });
+        expect(isOwner(req)).toBe(false);
+      },
+    );
+
+    // A secret may carry `=` (base64 padding). The cookie value is everything
+    // after the first `=`, so it still matches, and a truncated one does not.
+    it('matches a secret that contains = signs, and not a truncation of it', () => {
+      process.env.OWNER_SECRET = 'c2VjcmV0LXZhbHVl==';
+      const owner = mockRequest({
+        headers: { cookie: `${OWNER_COOKIE}=c2VjcmV0LXZhbHVl==` },
+      });
+      const truncated = mockRequest({
+        headers: { cookie: `${OWNER_COOKIE}=c2VjcmV0LXZhbHVl` },
+      });
+      expect(isOwner(owner)).toBe(true);
+      expect(isOwner(truncated)).toBe(false);
+    });
+  });
+
+  // ============================================================
+  // COOKIE PARSING
+  // ============================================================
+
+  describe('parseCookies', () => {
+    it.each([
+      ['no cookie header', undefined, {}],
+      ['an empty header', '', {}],
+      ['one cookie', 'sc-owner=abc123', { 'sc-owner': 'abc123' }],
+      [
+        'several cookies, with or without a space after the semicolon',
+        'sc-owner=abc; other=xyz;session=def',
+        { 'sc-owner': 'abc', other: 'xyz', session: 'def' },
+      ],
+      [
+        'spaces around the semicolons',
+        'a=1 ; b=2 ; c=3',
+        { a: '1', b: '2', c: '3' },
+      ],
+      [
+        'a value that holds = signs',
+        'token=abc=def=ghi',
+        { token: 'abc=def=ghi' },
+      ],
+      [
+        'a cookie with no = at all, which is an empty value',
+        'flag; a=1',
+        { flag: '', a: '1' },
+      ],
+      ['a trailing semicolon', 'a=1;', { a: '1' }],
+      ['a pair with no name', '=orphan; a=1', { a: '1' }],
+      ['the same name twice: the last wins', 'a=1; a=2', { a: '2' }],
+    ])('reads %s', (_label, header, expected) => {
+      const req = mockRequest({
+        headers: header === undefined ? {} : { cookie: header },
+      });
+      expect(parseCookies(req)).toEqual(expected);
     });
   });
 
@@ -440,6 +512,31 @@ describe('api-helpers', () => {
         's-maxage=60, stale-while-revalidate=30',
       );
       expect(res._headers['Vary']).toBe('Cookie');
+    });
+
+    it('puts the browser max-age first when browserSec is given', () => {
+      const res = mockResponse();
+      setCacheHeaders(res, 60, 30, 15);
+      expect(res._headers['Cache-Control']).toBe(
+        'max-age=15, s-maxage=60, stale-while-revalidate=30',
+      );
+      expect(res._headers['Vary']).toBe('Cookie');
+    });
+
+    it('sends no max-age when browserSec is 0', () => {
+      const res = mockResponse();
+      setCacheHeaders(res, 60, 30, 0);
+      expect(res._headers['Cache-Control']).toBe(
+        's-maxage=60, stale-while-revalidate=30',
+      );
+    });
+
+    it('sets zero lifetimes as zeros, which is how a handler turns caching off', () => {
+      const res = mockResponse();
+      setCacheHeaders(res, 0, 0);
+      expect(res._headers['Cache-Control']).toBe(
+        's-maxage=0, stale-while-revalidate=0',
+      );
     });
 
     it('defaults SWR to 60', () => {
