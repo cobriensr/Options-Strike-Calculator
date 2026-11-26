@@ -296,6 +296,26 @@ describe('spec-review-check', () => {
       expect(headSubject(repo)).toBe('base');
     });
 
+    // A doc in a subfolder of specs/ is listed, and the key rule has no name for it, so the check
+    // says so and says to rename it. That is what git does with no setting (the first case below,
+    // which passes against today's hook and pins it); each setting must give the same result.
+    const NESTED = 'docs/superpowers/specs/sub/deep.md';
+    const KEYLESS = `No review or waiver can name ${NESTED}: a key needs a name of a-z, 0-9, ".", "_" and "-" directly under specs/ or plans/. Rename it before the commit.`;
+
+    it('blocks a doc in a subfolder of specs/ with no pathspec setting, as keyless, with the rename message', () => {
+      writeLog(repo, REVIEWED);
+      stage(repo, NESTED);
+      review(repo);
+
+      const result = claudeCommit(repo);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(BLOCKED);
+      expect(result.stderr).toContain(`\n  ${NESTED}\n`);
+      expect(result.stderr).toContain(KEYLESS);
+      expect(headSubject(repo)).toBe('base');
+    });
+
     it.each([
       'GIT_GLOB_PATHSPECS',
       'GIT_NOGLOB_PATHSPECS',
@@ -303,10 +323,8 @@ describe('spec-review-check', () => {
     ])(
       'blocks a doc in a subfolder of specs/ under %s=1, as it does with no setting',
       (setting) => {
-        // The key rule has no name for a nested doc, so the check says so.
-        const nested = 'docs/superpowers/specs/sub/deep.md';
         writeLog(repo, REVIEWED);
-        stage(repo, nested);
+        stage(repo, NESTED);
         review(repo);
 
         const result = run(repo, 'git', ['commit', '-q', '-m', 'claude'], {
@@ -316,7 +334,8 @@ describe('spec-review-check', () => {
 
         expect(result.status).toBe(1);
         expect(result.stderr).toContain(BLOCKED);
-        expect(result.stderr).toContain(`\n  ${nested}\n`);
+        expect(result.stderr).toContain(`\n  ${NESTED}\n`);
+        expect(result.stderr).toContain(KEYLESS);
         expect(headSubject(repo)).toBe('base');
       },
     );
