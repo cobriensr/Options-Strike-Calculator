@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -22,6 +22,7 @@ import handler from '../quotes.js';
 import {
   guardOwnerOrGuestEndpoint,
   schwabFetch,
+  setCacheHeaders,
   isMarketOpen,
 } from '../_lib/api-helpers.js';
 
@@ -43,6 +44,8 @@ function makeSchwabQuote(overrides: Partial<Record<string, number>> = {}) {
 describe('GET /api/quotes', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    // restoreAllMocks leaves a vi.fn()'s call history alone.
+    vi.mocked(setCacheHeaders).mockClear();
   });
 
   it('returns 401 for non-owner (via guard)', async () => {
@@ -106,6 +109,160 @@ describe('GET /api/quotes', () => {
     expect(json.spy).not.toBeNull();
     expect(json.spx).toBeNull();
     expect(json.vix).toBeNull();
+  });
+
+  it('keeps a symbol whose entry has no quote as null, and still answers 200', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: {
+        SPY: makeSchwabQuote({ lastPrice: 550 }),
+        // Present, but with nothing to read: not the same as a missing key.
+        $SPX: {},
+        $VIX: { quote: undefined },
+      },
+    } as never);
+
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as Record<string, { price: number } | null>;
+    expect(json.spy?.price).toBe(550);
+    expect(json.spx).toBeNull();
+    expect(json.vix).toBeNull();
+  });
+
+  it('passes zeros through as zeros: an unchanged day has a change of 0, not none', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: {
+        $SPX: makeSchwabQuote({
+          lastPrice: 0,
+          openPrice: 0,
+          highPrice: 0,
+          lowPrice: 0,
+          closePrice: 0,
+          netChange: 0,
+          netPercentChange: 0,
+          tradeTime: 1794001029801,
+        }),
+      },
+    });
+
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+
+    expect((res._json as Record<string, unknown>).spx).toEqual({
+      price: 0,
+      open: 0,
+      high: 0,
+      low: 0,
+      prevClose: 0,
+      change: 0,
+      changePct: 0,
+      quotedAt: 1794001029801,
+    });
+  });
+
+  describe('the response envelope', () => {
+    const SIX = ['spx', 'spy', 'vix', 'vix1d', 'vix9d', 'vvix'];
+    // Tue 2026-11-24 10:00 ET.
+    const NOW = Date.UTC(2026, 10, 24, 15, 0, 0);
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function call(data: unknown) {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(NOW);
+      vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+      vi.mocked(isMarketOpen).mockReturnValue(true);
+      vi.mocked(schwabFetch).mockResolvedValue({ ok: true, data } as never);
+      const res = mockResponse();
+      await handler(mockRequest(), res);
+      expect(res._status).toBe(200);
+      return res._json as Record<string, unknown>;
+    }
+
+    it('is the six slices, marketOpen and asOf, asOf being the server clock as an ISO string', async () => {
+      const json = await call({
+        SPY: makeSchwabQuote(),
+        $SPX: makeSchwabQuote(),
+        $VIX: makeSchwabQuote(),
+        $VIX1D: makeSchwabQuote(),
+        $VIX9D: makeSchwabQuote(),
+        $VVIX: makeSchwabQuote(),
+      });
+
+      expect(Object.keys(json).sort()).toEqual(
+        [...SIX, 'marketOpen', 'asOf'].sort(),
+      );
+      expect(json.asOf).toBe('2026-11-24T15:00:00.000Z');
+      expect(json.marketOpen).toBe(true);
+    });
+
+    it('keeps every symbol, as null, when Schwab sends none of them', async () => {
+      const json = await call({});
+
+      expect(json).toEqual({
+        spy: null,
+        spx: null,
+        vix: null,
+        vix1d: null,
+        vix9d: null,
+        vvix: null,
+        marketOpen: true,
+        asOf: '2026-11-24T15:00:00.000Z',
+      });
+    });
+  });
+
+  describe('the edge cache', () => {
+    async function callWith(marketOpen: boolean) {
+      vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+      vi.mocked(isMarketOpen).mockReturnValue(marketOpen);
+      vi.mocked(schwabFetch).mockResolvedValue({
+        ok: true,
+        data: { SPY: makeSchwabQuote() },
+      });
+      const res = mockResponse();
+      await handler(mockRequest(), res);
+      expect(res._status).toBe(200);
+      return res;
+    }
+
+    it('is a minute with 30 s of revalidation while the market is open', async () => {
+      const res = await callWith(true);
+
+      expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+      expect(setCacheHeaders).toHaveBeenCalledWith(res, 60, 30);
+    });
+
+    it('is five minutes with a minute of revalidation once it is closed', async () => {
+      const res = await callWith(false);
+
+      expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+      expect(setCacheHeaders).toHaveBeenCalledWith(res, 300, 60);
+    });
+
+    it('is not set on a failed fetch, so an error is never cached', async () => {
+      vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+      vi.mocked(schwabFetch).mockResolvedValue({
+        ok: false,
+        error: 'Schwab is down',
+        status: 502,
+        code: 'SCHWAB_API_502',
+      });
+
+      await handler(mockRequest(), mockResponse());
+
+      expect(setCacheHeaders).not.toHaveBeenCalled();
+    });
   });
 
   describe('quotedAt (Schwab tradeTime, epoch ms)', () => {
