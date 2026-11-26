@@ -11,6 +11,11 @@ The boundaries are patched (R3, and the scripts conftest blocks both stores):
 - `psycopg2.connect` returns a fake connection whose cursor hands back the table rows;
 - `load_env` does nothing and `OUT_DIR` is a folder in tmp_path.
 
+The `s3://` tests below keep `r2_url` and `export_url` real. They point DuckDB's httpfs at a
+fake S3 on 127.0.0.1 that a fixture starts for the test and shuts down in its teardown, so the
+missing-object probe meets the HTTP statuses a bucket gives (DuckDB's glob() would not: it
+answers 1 for any single s3:// key without asking). They skip when httpfs is not installed.
+
 Run from the repo root with the ml venv:
 
     ml/.venv/Scripts/python -m pytest scripts/test_enrich_interval_ba_outcomes.py -q
@@ -19,7 +24,10 @@ Run from the repo root with the ml venv:
 from __future__ import annotations
 
 import csv
+import http.server
+import re
 import sys
+import threading
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -133,11 +141,9 @@ def con():
 
 
 def path_for(db, tape: str, chain: str, fired_at: datetime, entry: float):
-    """The forward path of an alert, from the script's own readers over the tape."""
-    key = (chain, mod.epoch_us(fired_at))
-    t0_spot = mod.load_t0_spots(db, tape, [key]).get(key)
-    root = mod.load_root_spot_series(db, tape, chain[:-15])
-    return mod.build_forward_path(root, t0_spot, fired_at, entry, CLOSE)
+    """The forward path of an alert, from the script's own reader over the tape."""
+    series = mod.load_root_spot_series(db, tape, chain[:-15])
+    return mod.build_forward_path(series, fired_at, entry, CLOSE)
 
 
 # --- t=0 and the forward steps ------------------------------------------------------------------
@@ -164,19 +170,20 @@ def test_t0_is_last_print_at_or_before_fired_at(tmp_path, con, layout):
 
 
 @pytest.mark.parametrize('layout', LAYOUTS)
-def test_t0_comes_from_the_alerts_own_contract(tmp_path, con, layout):
+def test_t0_is_the_roots_last_print_not_only_the_alerts_own_contracts(tmp_path, con, layout):
     tape = write_tape(
         tmp_path,
         [
             tick('14:30:40', SPXW_C, '6700.00'),
-            tick('14:30:44', SPXW_P, '6699.00'),  # a later print, but of another contract
+            tick('14:30:44', SPXW_P, '6699.00'),  # a later print of another contract: it wins
+            tick('14:30:44.5', SPY_C, '670.00'),  # a print of another root: never read
         ],
         layout,
     )
 
     first = path_for(con, tape, SPXW_C, at('14:30:45'), 6700.0)[0]
 
-    assert first[2] == 6700.0
+    assert first[2] == 6699.0
 
 
 @pytest.mark.parametrize('layout', LAYOUTS)
@@ -225,7 +232,26 @@ def test_the_path_ends_at_the_close_and_includes_it(tmp_path, con, layout):
 
 
 @pytest.mark.parametrize('layout', LAYOUTS)
-def test_a_contract_with_no_print_before_the_alert_has_no_t0_but_later_steps(
+def test_a_contracts_first_print_after_the_alert_still_leaves_a_t0_from_the_root(
+    tmp_path, con, layout
+):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('20:49:00', SPXW_P, '6700.00'),
+            tick('20:50:30', SPXW_C, '6701.00'),  # the alert's own contract prints first here
+            tick('20:55:00', SPXW_P, '6710.00'),
+        ],
+        layout,
+    )
+
+    path = path_for(con, tape, SPXW_C, at('20:50:00'), 6700.0)
+
+    assert [(t, spot) for t, _, spot, _ in path] == [(0, 6700.0), (5, 6710.0), (10, 6710.0)]
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_no_root_print_at_or_before_the_alert_leaves_no_t0_but_later_steps(
     tmp_path, con, layout
 ):
     tape = write_tape(
@@ -268,12 +294,13 @@ def test_series_read_epoch_microseconds_whatever_the_layout_and_session_zone(
     tmp_path, con, layout
 ):
     tape = write_tape(tmp_path, [tick('14:30:00.123456', SPXW_C, '6701.00')], layout)
-    wanted = (SPXW_C, mod.epoch_us(at('14:30:00.123456')))
+    print_us = (at('14:30:00.123456') - EPOCH) // timedelta(microseconds=1)
 
     series = mod.load_root_spot_series(con, tape, 'SPXW')
 
-    assert series.us.tolist() == [(at('14:30:00.123456') - EPOCH) // timedelta(microseconds=1)]
-    assert mod.load_t0_spots(con, tape, [wanted]) == {wanted: 6701.0}
+    assert series.us.tolist() == [print_us]
+    assert series.at_or_before(print_us) == 6701.0
+    assert series.at_or_before(print_us - 1) is None
 
 
 def test_the_readers_skip_canceled_prints_and_prints_with_no_usable_spot(tmp_path, con):
@@ -289,11 +316,12 @@ def test_the_readers_skip_canceled_prints_and_prints_with_no_usable_spot(tmp_pat
             tick('14:30:06', SPXW_C, '6702.00'),
         ],
     )
-    last = (SPXW_C, mod.epoch_us(at('14:30:05')))
 
-    assert mod.load_root_spot_series(con, tape, 'SPXW').spot.tolist() == [6701.0, 6702.0]
-    # At 14:30:05 the last usable print of the contract is the 14:30:00 one.
-    assert mod.load_t0_spots(con, tape, [last]) == {last: 6701.0}
+    series = mod.load_root_spot_series(con, tape, 'SPXW')
+
+    assert series.spot.tolist() == [6701.0, 6702.0]
+    # At 14:30:05 the last usable print is the 14:30:00 one.
+    assert series.at_or_before(mod.epoch_us(at('14:30:05'))) == 6701.0
 
 
 def test_a_text_canceled_column_reads_like_a_boolean_one(tmp_path, con):
@@ -323,46 +351,72 @@ def test_same_microsecond_prints_keep_file_order_so_the_later_row_is_last(tmp_pa
             tick('14:30:00', SPXW_P, '6703.00'),
         ],
     )
-    c_at = (SPXW_C, mod.epoch_us(at('14:30:00')))
 
-    root = mod.load_root_spot_series(con, tape, 'SPXW')
+    series = mod.load_root_spot_series(con, tape, 'SPXW')
 
-    assert root.at_or_before(c_at[1]) == 6703.0
-    assert mod.load_t0_spots(con, tape, [c_at]) == {c_at: 6702.0}
+    assert series.at_or_before(mod.epoch_us(at('14:30:00'))) == 6703.0
 
 
-def test_t0_spots_answer_each_chain_and_instant_asked_and_leave_out_the_unanswerable(
-    tmp_path, con
-):
+def test_a_root_is_not_taken_for_a_longer_root_that_starts_with_it(tmp_path, con):
+    """The LIKE prefix pre-filter would also pass SPXWS and SPYG: the exact match drops them."""
     tape = write_tape(
         tmp_path,
         [
-            tick('14:30:00', SPXW_C, '6701.00'),
-            tick('14:30:30', SPXW_C, '6702.00'),
-            tick('14:30:10', SPXW_P, '6703.00'),
+            tick('14:30:00', 'SPY261117C00670000', '670.00'),
+            tick('14:30:01', 'SPYG261117C00100000', '100.00'),
+            tick('14:30:02', 'SPXWS261117C06700000', '6000.00'),
+            tick('14:30:03', SPXW_C, '6701.00'),
         ],
     )
-    asked = [
-        (SPXW_C, mod.epoch_us(at('14:30:29'))),  # the first print is the last at or before
-        (SPXW_C, mod.epoch_us(at('14:30:30'))),  # the second
-        (SPXW_C, mod.epoch_us(at('14:29:59'))),  # before any print of the contract
-        (SPXW_P, mod.epoch_us(at('14:30:11'))),
-        (SPY_C, mod.epoch_us(at('14:30:11'))),  # a contract the tape never printed
-    ]
 
-    assert mod.load_t0_spots(con, tape, asked) == {
-        asked[0]: 6701.0,
-        asked[1]: 6702.0,
-        asked[3]: 6703.0,
-    }
-    assert mod.load_t0_spots(con, tape, []) == {}
+    assert mod.load_root_spot_series(con, tape, 'SPY').spot.tolist() == [670.0]
+    assert mod.load_root_spot_series(con, tape, 'SPXW').spot.tolist() == [6701.0]
 
 
-def test_object_exists_says_whether_the_object_is_there(tmp_path, con):
+# --- is the object there ------------------------------------------------------------------------
+
+
+def test_object_exists_says_whether_a_local_file_is_there(tmp_path, con):
     tape = write_tape(tmp_path, [tick('14:30:00', SPXW_C, '6701.00')])
 
     assert mod.object_exists(con, tape) is True
     assert mod.object_exists(con, (tmp_path / 'missing.parquet').as_posix()) is False
+
+
+def test_object_exists_does_not_take_a_corrupt_file_for_a_missing_one(tmp_path, con):
+    path = tmp_path / 'corrupt.parquet'
+    path.write_bytes(b'not a parquet file')
+
+    with pytest.raises(duckdb.Error):
+        mod.object_exists(con, path.as_posix())
+
+
+def _http_error(status: str) -> duckdb.HTTPException:
+    return duckdb.HTTPException(f"HTTP Error: HTTP GET error reading 's3://b/k' (HTTP {status})")
+
+
+@pytest.mark.parametrize(
+    ('error', 'missing'),
+    [
+        (_http_error('404 Not Found'), True),
+        (duckdb.IOException('IO Error: No files found that match the pattern "/x/y"'), True),
+        (_http_error('403 Forbidden'), False),
+        (_http_error('503 Service Unavailable'), False),
+        (duckdb.IOException('IO Error: Could not establish connection error'), False),
+    ],
+)
+def test_object_exists_takes_only_a_404_for_missing_and_raises_every_other_failure(
+    error, missing
+):
+    """The fallback for a machine with no httpfs: the errors the loopback tests below get."""
+    con = MagicMock()
+    con.execute.side_effect = error
+
+    if missing:
+        assert mod.object_exists(con, 's3://b/k') is False
+    else:
+        with pytest.raises(type(error)):
+            mod.object_exists(con, 's3://b/k')
 
 
 # --- the two sources ------------------------------------------------------------------------------
@@ -634,7 +688,7 @@ def test_the_summary_names_its_source_and_what_it_skipped(run, monkeypatch):
         monkeypatch,
         [
             table_row(1, SPXW_C, '20:50:00', '6701.00', total='1500000.00'),
-            table_row(2, SPXW_P, '20:50:00', None),
+            table_row(2, SPXW_P, '20:40:00', None),  # no spot, and the tape starts at 20:49:30
         ],
     )
 
@@ -644,6 +698,7 @@ def test_the_summary_names_its_source_and_what_it_skipped(run, monkeypatch):
     text = summary.read_text(encoding='utf-8')
     assert 'Source: table' in text
     assert '1 skipped (no spot in the row or on the tape)' in text
+    assert '0 fired after the close, no path' in text
     assert '| extreme | C | 1 |' in text
 
 
@@ -682,12 +737,15 @@ def test_rows_with_null_spot_are_skipped_only_when_the_tape_has_none(run, monkey
     fake_table(
         monkeypatch,
         [
-            # NULL spot, and the contract printed before the alert: the tape's print is the entry.
+            # NULL spot, and the root printed at or before the alert: that print is the entry.
             table_row(1, SPXW_C, '20:50:00', None),
-            # NULL spot, and the contract's first print is after the alert: the tape has none.
+            # NULL spot, and the alert's own contract has not printed yet, but the root has:
+            # the tape does have a spot, so the row stays and takes the root's.
             table_row(2, SPXW_P, '20:50:00', None),
-            # A spot in the row: it never needed the tape's.
+            # A spot in the row: it is the entry, the tape's print is only t=0.
             table_row(3, SPXW_P, '20:50:00', '6705.00'),
+            # NULL spot, and nothing on the root at or before the alert: the tape has none.
+            table_row(4, SPXW_C, '20:40:00', None),
         ],
     )
 
@@ -699,14 +757,53 @@ def test_rows_with_null_spot_are_skipped_only_when_the_tape_has_none(run, monkey
         by_alert.setdefault(r['alert_id'], []).append(
             (r['t_minutes'], r['spx_price'], r['pct_change'])
         )
-    assert set(by_alert) == {'1', '3'}
-    # Alert 1: the tape's last print of its contract at or before 20:50:00 is the entry, and
-    # is also t=0, so t=0 sits at 0.
+    assert set(by_alert) == {'1', '2', '3'}
+    # The entry is the root's last print at or before 20:50:00, which is t=0 too: t=0 sits at 0.
     assert by_alert['1'][:2] == [('0', '6701.00', '0.0000'), ('5', '6710.00', '0.1343')]
-    # Alert 3 has no print of its own contract before the alert: no t=0 row, and the path
-    # starts at t=5 against the row's own 6705.00.
-    assert by_alert['3'][0] == ('5', '6710.00', '0.0746')
+    assert by_alert['2'] == by_alert['1']
+    # Against the row's own 6705.00, t=0 (6701.00) is below the entry.
+    assert by_alert['3'][:2] == [('0', '6701.00', '-0.0597'), ('5', '6710.00', '0.0746')]
     assert '1 skipped (no spot in the row or on the tape)' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('bad_spot', ['0.00', '-5.00', 'NaN'])
+def test_a_row_spot_that_is_not_finite_and_above_zero_counts_as_missing(
+    run, monkeypatch, bad_spot
+):
+    write_tape(run, CLOSE_TAPE)
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', bad_spot)])
+
+    mod.main(['--source', 'table'])
+
+    rows = read_rows(outcome_csv(run / 'out'))
+    # The tape's 6701.00 is the entry, so t=0 sits at 0, with no ZeroDivisionError or 'nan'.
+    assert [(r['t_minutes'], r['pct_change']) for r in rows] == [
+        ('0', '0.0000'),
+        ('5', '0.1343'),
+        ('10', '0.2835'),
+    ]
+
+
+def test_alerts_fired_after_the_close_are_counted_apart_from_the_no_spot_skips(
+    run, monkeypatch, capsys
+):
+    write_tape(run, [tick('20:50:00', SPY_C, '670.00'), tick('21:05:00', SPY_C, '672.00')])
+    fake_table(
+        monkeypatch,
+        [
+            table_row(1, SPY_C, '20:50:00', '670.00'),
+            table_row(2, SPY_C, '21:05:00', '672.00'),  # 15:05 CT: SPY options trade to 15:15
+            table_row(3, SPY_C, '20:30:00', None),  # no spot, and no print before it
+        ],
+    )
+
+    mod.main(['--source', 'table', '--ticker', 'SPY'])
+
+    (path,) = (run / 'out').glob('interval-ba-outcomes-spy-2*.csv')
+    assert {r['alert_id'] for r in read_rows(path)} == {'1'}
+    out = capsys.readouterr().out
+    assert 'skipped=1  after_close=1' in out
+    assert '1 skipped (no spot in the row or on the tape); 1 fired after the close, no path' in out
 
 
 def test_a_missing_tape_day_is_skipped_by_name_and_the_other_days_still_run(
@@ -742,6 +839,37 @@ def test_an_unreadable_tape_stops_the_run_instead_of_reading_as_a_missing_day(
 
     with pytest.raises(duckdb.Error):
         mod.main(['--source', 'table'])
+
+    # The run died with its CSV open: it is under a .partial name, so no `*.csv` is left for
+    # the analyze_* scripts' newest-file discovery to pick up.
+    out = run / 'out'
+    assert not list(out.glob('*.csv'))
+    assert len(list(out.glob('interval-ba-outcomes-2*.csv.partial'))) == 1
+
+
+def test_a_finished_run_leaves_a_csv_and_an_md_and_no_partial_file(run, monkeypatch):
+    write_tape(run, CLOSE_TAPE)
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00')])
+
+    mod.main(['--source', 'table'])
+
+    assert sorted(p.suffix for p in (run / 'out').iterdir()) == ['.csv', '.md']
+
+
+def test_a_run_that_dies_building_the_summary_leaves_neither_file_for_discovery(
+    run, monkeypatch
+):
+    write_tape(run, CLOSE_TAPE)
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00')])
+    monkeypatch.setattr(mod, 'median', MagicMock(side_effect=RuntimeError('boom')))
+
+    with pytest.raises(RuntimeError, match='boom'):
+        mod.main(['--source', 'table'])
+
+    out = run / 'out'
+    assert not list(out.glob('*.md'))
+    assert not list(out.glob('*.csv'))
+    assert len(list(out.glob('*.csv.partial'))) == 1  # the finished rows, kept for a look
 
 
 def test_no_matching_alerts_exits_with_a_message(run, monkeypatch):
@@ -795,3 +923,203 @@ def test_export_columns_match_the_tool():
     assert [(f.name, str(f.type)) for f in EXPORT_SCHEMA] == wanted
     assert set(mod.EXPORT_COLUMNS) <= {name for name, _ in wanted}
     assert mod.EXPORT_PREFIX == tool.EXPORT_PREFIX
+
+
+# --- export_url ---------------------------------------------------------------------------------
+
+
+def test_export_url_is_the_buckets_object_for_that_end_date(monkeypatch):
+    monkeypatch.setenv('R2_BUCKET_FULLTAPE', 'tape-bucket')
+
+    assert mod.export_key('2026-11-25') == 'research/interval-ba/replay-2026-11-25.parquet'
+    assert mod.export_url('2026-11-25') == (
+        's3://tape-bucket/research/interval-ba/replay-2026-11-25.parquet'
+    )
+
+
+@pytest.mark.parametrize('value', [None, '', '   '])
+def test_export_url_without_a_bucket_exits_naming_the_variable(monkeypatch, value):
+    if value is not None:
+        monkeypatch.setenv('R2_BUCKET_FULLTAPE', value)
+    else:
+        monkeypatch.delenv('R2_BUCKET_FULLTAPE', raising=False)
+
+    with pytest.raises(SystemExit, match='R2_BUCKET_FULLTAPE'):
+        mod.export_url('2026-11-25')
+
+
+# --- over s3:// against a fake S3 on loopback ---------------------------------------------------
+
+
+class FakeS3:
+    """A bucket on 127.0.0.1 for DuckDB's httpfs, started for one test and closed in its
+    teardown. `objects` maps '/bucket/key' to bytes, served with HEAD and ranged GET. A path in
+    `forbidden` answers 403, every other path 404. Nothing leaves the loopback interface."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.forbidden: set[str] = set()
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def _send(self, status: int, body: bytes, extra: dict[str, str] | None = None):
+                self.send_response(status)
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.send_header('Content-Length', str(len(body)))
+                for name, value in (extra or {}).items():
+                    self.send_header(name, value)
+                self.end_headers()
+                if self.command != 'HEAD':
+                    self.wfile.write(body)
+
+            def _serve(self) -> None:
+                path = self.path.split('?', 1)[0]
+                if path in outer.forbidden:
+                    self._send(403, b'<Error><Code>AccessDenied</Code></Error>')
+                    return
+                data = outer.objects.get(path)
+                if data is None:
+                    self._send(404, b'<Error><Code>NoSuchKey</Code></Error>')
+                    return
+                meta = {
+                    'Accept-Ranges': 'bytes',
+                    'ETag': '"fake"',
+                    'Last-Modified': 'Tue, 17 Nov 2026 21:00:00 GMT',
+                }
+                span = re.match(r'bytes=(\d*)-(\d*)', self.headers.get('Range') or '')
+                if span is None:
+                    meta['Content-Length'] = str(len(data))
+                    self._send(200, data, meta)
+                    return
+                if span[1] == '':  # a suffix range: the last N bytes
+                    start, end = max(len(data) - int(span[2]), 0), len(data) - 1
+                else:
+                    start = int(span[1])
+                    end = min(int(span[2]) if span[2] else len(data) - 1, len(data) - 1)
+                meta['Content-Range'] = f'bytes {start}-{end}/{len(data)}'
+                self._send(206, data[start : end + 1], meta)
+
+            do_GET = do_HEAD = _serve
+
+            def log_message(self, *_args) -> None:  # keep pytest's output clean
+                pass
+
+        self._server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.port = self._server.server_address[1]
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=10)
+
+
+@pytest.fixture
+def fake_s3():
+    server = FakeS3()
+    try:
+        yield server
+    finally:
+        server.close()
+
+
+@pytest.fixture
+def s3_run(monkeypatch, tmp_path, fake_s3):
+    """main() reading `s3://bucket/...` from the fake S3. r2_url and export_url are the real
+    ones (the bucket comes from the environment); only the connection is swapped."""
+    opened: list[duckdb.DuckDBPyConnection] = []
+
+    def connect(**_limits) -> duckdb.DuckDBPyConnection:
+        db = local_connection()
+        opened.append(db)
+        try:
+            db.execute('SET autoinstall_known_extensions = false')  # LOAD must not reach out
+            db.execute('SET autoload_known_extensions = false')
+            db.execute('LOAD httpfs')
+        except duckdb.Error as exc:
+            pytest.skip(f'httpfs is not installed here: {exc}')
+        db.execute(f"SET s3_endpoint='127.0.0.1:{fake_s3.port}'")
+        db.execute('SET s3_use_ssl = false')
+        db.execute("SET s3_url_style = 'path'")
+        db.execute("SET s3_region = 'auto'")
+        db.execute("SET s3_access_key_id = 'fake'")
+        db.execute("SET s3_secret_access_key = 'fake'")
+        return db
+
+    monkeypatch.setenv('R2_BUCKET_FULLTAPE', 'bucket')
+    monkeypatch.setattr(mod, 'load_env', lambda: None)
+    monkeypatch.setattr(mod, 'OUT_DIR', tmp_path / 'out')
+    monkeypatch.setattr(mod, 'fulltape_connection', connect)
+    yield SimpleNamespace(s3=fake_s3, connect=connect, dir=tmp_path)
+    for db in opened:
+        db.close()
+
+
+def tape_key(day: str) -> str:
+    return f'/bucket/fulltape/{day}-fulltape.parquet'
+
+
+EXPORT_KEY = f'/bucket/research/interval-ba/replay-{DAY_ISO}.parquet'
+
+
+def test_object_exists_over_s3_says_present_missing_and_forbidden(s3_run):
+    s3_run.s3.objects[tape_key(DAY_ISO)] = Path(
+        write_tape(s3_run.dir, CLOSE_TAPE)
+    ).read_bytes()
+    s3_run.s3.forbidden.add(tape_key('2026-11-18'))
+
+    con = s3_run.connect()
+
+    assert mod.object_exists(con, mod.r2_url(DAY_ISO)) is True
+    assert mod.object_exists(con, mod.r2_url('2026-11-19')) is False
+    with pytest.raises(duckdb.HTTPException, match='403'):
+        mod.object_exists(con, mod.r2_url('2026-11-18'))
+
+
+def test_over_s3_a_tape_day_missing_from_the_bucket_is_skipped_by_name(
+    s3_run, monkeypatch, capsys
+):
+    s3_run.s3.objects[tape_key(DAY_ISO)] = Path(
+        write_tape(s3_run.dir, CLOSE_TAPE)
+    ).read_bytes()
+    next_day = DAY + timedelta(days=1)
+    row = table_row(2, 'SPXW261118C06700000', '20:50:00', '6701.00')
+    row['expiry'] = next_day
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00'), row])
+
+    assert mod.main(['--source', 'table']) == 0
+
+    assert {r['alert_id'] for r in read_rows(outcome_csv(s3_run.dir / 'out'))} == {'1'}
+    assert f'{next_day.isoformat()}  SKIP: tape not in R2' in capsys.readouterr().out
+
+
+def test_over_s3_a_forbidden_tape_stops_the_run_instead_of_reading_as_missing(
+    s3_run, monkeypatch
+):
+    s3_run.s3.forbidden.add(tape_key(DAY_ISO))
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00')])
+
+    with pytest.raises(duckdb.HTTPException, match='403'):
+        mod.main(['--source', 'table'])
+
+
+def test_over_s3_the_export_is_read_and_a_missing_one_names_its_key(s3_run):
+    with pytest.raises(SystemExit, match='research/interval-ba/replay-2026-11-17.parquet'):
+        mod.main(['--source', 'export', '--export-end', DAY_ISO])
+
+    s3_run.s3.objects[tape_key(DAY_ISO)] = Path(
+        write_tape(s3_run.dir, CLOSE_TAPE)
+    ).read_bytes()
+    s3_run.s3.objects[EXPORT_KEY] = Path(
+        write_export(s3_run.dir, [export_row(SPXW_C, '20:50:00', '6701.00')])
+    ).read_bytes()
+
+    assert mod.main(['--source', 'export', '--export-end', DAY_ISO]) == 0
+
+    rows = read_rows(outcome_csv(s3_run.dir / 'out', export=True))
+    assert [(r['t_minutes'], r['spx_price']) for r in rows] == [
+        ('0', '6701.00'),
+        ('5', '6710.00'),
+        ('10', '6720.00'),
+    ]

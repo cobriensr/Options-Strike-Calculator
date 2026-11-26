@@ -55,7 +55,7 @@ Compute additional features on existing rows. Typically used after a feature-eng
 - `enrich_lottery_outcomes.py`: realized exit-policy columns on `lottery_finder_fires` from the EOD parquet tape (`make enrich`) or the R2 Full Tape with `--r2` (also `--select` and `--dry-run`)
 - `enrich_silent_boom_outcomes.py`: peak and realized exits on `silent_boom_alerts` from parquet or the R2 Full Tape with `--r2` (also `--select` and `--dry-run`)
 - `enrich_silent_boom_outcomes_fulltape.py`: the same from the Full Tape parquet archive
-- `enrich_interval_ba_outcomes.py`: forward SPX paths for `interval_ba_alerts`
+- `enrich_interval_ba_outcomes.py`: forward spot paths for Interval B/A alerts, read from the Full Tape in R2. `--source table` (default) takes the alerts from `interval_ba_alerts`; `--source export --export-end YYYY-MM-DD` takes them from the full-year replay `research/interval-ba/replay-<end>.parquet` (also `--ticker`, `--from-date`, `--to-date`, `--limit-alerts` and `--dry-run`). Only the table's CSV works with `analyze_interval_ba_cuts.py` and `analyze_confluence_vs_solo.py`
 
 ### Python backfills (`backfill_*.py`, plus some `backfill-*.py`)
 

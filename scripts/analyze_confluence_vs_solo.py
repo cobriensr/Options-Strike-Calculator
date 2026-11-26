@@ -168,6 +168,24 @@ def eod(path: dict[int, float]) -> float | None:
     return path[max(path)] if path else None
 
 
+def newest_outcomes_csv(out_dir: pathlib.Path) -> pathlib.Path:
+    """The newest SPXW outcomes CSV from the interval_ba_alerts table.
+
+    Those names carry a digit stamp right after the prefix
+    ("interval-ba-outcomes-20261126-...csv"). The SPY and QQQ files ("-spy-") and the export
+    files ("-export-", whose alert_id is not a table id) sort above them, so the bare glob took
+    one of those. The same filter as analyze_interval_ba_cuts.py.
+    """
+    names = sorted(
+        glob.glob(str(out_dir / 'interval-ba-outcomes-*.csv')),
+        reverse=True,
+    )
+    candidates = [p for p in names if pathlib.Path(p).name.split('-')[3].isdigit()]
+    if not candidates:
+        sys.exit(f'No SPXW outcomes CSV found under {out_dir}')
+    return pathlib.Path(candidates[0])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--window-sec', type=int, default=90)
@@ -176,14 +194,7 @@ def main() -> int:
     load_env()
 
     csv_path = (
-        pathlib.Path(args.csv)
-        if args.csv
-        else pathlib.Path(
-            sorted(
-                glob.glob(str(OUT_DIR / 'interval-ba-outcomes-*.csv')),
-                reverse=True,
-            )[0]
-        )
+        pathlib.Path(args.csv) if args.csv else newest_outcomes_csv(OUT_DIR)
     )
     print(f'Loading paths from {csv_path.name}…')
     paths = load_paths(csv_path)

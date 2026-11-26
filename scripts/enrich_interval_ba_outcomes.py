@@ -8,18 +8,21 @@ change from the alert's entry anchor.
 METHODOLOGY CHANGE (2026-11-26, interval-ba-rebuild spec 6.8). Paths from this version do not
 compare with CSVs written by the one before it:
 
-  - t=0 is the last print of the alert's own contract at or before ``fired_at``, compared in
+  - t=0 is the last print of the root with a valid spot at or before ``fired_at``, compared in
     epoch microseconds. It used to be the last print of the minute containing ``fired_at``,
     which can sit up to 59 s after the alert.
-  - Every later step sits exactly 5*k minutes after ``fired_at`` and takes the last print of
-    the whole root at or before that instant. They used to sit 5*k minutes after the alert's
-    minute and take that minute's last print, so a path could start up to 59 s late and
-    measure up to 59 s more than its horizon.
+  - Every later step sits exactly 5*k minutes after ``fired_at`` and takes the root's last
+    print with a valid spot at or before that instant. They used to sit 5*k minutes after the
+    alert's minute and take that minute's last print, so a path could start up to 59 s late and
+    measure up to 59 s more than its horizon. t=0 and the steps share one basis, the root's
+    prints (any contract of the root carries the underlying's spot).
   - Prints are picked by their OCC root (``option_chain_id`` less its last 15 characters), not
     by ``underlying_symbol``: the websocket labels SPXW prints SPX.
-  - A row with no ``underlying_price`` (a live SPXW row before the nightly heal) takes the
-    t=0 print as its entry, and is skipped only when the tape has none. The query used to
-    drop every such row.
+  - The entry is the row's own ``underlying_price`` when it is finite and above zero, else the
+    t=0 spot. A row with no usable ``underlying_price`` (a live SPXW row before the nightly
+    heal) is skipped only when it has neither. The query used to drop every NULL one.
+  - An alert fired after the close has no path: it is counted apart from the rows skipped for
+    want of a spot, in the per-day lines and the summary.
 
 Sources (``--source``):
   table   interval_ba_alerts in Neon, read only: the live record, plus what the nightly tape
@@ -38,6 +41,8 @@ for the whole day, with no dependence on the ``index_candles_1m`` table.
 Outputs (under docs/tmp/, per project memory feedback_scratch_files_in_docs_tmp):
   - interval-ba-outcomes[-export][-<ticker>]-{stamp}.csv: one row per (alert, t_minutes)
   - interval-ba-outcomes-summary[-export][-<ticker>]-{stamp}.md: aggregate tables
+Each is written under a ``.partial`` name and renamed when the run finishes, so a run that
+dies leaves nothing the analyze_* scripts' ``*.csv`` discovery can pick up.
 
 Prints a final summary to stdout: median forward % returns at T+5/15/30/60
 + EOD, split by severity and option_type.
@@ -64,6 +69,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import duckdb
 import numpy as np
 import pandas as pd
 import psycopg2
@@ -118,6 +124,7 @@ EXPORT_COLUMNS = (
 )
 
 SKIPPED_NOTE = 'no spot in the row or on the tape'
+AFTER_CLOSE_NOTE = 'fired after the close, no path'
 
 
 def load_env() -> None:
@@ -185,7 +192,10 @@ class SpotSeries:
 _ROOT_SQL = f'left(option_chain_id, length(option_chain_id) - {OCC_SUFFIX_LEN})'
 _NOT_CANCELED = 'NOT coalesce(try_cast(canceled AS BOOLEAN), false)'
 
-# Prints of one OCC root, whatever their underlying_symbol label, in time order.
+# Prints of one OCC root, whatever their underlying_symbol label, in time order. The LIKE term
+# is a prefix pre-filter that DuckDB turns into a range filter on the scan (it shows as
+# `option_chain_id>='SPXW'` in EXPLAIN); the exact `left()` match after it is what picks the
+# root, because the prefix alone would also take SPXWS or SPYG.
 _ROOT_SERIES_SQL = f"""
 SELECT us, spot FROM (
     SELECT
@@ -193,68 +203,45 @@ SELECT us, spot FROM (
         file_row_number AS frn,
         CAST(underlying_price AS DOUBLE) AS spot
     FROM read_parquet($tape, file_row_number = true)
-    WHERE {_ROOT_SQL} = $root AND {_NOT_CANCELED}
+    WHERE option_chain_id LIKE $like AND {_ROOT_SQL} = $root AND {_NOT_CANCELED}
 )
 WHERE isfinite(spot) AND spot > 0
 ORDER BY us, frn
 """
 
-# For each (chain, instant), the spot of that chain's last print at or before the instant.
-_T0_SQL = f"""
-WITH wanted AS (
-    SELECT unnest($chains) AS chain, unnest($fired) AS fired_us
-),
-prints AS (
-    SELECT
-        option_chain_id AS chain,
-        epoch_us(executed_at) AS us,
-        file_row_number AS frn,
-        CAST(underlying_price AS DOUBLE) AS spot
-    FROM read_parquet($tape, file_row_number = true)
-    WHERE option_chain_id IN (SELECT chain FROM wanted) AND {_NOT_CANCELED}
-)
-SELECT w.chain, w.fired_us, first(p.spot ORDER BY p.us DESC, p.frn DESC) AS spot
-FROM wanted w
-JOIN prints p ON p.chain = w.chain AND p.us <= w.fired_us
-WHERE isfinite(p.spot) AND p.spot > 0
-GROUP BY w.chain, w.fired_us
-"""
-
 
 def object_exists(con, url: str) -> bool:
-    """True when the parquet is there. A missing day is told apart from a failed read this
-    way: a read that fails for any other reason (credentials, a corrupt file) raises."""
-    return con.execute('SELECT count(*) FROM glob($url)', {'url': url}).fetchone()[0] > 0
+    """True when the parquet is there, probed with a read of its footer.
+
+    Only a 404 means missing: DuckDB raises HTTPException ("HTTP 404 Not Found") for an absent
+    s3:// key and IOException ("No files found") for an absent local path. Anything else
+    raises, so a 403 stays a loud credentials failure and a corrupt file a loud read failure,
+    never a skipped day. glob() cannot do this job: DuckDB answers 1 for any single s3:// key
+    without asking the bucket.
+    """
+    try:
+        con.execute('SELECT 1 FROM read_parquet($url) LIMIT 0', {'url': url})
+    except duckdb.HTTPException as exc:
+        if 'HTTP 404' in str(exc):
+            return False
+        raise
+    except duckdb.IOException as exc:
+        if 'No files found' in str(exc):
+            return False
+        raise
+    return True
 
 
 def load_root_spot_series(con, tape: str, root: str) -> SpotSeries:
     """Every print of one OCC root on the tape, canceled ones and prints with no usable
     underlying price left out."""
-    cols = con.execute(_ROOT_SERIES_SQL, {'tape': tape, 'root': root}).fetchnumpy()
+    params = {'tape': tape, 'root': root, 'like': f'{root}%'}
+    cols = con.execute(_ROOT_SERIES_SQL, params).fetchnumpy()
     return SpotSeries(np.asarray(cols['us']), np.asarray(cols['spot']))
 
 
-def load_t0_spots(
-    con,
-    tape: str,
-    wanted: Sequence[tuple[str, int]],
-) -> dict[tuple[str, int], float]:
-    """{(chain, epoch_us): spot} for each wanted pair that has a print of that chain at or
-    before the instant. A pair with none is absent."""
-    if not wanted:
-        return {}
-    params = {
-        'tape': tape,
-        'chains': [chain for chain, _ in wanted],
-        'fired': [fired_us for _, fired_us in wanted],
-    }
-    rows = con.execute(_T0_SQL, params).fetchall()
-    return {(chain, fired_us): float(spot) for chain, fired_us, spot in rows}
-
-
 def build_forward_path(
-    root_series: SpotSeries,
-    t0_spot: float | None,
+    series: SpotSeries,
     fired_at: datetime,
     entry_price: float,
     eod_utc: datetime,
@@ -262,19 +249,16 @@ def build_forward_path(
     """Return [(t_minutes, ts_utc, spot, pct_change), ...].
 
     `fired_at` is aware UTC. Step k sits exactly k*INTERVAL_MIN minutes after it, up to and
-    including the close. t=0 is `t0_spot`, the alert's own contract's last print at or before
-    `fired_at`; every later step is the root's last print at or before its instant. A step
-    with no print is left out.
+    including the close; t=0 is `fired_at` itself. Each step's spot is the root's last print
+    with a valid spot at or before its instant, so t=0 is the last print at or before the
+    alert. A step with no print is left out.
     """
     fired_us = epoch_us(fired_at)
     eod_us = epoch_us(eod_utc)
     out: list[tuple[int, datetime, float, float]] = []
     t_min = 0
     while fired_us + t_min * _MINUTE_US <= eod_us:
-        if t_min == 0:
-            spot = t0_spot
-        else:
-            spot = root_series.at_or_before(fired_us + t_min * _MINUTE_US)
+        spot = series.at_or_before(fired_us + t_min * _MINUTE_US)
         if spot is not None:
             pct = (spot - entry_price) / entry_price * 100.0
             out.append((t_min, fired_at + timedelta(minutes=t_min), spot, pct))
@@ -282,11 +266,18 @@ def build_forward_path(
     return out
 
 
-def alert_entry(alert: dict, t0_spot: float | None) -> float | None:
-    """The alert's own spot, else the tape's t=0 spot; None when neither exists."""
-    if alert['underlying_price'] is not None:
-        return float(alert['underlying_price'])
-    return t0_spot
+def alert_entry(alert: dict, series: SpotSeries, fired_us: int) -> float | None:
+    """The row's own spot when it is finite and above zero, else the tape's t=0 spot.
+
+    A NULL, NaN, zero or negative `underlying_price` counts as missing. None when the tape has
+    no print at or before the alert either.
+    """
+    own = alert['underlying_price']
+    if own is not None:
+        entry = float(own)
+        if math.isfinite(entry) and entry > 0:
+            return entry
+    return series.at_or_before(fired_us)
 
 
 def fetch_alerts(
@@ -508,6 +499,11 @@ def enrich(
     kind = '-export' if args.source == 'export' else ''
     csv_path = OUT_DIR / f'interval-ba-outcomes{kind}{slug}-{stamp}.csv'
     md_path = OUT_DIR / f'interval-ba-outcomes-summary{kind}{slug}-{stamp}.md'
+    # Both are written under a .partial name and renamed once the run is through, so a run
+    # that dies leaves no file the analyze_* scripts' `*.csv` discovery could take for the
+    # newest.
+    csv_partial = csv_path.with_name(csv_path.name + '.partial')
+    md_partial = md_path.with_name(md_path.name + '.partial')
     source_text = (
         f'export ({export_key(args.export_end)})'
         if args.source == 'export'
@@ -521,6 +517,7 @@ def enrich(
     # Stream CSV rows day-by-day so memory stays bounded.
     csv_rows_written = 0
     skipped_total = 0
+    after_close_total = 0
     # In-memory rollup for the summary tables — keyed by (severity, option_type).
     forward_pcts: dict[tuple[str, str, int], list[float]] = defaultdict(list)
     eod_pcts: dict[tuple[str, str], list[float]] = defaultdict(list)
@@ -529,7 +526,7 @@ def enrich(
     csv_file = (
         None
         if args.dry_run
-        else csv_path.open('w', newline='', encoding='utf-8')
+        else csv_partial.open('w', newline='', encoding='utf-8')
     )
     writer = (
         csv.writer(csv_file)
@@ -562,29 +559,23 @@ def enrich(
                 print(f'  {date_iso}  SKIP: no {ticker} prints on the tape')
                 continue
             eod_utc = session_close_utc(date_iso)
-            fired = [as_utc(a['fired_at']) for a in day_alerts]
-            t0_spots = load_t0_spots(
-                con,
-                tape,
-                sorted(
-                    {
-                        (a['option_chain'], epoch_us(f))
-                        for a, f in zip(day_alerts, fired, strict=True)
-                    },
-                ),
-            )
+            eod_us = epoch_us(eod_utc)
             skipped_day = 0
+            after_close_day = 0
 
-            for a, fired_at in zip(day_alerts, fired, strict=True):
+            for a in day_alerts:
                 sev = severity_of(float(a['total_premium']))
-                t0_spot = t0_spots.get((a['option_chain'], epoch_us(fired_at)))
-                entry = alert_entry(a, t0_spot)
+                fired_at = as_utc(a['fired_at'])
+                fired_us = epoch_us(fired_at)
+                if fired_us > eod_us:
+                    # SPY and QQQ options trade to 15:15 CT: nothing to walk forward.
+                    after_close_day += 1
+                    continue
+                entry = alert_entry(a, series, fired_us)
                 path = (
                     []
                     if entry is None
-                    else build_forward_path(
-                        series, t0_spot, fired_at, entry, eod_utc,
-                    )
+                    else build_forward_path(series, fired_at, entry, eod_utc)
                 )
                 if not path:
                     skipped_day += 1
@@ -611,27 +602,25 @@ def enrich(
                 last_pct = path[-1][3]
                 eod_pcts[(sev, a['option_type'])].append(last_pct)
             skipped_total += skipped_day
+            after_close_total += after_close_day
             print(
                 f'  {date_iso}  alerts={len(day_alerts):>4}  '
-                f'series_prints={len(series):>8}  skipped={skipped_day}',
+                f'series_prints={len(series):>8}  skipped={skipped_day}  '
+                f'after_close={after_close_day}',
             )
     finally:
         if csv_file is not None:
             csv_file.close()
-
-    if csv_file is not None:
-        print(f'wrote {csv_rows_written} rows → {csv_path}')
 
     # Aggregate summary tables.
     md_lines = ['# Interval B/A — forward-return experiment\n']
     md_lines.append(f'_Generated {stamp} UTC. Source: {source_text}_\n')
     md_lines.append(
         f'\nReplays the {ticker} spot path in 5-min increments from each alert\'s '
-        f'``fired_at`` to 15:00 CT. t=0 is the last print of the alert\'s own contract at or '
-        f'before ``fired_at``; each later step is the last {ticker}-root print at or before '
-        f'that many minutes after it. Entry anchor is the alert\'s own ``underlying_price``, '
-        f'or the t=0 print when the row has none. Median % change across {len(alerts)} '
-        f'alerts.\n',
+        f'``fired_at`` to 15:00 CT. Each step is the last {ticker}-root print at or before '
+        f'that many minutes after ``fired_at`` (t=0: at or before ``fired_at``). Entry '
+        f'anchor is the alert\'s own ``underlying_price`` when it is finite and above zero, '
+        f'else the t=0 print. Median % change across {len(alerts)} alerts.\n',
     )
     md_lines.append('\n## Median % change by severity × option_type\n')
     md_lines.append(
@@ -657,12 +646,17 @@ def enrich(
             md_lines.append('| ' + ' | '.join(row) + ' |')
     md_lines.append(
         f'\n_grand total: {grand_total} alerts with forward path; '
-        f'{skipped_total} skipped ({SKIPPED_NOTE})._\n',
+        f'{skipped_total} skipped ({SKIPPED_NOTE}); '
+        f'{after_close_total} {AFTER_CLOSE_NOTE}._\n',
     )
 
     md_text = '\n'.join(md_lines)
     if not args.dry_run:
-        md_path.write_text(md_text, encoding='utf-8')
+        # Both files are complete: take the .partial off both.
+        md_partial.write_text(md_text, encoding='utf-8')
+        csv_partial.replace(csv_path)
+        md_partial.replace(md_path)
+        print(f'wrote {csv_rows_written} rows → {csv_path}')
         print(f'wrote summary → {md_path}')
 
     print('\n' + md_text)
