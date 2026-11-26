@@ -369,7 +369,12 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
           complete: boolean;
           minutes: number;
         } | null;
-        today: unknown;
+        today: {
+          open: number;
+          high: number;
+          low: number;
+          last: number;
+        } | null;
         candleCount: number;
       },
     };
@@ -607,18 +612,22 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
   // is private to api/intraday.ts, so its rules are pinned here, through the
   // handler, and not by a copy of it.
   describe('opening range values', () => {
-    it("is the six bars' high and low, and their span as rangePts", async () => {
-      // barsFrom rises a point a bar: highs 5510 to 5515, lows 5490 to 5495.
-      const { json } = await callAt(
-        et(24, 10, 5),
-        barsFrom(24, 9, 30, 7),
-        true,
-      );
+    it("is the six bars' high and low, wherever they fall, and their span as rangePts", async () => {
+      // barsFrom rises a point a bar, so left alone the extremes sit on the
+      // last and the first bar. Here the high is bar 2's and the low bar 3's,
+      // in the middle, so a range read off the ends cannot pass. The 10:00 bar
+      // (the seventh) keeps `complete` true.
+      const bars = barsFrom(24, 9, 30, 7).map((bar, i) => {
+        if (i === 2) return { ...bar, high: 5530 };
+        if (i === 3) return { ...bar, low: 5480 };
+        return bar;
+      });
+      const { json } = await callAt(et(24, 10, 5), bars, true);
 
       expect(json.openingRange).toEqual({
-        high: 5515,
-        low: 5490,
-        rangePts: 25,
+        high: 5530,
+        low: 5480,
+        rangePts: 50,
         minutes: 30,
         complete: true,
       });
@@ -651,6 +660,64 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
         low: 5490,
         rangePts: 25,
         minutes: 30,
+      });
+    });
+  });
+
+  // `computeTodayOHLC` is private to api/intraday.ts too: its rules are pinned
+  // here, through the handler. Empty candles (today null) are covered above.
+  describe("today's running OHLC", () => {
+    it("is the first bar's open, the last bar's close, and the high and low of every bar", async () => {
+      // A full session. barsFrom rises a point a bar, so left alone the extremes
+      // sit on the ends. Here the high is bar 40's and the low bar 55's, long
+      // after the opening range, so neither the ends nor the first six bars can
+      // pass.
+      const bars = fullSession(24).map((bar, i) => {
+        if (i === 40) return { ...bar, high: 5600 };
+        if (i === 55) return { ...bar, low: 5400 };
+        return bar;
+      });
+      const { json } = await callAt(et(24, 16, 30), bars, false);
+
+      // The first bar opens at 5500; the 78th closes at 5500 + 77 + 5.
+      expect(json.today).toEqual({
+        open: 5500,
+        high: 5600,
+        low: 5400,
+        last: 5582,
+      });
+    });
+
+    it('is one bar when only one has come', async () => {
+      const { json } = await callAt(
+        et(24, 9, 33),
+        [barAt(24, 9, 30, 5500)],
+        true,
+      );
+
+      expect(json.today).toEqual({
+        open: 5500,
+        high: 5510,
+        low: 5490,
+        last: 5505,
+      });
+    });
+
+    it("is today's bars only: an earlier session's extremes do not reach it", async () => {
+      const earlier = barsFrom(23, 9, 30, 12).map((bar, i) =>
+        i === 4 ? { ...bar, high: 9999, low: 1 } : bar,
+      );
+      const { json } = await callAt(
+        et(24, 10, 30),
+        [...earlier, ...barsFrom(24, 9, 30, 12)],
+        true,
+      );
+
+      expect(json.today).toEqual({
+        open: 5500,
+        high: 5521,
+        low: 5490,
+        last: 5516,
       });
     });
   });
