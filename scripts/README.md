@@ -36,8 +36,8 @@ EDA and statistical analyses (Python `analyze_*`, TypeScript `analyze-*`). Outpu
 
 - `analyze_silent_boom_multileg.py`: multi-leg signal correlation
 - `analyze_cross_symbol_confluence.py`: SPY/QQQ/IWM joint signals
-- `analyze_interval_ba_cuts.py`: bid/ask interval thresholds
-- `analyze_confluence_vs_solo.py`: single vs. confluent signals
+- `analyze_interval_ba_cuts.py`: the five cuts of the Interval B/A alerts (hit rate, magnitude, hour of day, ratio, sweep) over their forward paths. Reads the full-year replay export by default (`--source export`, newest `research/interval-ba/replay-<date>.parquet` unless `--export-end YYYY-MM-DD`; the database is never opened) and the newest `interval-ba-outcomes-export-*.csv`. `--source table` reads `interval_ba_alerts` and the newest `interval-ba-outcomes-*.csv`, which have the live feed's gaps. Also `--ticker` and `--csv`
+- `analyze_confluence_vs_solo.py`: SPXW alerts with an SPY or QQQ partner within `--window-sec` vs. alone, over the same forward paths. The same `--source export|table` and `--export-end` as the cuts script; the export gives the partners the live feed missed on its gap days
 
 ### Audit / verify (`audit-*`, `check-*`, `verify-*`, `grade-*`)
 
@@ -55,7 +55,7 @@ Compute additional features on existing rows. Typically used after a feature-eng
 - `enrich_lottery_outcomes.py`: realized exit-policy columns on `lottery_finder_fires` from the EOD parquet tape (`make enrich`) or the R2 Full Tape with `--r2` (also `--select` and `--dry-run`)
 - `enrich_silent_boom_outcomes.py`: peak and realized exits on `silent_boom_alerts` from parquet or the R2 Full Tape with `--r2` (also `--select` and `--dry-run`)
 - `enrich_silent_boom_outcomes_fulltape.py`: the same from the Full Tape parquet archive
-- `enrich_interval_ba_outcomes.py`: forward spot paths for Interval B/A alerts, read from the Full Tape in R2. `--source table` (default) takes the alerts from `interval_ba_alerts`; `--source export --export-end YYYY-MM-DD` takes them from the full-year replay `research/interval-ba/replay-<end>.parquet` (also `--ticker`, `--from-date`, `--to-date`, `--limit-alerts` and `--dry-run`). Only the table's CSV works with `analyze_interval_ba_cuts.py` and `analyze_confluence_vs_solo.py`
+- `enrich_interval_ba_outcomes.py`: forward spot paths for Interval B/A alerts, read from the Full Tape in R2. `--source export` (the default) takes the alerts from the full-year replay `research/interval-ba/replay-<end>.parquet`: `--export-end YYYY-MM-DD` names one, else the newest in R2 is listed and used (its key is printed). `--source table` takes them from `interval_ba_alerts` (`--export-end` with it is a usage error). Also `--ticker`, `--from-date`, `--to-date`, `--limit-alerts` and `--dry-run`. It holds the one export reader the two `analyze_interval_ba_*` and `analyze_confluence_vs_solo.py` scripts use, and writes the CSVs they read (`interval-ba-outcomes-export-*.csv` for the export, `interval-ba-outcomes-*.csv` for the table)
 
 ### Python backfills (`backfill_*.py`, plus some `backfill-*.py`)
 

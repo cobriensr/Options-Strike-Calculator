@@ -7,7 +7,7 @@ a stronger informed-flow signature than a single-symbol SPXW alert.
 If true, the confluence cohort should beat solo SPXW on hit-rate
 and/or magnitude at the same forward horizons.
 
-For every SPXW alert in interval_ba_alerts, we tag it with the
+For every SPXW alert (SPY, SPXW and QQQ alerts are read for the partners), we tag it with the
 strongest confluence it participated in within a 90s window:
 
   - 3way: confluence across SPY + SPXW + QQQ
@@ -18,29 +18,44 @@ Then we join against the SPX forward-return paths from the
 enrich_interval_ba_outcomes CSV and compare distributions at T+15 /
 T+30 / T+60 / EOD.
 
+Sources (--source), the same two as enrich_interval_ba_outcomes.py, read through its reader:
+  - export (default): the full-year replay in R2, research/interval-ba/replay-<end>.parquet
+    (--export-end names one, else the newest). One rule all year and no live-feed gaps, so a
+    partner the live feed missed is still there. The database is never opened. The forward
+    paths come from the newest docs/tmp/interval-ba-outcomes-export-*.csv.
+  - table: interval_ba_alerts (DB), the live record. On a gap day (live rows stay the record,
+    and missed alerts are added only from 2026-10-29) a partner is missing, and an alert that
+    had one counts as solo. Paths: the newest docs/tmp/interval-ba-outcomes-*.csv (SPXW).
+The report is written to docs/tmp/interval-ba-confluence-vs-solo[-export]-{stamp}.md.
+
 Note: every alert in interval_ba_alerts is 0DTE for its underlying
 (backfill applies expiry == executed_at::CT date for SPY/SPXW/QQQ —
 all three have daily expiries during this window). The comparison is
 0DTE × 0DTE × 0DTE.
 
 Usage:
-    python3 scripts/analyze_confluence_vs_solo.py [--window-sec 90]
+    ml/.venv/Scripts/python scripts/analyze_confluence_vs_solo.py \\
+        [--source export|table] [--export-end 2026-11-25] [--window-sec 90] [--csv PATH]
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import os
 import pathlib
 import re
 import statistics as st
 import sys
 from collections import defaultdict
+from collections.abc import Callable, Sequence
 from datetime import datetime
 
 import psycopg2
+
+# The export reader, the --source flags and the CSV names live in the outcome script, which
+# writes the files this one reads. Run as a script, scripts/ is on sys.path.
+import enrich_interval_ba_outcomes as eio
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
@@ -101,7 +116,7 @@ def load_alerts(conn) -> list[dict]:
 def tag_spxw_alerts_by_confluence(
     alerts: list[dict],
     window_sec: int,
-) -> dict[int, str]:
+) -> dict[int | str, str]:
     """Return {spxw_alert_id: 'solo' | '2way' | '3way'}.
 
     For each SPXW alert, scans the ±window_sec band of alerts for
@@ -111,7 +126,7 @@ def tag_spxw_alerts_by_confluence(
       - 2way: at least one SPY OR QQQ (not both)
       - solo: neither SPY nor QQQ within the window
     """
-    out: dict[int, str] = {}
+    out: dict[int | str, str] = {}
     n = len(alerts)
     # Index alerts by their epoch for binary-search style scan, but at
     # this scale (~18k alerts) a linear sweep is fine.
@@ -153,12 +168,17 @@ def tag_spxw_alerts_by_confluence(
     return out
 
 
-def load_paths(csv_path: pathlib.Path) -> dict[int, dict[int, float]]:
-    paths: dict[int, dict[int, float]] = defaultdict(dict)
+def load_paths(
+    csv_path: pathlib.Path,
+    key: Callable[[str], int | str] = int,
+) -> dict[int | str, dict[int, float]]:
+    """{alert_id: {t_minutes: pct_change}}. `key` reads the CSV's alert_id: the table's integer
+    id (the default), or str for the export's `<chain>@<bucket epoch>`."""
+    paths: dict[int | str, dict[int, float]] = defaultdict(dict)
     with csv_path.open() as f:
         r = csv.DictReader(f)
         for row in r:
-            paths[int(row['alert_id'])][int(row['t_minutes'])] = float(
+            paths[key(row['alert_id'])][int(row['t_minutes'])] = float(
                 row['pct_change']
             )
     return paths
@@ -168,43 +188,54 @@ def eod(path: dict[int, float]) -> float | None:
     return path[max(path)] if path else None
 
 
-def newest_outcomes_csv(out_dir: pathlib.Path) -> pathlib.Path:
-    """The newest SPXW outcomes CSV from the interval_ba_alerts table.
+def newest_outcomes_csv(out_dir: pathlib.Path, export: bool = False) -> pathlib.Path:
+    """The newest SPXW outcomes CSV of the source's kind: the table's, or the export's.
 
-    Those names carry a digit stamp right after the prefix
-    ("interval-ba-outcomes-20261126-...csv"). The SPY and QQQ files ("-spy-") and the export
-    files ("-export-", whose alert_id is not a table id) sort above them, so the bare glob took
-    one of those. The same filter as analyze_interval_ba_cuts.py.
+    The names carry a digit stamp right after the prefix ("interval-ba-outcomes-20261126-...csv",
+    "interval-ba-outcomes-export-20261126-...csv"). The SPY and QQQ files ("-spy-") and the
+    other source's files sort above them, so the bare glob took one of those. The same filter as
+    analyze_interval_ba_cuts.py, shared through the outcome script that writes the names.
     """
-    names = sorted(
-        glob.glob(str(out_dir / 'interval-ba-outcomes-*.csv')),
-        reverse=True,
-    )
-    candidates = [p for p in names if pathlib.Path(p).name.split('-')[3].isdigit()]
-    if not candidates:
-        sys.exit(f'No SPXW outcomes CSV found under {out_dir}')
-    return pathlib.Path(candidates[0])
+    found = eio.newest_outcomes_csv(out_dir, 'SPXW', export)
+    if found is None:
+        sys.exit(f'No SPXW {"export " if export else ""}outcomes CSV found under {out_dir}')
+    return found
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    eio.add_source_arguments(parser)
     parser.add_argument('--window-sec', type=int, default=90)
     parser.add_argument('--csv', type=str, default=None)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    eio.check_source_arguments(parser, args)
+    export = args.source == 'export'
     load_env()
 
     csv_path = (
-        pathlib.Path(args.csv) if args.csv else newest_outcomes_csv(OUT_DIR)
+        pathlib.Path(args.csv) if args.csv else newest_outcomes_csv(OUT_DIR, export)
     )
     print(f'Loading paths from {csv_path.name}…')
-    paths = load_paths(csv_path)
+    # The CSV's alert_id is the table's integer id, or the export's `<chain>@<epoch>` string.
+    paths = load_paths(csv_path, key=str if export else int)
     print(f'  {len(paths)} alerts with forward path')
 
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        alerts = load_alerts(conn)
-    finally:
-        conn.close()
+    source_note = ''
+    if export:
+        con = eio.open_connection()
+        try:
+            end = eio.resolve_export_end(con, args.export_end)
+            # Every ticker: SPXW alerts are tagged by their SPY and QQQ partners.
+            alerts = eio.read_export_alerts(con, end, None)
+        finally:
+            con.close()
+        source_note = f' Alerts from the replay export `{eio.export_key(end)}`.'
+    else:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            alerts = load_alerts(conn)
+        finally:
+            conn.close()
     print(f'Loaded {len(alerts)} alerts across all three tickers')
 
     spxw_tags = tag_spxw_alerts_by_confluence(alerts, args.window_sec)
@@ -218,14 +249,12 @@ def main() -> int:
     # Group SPXW alerts by tag, also by option_type
     by_cohort: dict[tuple[str, str, int], list[float]] = defaultdict(list)
     eod_by_cohort: dict[tuple[str, str], list[float]] = defaultdict(list)
+    option_type_of = {a['id']: a['option_type'] for a in alerts}
     for alert_id, tag in spxw_tags.items():
         path = paths.get(alert_id)
         if not path:
             continue
-        opt = next(
-            (a['option_type'] for a in alerts if a['id'] == alert_id),
-            None,
-        )
+        opt = option_type_of.get(alert_id)
         if opt is None:
             continue
         for t in (15, 30, 60):
@@ -242,7 +271,7 @@ def main() -> int:
     md.append(f'# SPXW confluence vs solo — SPX forward-return comparison ({stamp})\n')
     md.append(
         f'_Joined {len(spxw_tags)} SPXW alerts against the forward-return '
-        f'paths in `{csv_path.name}`. Confluence-window = {args.window_sec}s '
+        f'paths in `{csv_path.name}`.{source_note} Confluence-window = {args.window_sec}s '
         f'around each SPXW fired_at moment. All cohorts 0DTE × 0DTE × 0DTE._\n',
     )
     md.append('## Cohort counts\n')
@@ -318,7 +347,8 @@ def main() -> int:
     md.append('')
 
     text = '\n'.join(md)
-    out_path = OUT_DIR / f'interval-ba-confluence-vs-solo-{stamp}.md'
+    kind = '-export' if export else ''
+    out_path = OUT_DIR / f'interval-ba-confluence-vs-solo{kind}-{stamp}.md'
     out_path.write_text(text, encoding='utf-8')
     print(f'\nwrote {out_path}')
     print('\n' + text)

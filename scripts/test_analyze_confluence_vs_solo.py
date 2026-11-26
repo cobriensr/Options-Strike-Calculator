@@ -1,28 +1,265 @@
-"""scripts/analyze_confluence_vs_solo.py: which outcomes CSV it takes when none is named.
+"""scripts/analyze_confluence_vs_solo.py: SPXW alerts with partners vs without, from the table or
+from the replay export.
 
-The script reads `alert_id` as an interval_ba_alerts id, so it can only use the CSV that
-enrich_interval_ba_outcomes.py writes for SPXW from the table. The files for SPY and QQQ and for
-the full-year export sort above it by name ("-spy-", "-export-"), so a bare newest-first glob took
-them and died on `int('SPXW...@epoch')`. Run from the repo root with the ml venv:
+The alerts are 240 SPXW alerts a call and a put in turn, 70 s apart. Every 4th has an SPY partner
+30 s before it (a 2way), every 8th also a QQQ partner 20 s after (a 3way), the rest are solo. The
+same alerts are given to the script as table rows (psycopg2.connect returns a fake cursor) and as
+a replay export parquet (real DuckDB over a local file), so the two sources can be held to the
+same tables. An export-mode run never opens the database: psycopg2.connect raises there.
+
+The boundaries are patched (R3): `fulltape_connection` returns a local DuckDB connection,
+`export_url` the local file's path, `load_env` does nothing and `OUT_DIR` is a folder in tmp_path.
+
+The outcomes CSV it takes by default: the newest SPXW one of the source's kind. The SPY and QQQ
+files and the other source's files sort above it by name ("-spy-", "-export-"), and a bare
+newest-first glob took them and died on `int('SPXW...@epoch')`.
+
+Run from the repo root with the ml venv:
 
     ml/.venv/Scripts/python -m pytest scripts/test_analyze_confluence_vs_solo.py -q
 """
 
 from __future__ import annotations
 
+import csv
+import re
 import sys
+from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import duckdb
+import psycopg2
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import analyze_confluence_vs_solo as acs  # noqa: E402
+import enrich_interval_ba_outcomes as eio  # noqa: E402
+from _ba_test_support import (  # noqa: E402
+    DAY_ISO,
+    at,
+    export_row,
+    local_connection,
+    write_export,
+)
+
+N_SPXW = 240
+STEP = 70  # seconds between SPXW alerts: a same-type neighbour is 140 s away, past the window
+EXPORT_KEY = f'research/interval-ba/replay-{DAY_ISO}.parquet'
+TABLE_CSV = 'interval-ba-outcomes-20261126-100000.csv'
+EXPORT_CSV = 'interval-ba-outcomes-export-20261126-110000.csv'
 
 
 def touch(folder: Path, *names: str) -> None:
     for name in names:
         (folder / name).write_text('x', encoding='utf-8')
+
+
+# --- the alerts -------------------------------------------------------------------------------
+
+
+def make_alerts() -> list[dict]:
+    """The SPXW alerts and their partners, in fired order with the table's ids."""
+    base = at('14:30:00')
+    rows: list[dict] = []
+
+    def add(ticker: str, cp: str, fired, strike: int, **extra) -> None:
+        chain = f'{ticker}261117{cp}{strike * 1000:08d}'
+        row = {'ticker': ticker, 'option_type': cp, 'fired_at': fired, 'chain': chain}
+        rows.append({**row, **extra})
+
+    for i in range(N_SPXW):
+        cp = 'C' if i % 2 == 0 else 'P'
+        fired = base + timedelta(seconds=STEP * i)
+        add('SPXW', cp, fired, 6000 + i, n=i, has_path=i % 50 != 49)
+        if i % 4 == 0:
+            add('SPY', cp, fired - timedelta(seconds=30), 600 + i)
+        if i % 8 == 0:
+            add('QQQ', cp, fired + timedelta(seconds=20), 500 + i)
+    rows.sort(key=lambda r: r['fired_at'])
+    for position, row in enumerate(rows):
+        row['id'] = position + 1
+    return rows
+
+
+def export_id(alert: dict) -> str:
+    """The id the outcomes CSV carries for an export alert: <chain>@<bucket_start epoch s>."""
+    return f'{alert["chain"]}@{int(alert["fired_at"].timestamp()) // 300 * 300}'
+
+
+def export_rows(alerts: list[dict]) -> list[dict]:
+    return [
+        export_row(a['chain'], a['fired_at'].strftime('%H:%M:%S'), None) for a in alerts
+    ]
+
+
+def write_outcomes(path: Path, alerts: list[dict], *, export: bool) -> Path:
+    """The CSV enrich_interval_ba_outcomes.py writes for SPXW: four steps per SPXW alert."""
+    with path.open('w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f)
+        w.writerow(
+            [
+                'alert_id', 'option_chain', 'option_type', 'severity', 'fired_at',
+                't_minutes', 'ts_utc', 'spx_price', 'pct_change',
+            ]  # fmt: skip
+        )
+        for a in alerts:
+            if a['ticker'] != 'SPXW' or not a.get('has_path', True):
+                continue
+            for t in (15, 30, 60, 75):
+                pct = ((a.get('n', 0) * 7) % 19 - 9) * 0.07 + t * 0.002
+                w.writerow(
+                    [
+                        export_id(a) if export else a['id'],
+                        a['chain'],
+                        a['option_type'],
+                        'warning',
+                        a['fired_at'].isoformat(),
+                        t,
+                        (a['fired_at'] + timedelta(minutes=t)).isoformat(),
+                        '6700.00',
+                        f'{pct:.4f}',
+                    ]
+                )
+    return path
+
+
+def partner_case(partner_ticker: str, partner_type: str, seconds_before: int) -> list[dict]:
+    """One SPXW call and one partner `seconds_before` it. Table ids in fired order."""
+    spxw = {
+        'id': 0, 'ticker': 'SPXW', 'option_type': 'C', 'chain': 'SPXW261117C06700000',
+        'fired_at': at('15:00:00'),
+    }  # fmt: skip
+    partner = {
+        'id': 0, 'ticker': partner_ticker, 'option_type': partner_type,
+        'chain': f'{partner_ticker}261117{partner_type}00600000',
+        'fired_at': at('15:00:00') - timedelta(seconds=seconds_before),
+    }  # fmt: skip
+    alerts = sorted([spxw, partner], key=lambda a: a['fired_at'])
+    for position, a in enumerate(alerts):
+        a['id'] = position + 1
+    return alerts
+
+
+# --- the run ----------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def run(monkeypatch, tmp_path):
+    """main() with the boundaries patched. Returns tmp_path: the export and the output folder
+    (`out`) live there. psycopg2.connect starts out raising."""
+    opened: list[duckdb.DuckDBPyConnection] = []
+
+    def connect(**_limits):
+        db = local_connection()
+        opened.append(db)
+        return db
+
+    (tmp_path / 'out').mkdir()
+    monkeypatch.setattr(acs, 'load_env', lambda: None)
+    monkeypatch.setattr(acs, 'OUT_DIR', tmp_path / 'out')
+    monkeypatch.setattr(eio, 'fulltape_connection', connect)
+    monkeypatch.setattr(
+        eio, 'export_url', lambda end: (tmp_path / f'replay-{end}.parquet').as_posix()
+    )
+    monkeypatch.setattr(
+        psycopg2, 'connect', MagicMock(side_effect=AssertionError('the database was opened'))
+    )
+    yield tmp_path
+    for db in opened:
+        db.close()
+
+
+def use_table(monkeypatch, alerts: list[dict]) -> None:
+    """psycopg2.connect returns a connection whose cursor hands back the table rows."""
+    names = ('id', 'ticker', 'option_type', 'fired_at')
+    cur = MagicMock()
+    cur.description = [SimpleNamespace(name=n) for n in names]
+    cur.fetchall.return_value = [tuple(a[n] for n in names) for a in alerts]
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cur
+    monkeypatch.setattr(psycopg2, 'connect', MagicMock(return_value=conn))
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://fake.invalid/none')
+
+
+def report(out: Path, *, export: bool = False) -> str:
+    kind = '-export' if export else ''
+    (path,) = out.glob(f'interval-ba-confluence-vs-solo{kind}-2*.md')
+    return path.read_text('utf-8')
+
+
+def counts_of(text: str) -> dict[str, int]:
+    """The cohort counts table: {'3way': n, '2way': n, 'solo': n}."""
+    found = re.findall(r'^\| (\dway|solo) \| ([\d,]+) \|$', text, re.M)
+    return {cohort: int(n.replace(',', '')) for cohort, n in found}
+
+
+def stamp_free(text: str) -> str:
+    return re.sub(r'\(\d{8}-\d{6}\)', '(STAMP)', text)
+
+
+def tables_of(text: str) -> str:
+    """The text from the cohort counts on: the header lines name the source and the CSV."""
+    return text[text.index('## Cohort counts') :]
+
+
+@pytest.fixture
+def both_sources(run):
+    """The same alerts, as an export and as the two outcomes CSVs."""
+    alerts = make_alerts()
+    write_export(run, export_rows(alerts))
+    write_outcomes(run / 'out' / TABLE_CSV, alerts, export=False)
+    write_outcomes(run / 'out' / EXPORT_CSV, alerts, export=True)
+    return alerts
+
+
+# What the script wrote for these alerts from the table before the export source existed: the
+# output of the version at 8c2e33f56 over this fixture, with the stamp replaced.
+TABLE_GOLDEN = '''# SPXW confluence vs solo — SPX forward-return comparison (STAMP)
+
+_Joined 240 SPXW alerts against the forward-return paths in `interval-ba-outcomes-20261126-100000.csv`. Confluence-window = 90s around each SPXW fired_at moment. All cohorts 0DTE × 0DTE × 0DTE._
+
+## Cohort counts
+
+| cohort | n SPXW alerts |
+|---|--:|
+| 3way | 30 |
+| 2way | 30 |
+| solo | 180 |
+
+## Hit rate by cohort (SPX direction matches option_type)
+
+| cohort | type | n | T+15 hit | T+30 hit | T+60 hit | EOD hit |
+|---|---|--:|--:|--:|--:|--:|
+| 3way | C | 30 | 66.7% | 66.7% | 70.0% | 73.3% |
+| 2way | C | 30 | 40.0% | 40.0% | 46.7% | 53.3% |
+| solo | C | 60 | 53.3% | 53.3% | 58.3% | 63.3% |
+| solo | P | 116 | 48.3% | 48.3% | 43.1% | 37.1% |
+
+## Median EOD % change by cohort
+
+| cohort | type | n | median EOD | mean EOD | P75 | P90 | max |
+|---|---|--:|--:|--:|--:|--:|--:|
+| 3way | C | 30 | +0.290% | +0.234% | +0.552% | +0.710% | +0.780% |
+| 2way | C | 30 | +0.010% | +0.066% | +0.342% | +0.647% | +0.780% |
+| solo | C | 60 | +0.150% | +0.155% | +0.500% | +0.647% | +0.780% |
+| solo | P | 116 | +0.150% | +0.145% | +0.500% | +0.640% | +0.780% |
+
+## Magnitude conditional on direction (EOD)
+
+_For each cohort, when the bet works (CALL → up, PUT → down), how big is the move? Comparing the WINNERS across cohorts._
+
+| cohort | type | n_right | median | mean | P75 | P90 |
+|---|---|--:|--:|--:|--:|--:|
+| 3way | C | 22 | +0.430% | +0.427% | +0.623% | +0.710% |
+| solo | C | 38 | +0.430% | +0.399% | +0.570% | +0.710% |
+| solo | P | 43 | +0.270% | +0.272% | +0.410% | +0.480% |
+'''
+
+
+# --- which outcomes CSV it takes --------------------------------------------------------------
 
 
 def test_the_newest_spxw_table_csv_is_taken_over_every_other_kind_of_file(tmp_path):
@@ -41,39 +278,201 @@ def test_the_newest_spxw_table_csv_is_taken_over_every_other_kind_of_file(tmp_pa
     assert acs.newest_outcomes_csv(tmp_path).name == 'interval-ba-outcomes-20261126-101500.csv'
 
 
-def test_with_only_other_kinds_of_file_it_exits_instead_of_taking_one(tmp_path):
+def test_export_mode_takes_the_export_outcomes_csv_and_table_mode_skips_it(tmp_path):
     touch(
         tmp_path,
-        'interval-ba-outcomes-export-20261126-120000.csv',
-        'interval-ba-outcomes-spy-20261126-130000.csv',
+        'interval-ba-outcomes-20261126-101500.csv',
+        'interval-ba-outcomes-20261126-160000.csv',  # the table's newest: not for the export
+        'interval-ba-outcomes-export-20261126-120000.csv',  # the one to take
+        'interval-ba-outcomes-export-20261125-120000.csv',
+        'interval-ba-outcomes-export-spy-20261126-170000.csv',
+        'interval-ba-outcomes-spy-20261126-171000.csv',
     )
 
-    with pytest.raises(SystemExit, match='No SPXW outcomes CSV'):
-        acs.newest_outcomes_csv(tmp_path)
+    assert acs.newest_outcomes_csv(tmp_path, export=True).name == (
+        'interval-ba-outcomes-export-20261126-120000.csv'
+    )
+    assert acs.newest_outcomes_csv(tmp_path).name == 'interval-ba-outcomes-20261126-160000.csv'
 
 
-def test_main_loads_the_paths_from_that_csv(tmp_path, monkeypatch):
-    """The default invocation passes newest_outcomes_csv's file on to load_paths."""
+@pytest.mark.parametrize(
+    ('export', 'other_source', 'message'),
+    [
+        (False, 'interval-ba-outcomes-export-20261126-140000.csv', 'No SPXW outcomes CSV'),
+        (True, 'interval-ba-outcomes-20261126-140000.csv', 'No SPXW export outcomes CSV'),
+    ],
+)
+def test_with_only_other_kinds_of_file_it_exits_instead_of_taking_one(
+    tmp_path, export, other_source, message
+):
+    touch(
+        tmp_path,
+        'interval-ba-outcomes-export-spy-20261126-120000.csv',
+        'interval-ba-outcomes-spy-20261126-130000.csv',
+        other_source,
+    )
+
+    with pytest.raises(SystemExit, match=message):
+        acs.newest_outcomes_csv(tmp_path, export=export)
+
+
+@pytest.mark.parametrize(('source', 'taken'), [
+    ('table', 'interval-ba-outcomes-20261126-101500.csv'),
+    ('export', 'interval-ba-outcomes-export-20261126-120000.csv'),
+])
+def test_main_loads_the_paths_from_the_csv_of_its_source(tmp_path, monkeypatch, source, taken):
     touch(
         tmp_path,
         'interval-ba-outcomes-20261126-101500.csv',
         'interval-ba-outcomes-export-20261126-120000.csv',
     )
-    taken: list[Path] = []
+    seen: list[tuple[Path, object]] = []
 
     class Stop(Exception):
         pass
 
-    def load_paths(path: Path):
-        taken.append(path)
+    def load_paths(path: Path, key=int):
+        seen.append((path, key))
         raise Stop
 
     monkeypatch.setattr(acs, 'OUT_DIR', tmp_path)
     monkeypatch.setattr(acs, 'load_env', lambda: None)
     monkeypatch.setattr(acs, 'load_paths', load_paths)
-    monkeypatch.setattr(sys, 'argv', ['analyze_confluence_vs_solo.py'])
 
     with pytest.raises(Stop):
-        acs.main()
+        acs.main(['--source', source])
 
-    assert [p.name for p in taken] == ['interval-ba-outcomes-20261126-101500.csv']
+    # The export's alert_id is the string `<chain>@<epoch>`, the table's an integer id.
+    assert seen == [(tmp_path / taken, str if source == 'export' else int)]
+
+
+# --- the sources ------------------------------------------------------------------------------
+
+
+def test_confluence_table_source_output_is_unchanged(run, monkeypatch, both_sources):
+    use_table(monkeypatch, both_sources)
+
+    assert acs.main(['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)]) == 0
+
+    assert stamp_free(report(run / 'out')) == TABLE_GOLDEN
+
+
+def test_confluence_export_source_gives_the_same_tables_and_never_opens_the_database(
+    run, both_sources
+):
+    assert acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)]) == 0
+
+    psycopg2.connect.assert_not_called()
+    text = report(run / 'out', export=True)
+    # The same alerts, so the same tables: the string ids of the CSV join the export's alerts.
+    assert tables_of(text) == tables_of(TABLE_GOLDEN)
+    assert (
+        f'paths in `{EXPORT_CSV}`. Alerts from the replay export `{EXPORT_KEY}`. '
+        'Confluence-window = 90s'
+    ) in text
+
+
+@pytest.mark.parametrize(
+    ('partner', 'cohort', 'spxw_alerts'),
+    [
+        (('SPY', 'C', 30), '2way', 1),  # the brief's case: a partner 30 s earlier
+        (('QQQ', 'C', 30), '2way', 1),
+        (None, 'solo', 1),  # the partner absent
+        (('SPY', 'P', 30), 'solo', 1),  # the other direction does not count
+        (('SPY', 'C', 90), '2way', 1),  # the window's edge counts
+        (('SPY', 'C', 91), 'solo', 1),  # a second past it does not
+        (('SPXW', 'C', 30), 'solo', 2),  # another SPXW alert is no partner (it is solo too)
+    ],
+)
+def test_confluence_export_source_tags_partners_from_the_replay(
+    run, partner, cohort, spxw_alerts
+):
+    spxw = {
+        'ticker': 'SPXW', 'option_type': 'C', 'chain': 'SPXW261117C06700000',
+        'fired_at': at('15:00:00'),
+    }  # fmt: skip
+    alerts = [spxw]
+    if partner:
+        ticker, cp, seconds = partner
+        alerts.append(
+            {
+                'ticker': ticker, 'option_type': cp,
+                'chain': f'{ticker}261117{cp}00600000',
+                'fired_at': at('15:00:00') - timedelta(seconds=seconds),
+            }  # fmt: skip
+        )
+    write_export(run, export_rows(alerts))
+    touch(run / 'out', EXPORT_CSV)
+
+    acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    assert counts_of(report(run / 'out', export=True)) == {
+        '3way': 0,
+        '2way': spxw_alerts if cohort == '2way' else 0,
+        'solo': spxw_alerts if cohort == 'solo' else 0,
+    }
+
+
+def test_confluence_an_spy_and_a_qqq_partner_make_a_3way(run):
+    alerts = partner_case('SPY', 'C', 30)
+    qqq = {**alerts[0], 'ticker': 'QQQ', 'chain': 'QQQ261117C00500000', 'fired_at': at('15:00:20')}
+    alerts.append(qqq)
+    write_export(run, export_rows(alerts))
+    touch(run / 'out', EXPORT_CSV)
+
+    acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    assert counts_of(report(run / 'out', export=True)) == {'3way': 1, '2way': 0, 'solo': 0}
+
+
+def test_a_live_gap_makes_a_partnered_alert_solo_from_the_table_and_2way_from_the_export(
+    run, monkeypatch
+):
+    """The point of reading the export: the live feed missed the SPY partner on a gap day, so the
+    table has the SPXW alert alone. The replay has the partner."""
+    alerts = partner_case('SPY', 'C', 30)
+    write_export(run, export_rows(alerts))
+    touch(run / 'out', TABLE_CSV, EXPORT_CSV)
+    use_table(monkeypatch, [a for a in alerts if a['ticker'] == 'SPXW'])
+
+    acs.main(['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)])
+    acs.main(
+        ['--source', 'export', '--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)]
+    )
+
+    assert counts_of(report(run / 'out')) == {'3way': 0, '2way': 0, 'solo': 1}
+    assert counts_of(report(run / 'out', export=True)) == {'3way': 0, '2way': 1, 'solo': 0}
+
+
+def test_export_end_defaults_to_the_newest_replay_object(run, capsys):
+    older = partner_case('SPXW', 'C', 30)  # no SPY partner in the older replay: solo
+    newer = partner_case('SPY', 'C', 30)
+    write_export(run, export_rows(older), end='2026-11-16')
+    write_export(run, export_rows(newer), end='2026-11-17')
+    touch(run / 'out', EXPORT_CSV)
+
+    assert acs.main([]) == 0  # no --source, --export-end or --csv
+
+    assert f'Export: {EXPORT_KEY} (the newest)' in capsys.readouterr().out
+    text = report(run / 'out', export=True)
+    assert counts_of(text) == {'3way': 0, '2way': 1, 'solo': 0}
+    assert f'Alerts from the replay export `{EXPORT_KEY}`.' in text
+    assert f'paths in `{EXPORT_CSV}`.' in text
+
+
+def test_no_replay_object_exits_with_a_message(run):
+    touch(run / 'out', EXPORT_CSV)
+
+    with pytest.raises(SystemExit, match=r'No replay object under research/interval-ba/ in R2'):
+        acs.main([])
+
+    psycopg2.connect.assert_not_called()
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+
+
+def test_export_end_with_table_source_exits_2(run):
+    with pytest.raises(SystemExit) as stopped:
+        acs.main(['--source', 'table', '--export-end', DAY_ISO])
+
+    assert stopped.value.code == 2
+    psycopg2.connect.assert_not_called()
