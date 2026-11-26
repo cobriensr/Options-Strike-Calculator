@@ -552,11 +552,8 @@ describe('api-helpers', () => {
   // MARKET HOURS
   // ============================================================
 
-  describe('isMarketOpen', () => {
-    it('returns a boolean', () => {
-      expect(typeof isMarketOpen()).toBe('boolean');
-    });
-  });
+  // `isMarketOpen`'s weekend and holiday branches are below; its open and close
+  // minutes run against the real ET calendar in cron-helpers-market-open.test.ts.
 
   describe('isTradingDayET', () => {
     it('true on a normal weekday with a market close hour', () => {
