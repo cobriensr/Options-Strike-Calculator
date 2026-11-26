@@ -29,31 +29,33 @@
  * history origin is. The database is named, `host/name`, in a "Database:" line
  * after the run: no name derived from DATABASE_URL is printed or written until
  * a query on it has succeeded, so a failed run names none. A DATABASE_URL the
- * database driver will not parse gives a fixed message (`getDb` replaces the
- * driver's error for it, which holds the whole connection string). The driver's
- * other errors, and the database server's own error text on a failed first
- * query, pass through as they are, and the latter can name the role ("password authentication failed for user ..."). It prints the counts, a
- * per-date table, a
- * block for every repair with the stored and the new values and the candles used
- * (so a row can be recomputed by hand), the lists by id (lag, look-ahead,
+ * database driver will not parse, or one holding a NUL, CR or LF (which a
+ * request header cannot carry), gives a fixed message: `getDb` replaces the
+ * driver's error for the first, which holds the whole connection string, and
+ * refuses the second before the driver. The driver's other errors, and the
+ * database server's own error text on a failed first query, pass through as
+ * they are, and the latter can name the role or the database ("password
+ * authentication failed for user ..."). It prints the counts, a per-date table,
+ * a block for every repair with the stored and the new values and the candles
+ * used (so a row can be recomputed by hand), the lists by id (lag, look-ahead,
  * incomplete-range, the NULL-median rows and every other row left alone), the
  * rows whose stored prev_close is not the real previous session's close
  * (reported, never repaired), and the dates it could not read. It writes a plan
  * file under docs/tmp/stale-opening-range/ and nothing to the database.
  *
- * `--apply --plan F` refuses at once if F was written for another database (host
- * and name), or if F's scope covers more than one date and `--all` is not also
- * given: one date first, then all. A one-date plan (`--date`, or `--since` and
- * `--until` naming one day) needs no `--all`. It plans afresh and refuses unless
- * every row, the values it holds now and its new values are the ones in F. Then
- * it writes a backup file under
- * docs/tmp/stale-opening-range/ (relative to the working directory; an existing
- * file is never overwritten), and one date at a time the rows, 500 to a
- * statement, and that date's `training_features` copy in one transaction, each
- * row only where it still holds the values the read found. A second apply writes
- * nothing. `--plan F` without `--apply` only checks the file.
- * `--undo-file F --apply` restores a backup, each row only where it still holds
- * the repaired values, and refuses a backup written for another database.
+ * `--apply --plan F` refuses at once if F was written for another database
+ * (host and name), or if F's scope covers more than one date and `--all` is not
+ * also given: one date first, then all. A one-date plan (`--date`, or `--since`
+ * and `--until` naming one day) needs no `--all`. It plans afresh and refuses
+ * unless every row, the values it holds now and its new values are the ones in
+ * F. Then it writes a backup file under docs/tmp/stale-opening-range/ (relative
+ * to the working directory; an existing file is never overwritten), and one
+ * date at a time the rows, 500 to a statement, and that date's
+ * `training_features` copy in one transaction, each row only where it still
+ * holds the values the read found. A second apply writes nothing. `--plan F`
+ * without `--apply` only checks the file. `--undo-file F --apply` restores a
+ * backup, each row only where it still holds the repaired values, and refuses a
+ * backup written for another database.
  *
  * A "Redis not configured" log line at start is expected: the env file loads
  * after the imports, and this script never uses Redis.

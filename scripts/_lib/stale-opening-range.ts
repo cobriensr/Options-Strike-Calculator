@@ -98,9 +98,11 @@
  * DATABASE_URL (`host/name`, see `databaseOf`) until a query on it has
  * succeeded. What it cannot promise: `getDb` replaces a driver error that echoes
  * the connection string (the one for a URL it will not parse) with a fixed
- * message, but the driver's other errors, and the database server's error text
- * for a failed first query, pass through as they are, and the latter may name
- * the role ("password authentication failed for user ...").
+ * message, and refuses before the driver a URL holding a NUL, CR or LF, which a
+ * request header cannot carry and whose error would hold the string. The
+ * driver's other errors, and the database server's error text for a failed
+ * first query, pass through as they are, and the latter may name the role or
+ * the database ("password authentication failed for user ...").
  *
  * The run. A dry run is the default: it writes a plan file (what it would write,
  * with the scope and the database, `host/name`) under the backup directory and
@@ -1302,11 +1304,13 @@ const NO_DATABASE = '(DATABASE_URL missing or not a URL)';
  * alone does not say which one a file was written for.
  *
  * It is read off a parse of the raw URL, and it is `NO_DATABASE` for a URL that
- * is missing, does not parse, or parses so that its host is not what the string
- * says (`readableUrl`, the test `dbHost` shares): `postgres://owner:p@ss/34@h/db`
- * parses with the host `ss`, which a driver would send the whole connection
- * string to. The guard below also takes the form with no user and no password
- * parsed but an `@` in the string. That screens the shapes known to put the user
+ * is missing, does not parse, holds a tab, CR, LF or NUL away from its ends, or
+ * parses so that its host is not what the string says (`readableUrl`, the test
+ * `dbHost` shares): `postgres://owner:p@ss/34@h/db` parses with the host `ss`,
+ * which a driver would send the whole connection string to. The guard below
+ * also takes the form with no user and no password parsed but an `@` in the
+ * string, so `databaseOf` refuses everything `dbHost` refuses, and
+ * `postgres://@host/db` besides. That screens the shapes known to put the user
  * or part of the password where the host should be, and no more: the path is the
  * database name and is whatever follows the host (`/neondb;password=x`), so this
  * function cannot promise that nothing of the URL is in what it returns.
