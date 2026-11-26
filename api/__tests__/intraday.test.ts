@@ -365,6 +365,7 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
         openingRange: {
           high: number;
           low: number;
+          rangePts: number;
           complete: boolean;
           minutes: number;
         } | null;
@@ -599,6 +600,58 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
       expect(json.openingRange?.high).toBe(5515);
       expect(json.openingRange?.low).toBe(5490);
       expect(json.openingRange?.minutes).toBe(25);
+    });
+  });
+
+  // The values of the range, as the handler computes them. `computeOpeningRange`
+  // is private to api/intraday.ts, so its rules are pinned here, through the
+  // handler, and not by a copy of it.
+  describe('opening range values', () => {
+    it("is the six bars' high and low, and their span as rangePts", async () => {
+      // barsFrom rises a point a bar: highs 5510 to 5515, lows 5490 to 5495.
+      const { json } = await callAt(
+        et(24, 10, 5),
+        barsFrom(24, 9, 30, 7),
+        true,
+      );
+
+      expect(json.openingRange).toEqual({
+        high: 5515,
+        low: 5490,
+        rangePts: 25,
+        minutes: 30,
+        complete: true,
+      });
+    });
+
+    it('rounds rangePts to two decimals, and a single bar is five minutes', async () => {
+      const bars = [{ ...barAt(24, 9, 30), high: 5500.333, low: 5490.111 }];
+      const { json } = await callAt(et(24, 9, 33), bars, true);
+
+      expect(json.openingRange).toEqual({
+        high: 5500.333,
+        low: 5490.111,
+        rangePts: 10.22,
+        minutes: 5,
+        complete: false,
+      });
+    });
+
+    it('takes at most six bars, in the order sent: a seventh that also starts before 10:00 ET is left out', async () => {
+      // A bar sent twice puts seven bars before 10:00 ET. The cap leaves the
+      // seventh out: with it, the range would be 9999 to 1 over 35 minutes.
+      const bars = [
+        ...barsFrom(24, 9, 30, 6),
+        { ...barAt(24, 9, 55), high: 9999, low: 1 },
+      ];
+      const { json } = await callAt(et(24, 10, 5), bars, true);
+
+      expect(json.openingRange).toMatchObject({
+        high: 5515,
+        low: 5490,
+        rangePts: 25,
+        minutes: 30,
+      });
     });
   });
 });

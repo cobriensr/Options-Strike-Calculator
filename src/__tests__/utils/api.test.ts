@@ -9,7 +9,8 @@ import { describe, it, expect } from 'vitest';
  * Vitest runs in the frontend context and can't import from api/.
  *
  * Categories:
- * 1. Opening range computation (intraday)
+ * 1. Opening range computation (intraday): tested through the handler, in
+ *    api/__tests__/intraday.test.ts
  * 2. Today OHLC computation (intraday)
  * 3. Date conversion (yesterday)
  * 4. Day summary / range computation (yesterday)
@@ -28,78 +29,11 @@ import { describe, it, expect } from 'vitest';
 // ============================================================
 // 1. OPENING RANGE COMPUTATION
 // ============================================================
-
-function computeOpeningRange(candles: Array<{ high: number; low: number }>) {
-  if (candles.length === 0) return null;
-  const orCandles = candles.slice(0, Math.min(6, candles.length));
-  const complete = candles.length >= 6;
-  let high = -Infinity;
-  let low = Infinity;
-  for (const c of orCandles) {
-    if (c.high > high) high = c.high;
-    if (c.low < low) low = c.low;
-  }
-  return {
-    high,
-    low,
-    rangePts: Math.round((high - low) * 100) / 100,
-    minutes: orCandles.length * 5,
-    complete,
-  };
-}
-
-describe('computeOpeningRange', () => {
-  it('returns null for empty candles', () => {
-    expect(computeOpeningRange([])).toBeNull();
-  });
-
-  it('uses first 6 candles for 30-min range', () => {
-    const candles = Array.from({ length: 78 }, (_, i) => ({
-      high: 6800 + i,
-      low: 6780 + i,
-    }));
-    const or = computeOpeningRange(candles)!;
-    expect(or.minutes).toBe(30);
-    expect(or.complete).toBe(true);
-    expect(or.high).toBe(6805);
-    expect(or.low).toBe(6780);
-  });
-
-  it('handles incomplete range (fewer than 6 candles)', () => {
-    const candles = [
-      { high: 6800, low: 6780 },
-      { high: 6810, low: 6785 },
-      { high: 6805, low: 6775 },
-    ];
-    const or = computeOpeningRange(candles)!;
-    expect(or.minutes).toBe(15);
-    expect(or.complete).toBe(false);
-    expect(or.high).toBe(6810);
-    expect(or.low).toBe(6775);
-    expect(or.rangePts).toBe(35);
-  });
-
-  it('single candle returns 5 minutes', () => {
-    const or = computeOpeningRange([{ high: 6800, low: 6790 }])!;
-    expect(or.minutes).toBe(5);
-    expect(or.rangePts).toBe(10);
-  });
-
-  it('excludes 7th+ candles from range calculation', () => {
-    const candles = [
-      { high: 6800, low: 6790 },
-      { high: 6795, low: 6760 },
-      { high: 6850, low: 6780 },
-      { high: 6810, low: 6785 },
-      { high: 6820, low: 6790 },
-      { high: 6815, low: 6788 },
-      { high: 6900, low: 6700 }, // 7th — excluded
-    ];
-    const or = computeOpeningRange(candles)!;
-    expect(or.high).toBe(6850);
-    expect(or.low).toBe(6760);
-  });
-});
+//
+// Not tested here. `computeOpeningRange` is private to api/intraday.ts and a
+// copy of it in this file drifted from it (it counted bars by position, not by
+// ET start time, and read `complete` off the bar count). Its rules are pinned
+// through the handler, in api/__tests__/intraday.test.ts.
 
 // ============================================================
 // 2. TODAY OHLC COMPUTATION
