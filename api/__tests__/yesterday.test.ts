@@ -63,6 +63,31 @@ function makeDailyCandle(
   };
 }
 
+/**
+ * Run the describe it is called in with the process's local time zone set to
+ * `zone`, and put it back after each test. The handler dates a candle by the
+ * stamp's UTC calendar day and judges today by the ET day, so it must not
+ * depend on the local zone at all. In a zone far from UTC, a read of the local
+ * date gives another day for a stamp at 00:00Z, so a test fails on a UTC
+ * runner too, not only on a machine whose zone happens to differ.
+ *
+ * It puts the zone back by setting TZ to the zone the process had, never by
+ * deleting TZ: on this host a `delete process.env.TZ` leaves the zone where it
+ * was set. When TZ was not set, the zone is the one Intl resolved before the
+ * change.
+ */
+function useLocalZone(zone: string) {
+  let restoreTo: string;
+  beforeEach(() => {
+    restoreTo =
+      process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    process.env.TZ = zone;
+  });
+  afterEach(() => {
+    process.env.TZ = restoreTo;
+  });
+}
+
 describe('GET /api/yesterday', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -517,6 +542,137 @@ describe('GET /api/yesterday: only a body for the right day is cached', () => {
 });
 
 // ============================================================
+// TODAY'S PARTIAL CANDLE, AND THE ENVELOPE
+// ============================================================
+//
+// Schwab may send today's daily candle too, while the session runs or after
+// the close. It is not a completed day, so it is left out of yesterday,
+// twoDaysAgo and priorDays alike. The rule lives in the handler, so it is
+// pinned here, through the handler, with the clock fixed.
+
+interface Envelope {
+  yesterday: { date: string } | null;
+  twoDaysAgo: { date: string } | null;
+  priorDays: { date: string }[];
+  asOf: string;
+}
+
+describe("GET /api/yesterday: today's partial candle and the envelope", () => {
+  useLocalZone('America/Chicago');
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Tue 2026-11-24 10:00 ET (EST, UTC-5): the last completed session is Mon 11-23.
+  const TUE_10_ET = Date.UTC(2026, 10, 24, 15, 0, 0);
+  // Tue 2026-11-24 21:30 ET is already Wed 11-25 in UTC.
+  const TUE_2130_ET = Date.UTC(2026, 10, 25, 2, 30, 0);
+  // Wed 2026-11-25 00:30 ET is 05:30Z, and still Tue 11-24 in Chicago.
+  const WED_0030_ET = Date.UTC(2026, 10, 25, 5, 30, 0);
+
+  async function bodyAt(now: number, dates: string[]) {
+    vi.setSystemTime(now);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: {
+        symbol: '$SPX',
+        empty: dates.length === 0,
+        candles: dates.map((d) => makeDailyCandle(d, 5470, 5520, 5460, 5510)),
+      },
+    });
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+    expect(res._status).toBe(200);
+    return res._json as Envelope;
+  }
+
+  it("leaves today's candle out of yesterday, twoDaysAgo and priorDays", async () => {
+    const body = await bodyAt(TUE_10_ET, [
+      '2026-11-19',
+      '2026-11-20',
+      '2026-11-23',
+      '2026-11-24',
+    ]);
+
+    expect(body.yesterday?.date).toBe('2026-11-23');
+    expect(body.twoDaysAgo?.date).toBe('2026-11-20');
+    expect(body.priorDays.map((d) => d.date)).toEqual([
+      '2026-11-19',
+      '2026-11-20',
+      '2026-11-23',
+    ]);
+  });
+
+  it("has no completed day when only today's candle came back", async () => {
+    const body = await bodyAt(TUE_10_ET, ['2026-11-24']);
+
+    expect(body.yesterday).toBeNull();
+    expect(body.twoDaysAgo).toBeNull();
+    expect(body.priorDays).toEqual([]);
+  });
+
+  it('judges today by the ET date: at 21:30 ET the UTC date is already tomorrow', async () => {
+    // A read of the UTC date would take today to be Wed 11-25, keep Tuesday's
+    // partial candle, and call it yesterday.
+    const body = await bodyAt(TUE_2130_ET, ['2026-11-23', '2026-11-24']);
+
+    expect(body.yesterday?.date).toBe('2026-11-23');
+    expect(body.twoDaysAgo).toBeNull();
+    expect(body.priorDays.map((d) => d.date)).toEqual(['2026-11-23']);
+  });
+
+  it('judges today by the ET date, not the local one: at 00:30 ET the zone the process runs in is still on the day before', async () => {
+    // Wed 2026-11-25 00:30 ET is 23:30 on Tue 11-24 in America/Chicago, which
+    // this describe sets. A read of the local date would take today to be
+    // Tuesday, drop Tuesday's completed candle, and call Wednesday's partial
+    // one yesterday.
+    const body = await bodyAt(WED_0030_ET, [
+      '2026-11-23',
+      '2026-11-24',
+      '2026-11-25',
+    ]);
+
+    expect(body.yesterday?.date).toBe('2026-11-24');
+    expect(body.twoDaysAgo?.date).toBe('2026-11-23');
+    expect(body.priorDays.map((d) => d.date)).toEqual([
+      '2026-11-23',
+      '2026-11-24',
+    ]);
+  });
+
+  it('answers with yesterday, twoDaysAgo, priorDays and asOf, asOf being the server clock', async () => {
+    const body = await bodyAt(TUE_10_ET, ['2026-11-20', '2026-11-23']);
+
+    expect(Object.keys(body).sort()).toEqual([
+      'asOf',
+      'priorDays',
+      'twoDaysAgo',
+      'yesterday',
+    ]);
+    expect(body.asOf).toBe('2026-11-24T15:00:00.000Z');
+  });
+
+  it('answers a null yesterday and twoDaysAgo, and the server clock, when Schwab sends no candles', async () => {
+    const body = await bodyAt(TUE_10_ET, []);
+
+    // An exact match, so it pins today's key set: this branch has no
+    // priorDays, unlike a response with candles.
+    expect(body).toEqual({
+      yesterday: null,
+      twoDaysAgo: null,
+      asOf: '2026-11-24T15:00:00.000Z',
+    });
+  });
+});
+
+// ============================================================
 // THE DAY SUMMARIES
 // ============================================================
 //
@@ -535,6 +691,8 @@ interface DaySummaryBody {
 }
 
 describe('GET /api/yesterday: the day summaries', () => {
+  useLocalZone('America/Chicago');
+
   beforeEach(() => {
     vi.restoreAllMocks();
   });

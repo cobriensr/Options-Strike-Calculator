@@ -383,6 +383,42 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
   const SHORT_CACHE = [120, 60] as const;
   const LONG_CACHE = [600, 120] as const;
 
+  describe('the envelope', () => {
+    it('is today, openingRange, sessionDate, previousClose, candleCount, marketOpen and asOf, asOf being the server clock', async () => {
+      const now = et(24, 10, 30);
+      const { res } = await callAt(now, barsFrom(24, 9, 30, 12), true);
+
+      const body = res._json as Record<string, unknown>;
+      expect(Object.keys(body).sort()).toEqual([
+        'asOf',
+        'candleCount',
+        'marketOpen',
+        'openingRange',
+        'previousClose',
+        'sessionDate',
+        'today',
+      ]);
+      expect(body.asOf).toBe(new Date(now).toISOString());
+      expect(body.previousClose).toBe(5490);
+      expect(body.marketOpen).toBe(true);
+    });
+
+    it('is the same keys, with nulls for what there is no bar to give, when Schwab sends no candles', async () => {
+      const now = et(24, 8, 0);
+      const { res } = await callAt(now, [], false);
+
+      expect(res._json).toEqual({
+        today: null,
+        openingRange: null,
+        sessionDate: null,
+        previousClose: 5490,
+        candleCount: 0,
+        marketOpen: false,
+        asOf: new Date(now).toISOString(),
+      });
+    });
+  });
+
   describe('sessionDate', () => {
     it("is today's date on a trading day once today's bars exist", async () => {
       // Tue 10:30 ET, Monday's session plus today's first bars.
