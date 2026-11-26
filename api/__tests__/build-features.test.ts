@@ -42,6 +42,11 @@ import handler, {
   SNAPSHOT_TRUST_COLUMNS_SQL,
   type FeatureSnapshotRejection,
 } from '../cron/build-features.js';
+import {
+  computeCompleteness,
+  upsertFeatures,
+} from '../_lib/build-features-upsert.js';
+import type { FeatureRow } from '../_lib/build-features-types.js';
 import logger from '../_lib/logger.js';
 import { parseEntryTimeMinutes } from '../../src/utils/entry-time.js';
 
@@ -1479,6 +1484,9 @@ describe('build-features handler', () => {
     );
     expect(sql).toContain(
       'opt_call_volume = COALESCE(EXCLUDED.opt_call_volume, training_features.opt_call_volume)',
+    );
+    expect(sql).toContain(
+      'prev_day_opt_call_volume = COALESCE(EXCLUDED.prev_day_opt_call_volume, training_features.prev_day_opt_call_volume)',
     );
     expect(sql).toContain(
       'vix = COALESCE(EXCLUDED.vix, training_features.vix)',
@@ -3239,4 +3247,79 @@ describe('pickFeatureSnapshot', () => {
 
     expect(pickFeatureSnapshot(rows)).toBeUndefined();
   });
+});
+
+describe('upsertFeatures: the options-volume columns', () => {
+  const SUFFIXES = [
+    'call_volume',
+    'put_volume',
+    'call_oi',
+    'put_oi',
+    'call_premium',
+    'put_premium',
+    'bullish_premium',
+    'bearish_premium',
+    'call_vol_ask',
+    'put_vol_bid',
+    'vol_pcr',
+    'oi_pcr',
+    'premium_ratio',
+    'call_vol_vs_avg30',
+    'put_vol_vs_avg30',
+  ];
+  const SAME_DAY = SUFFIXES.map((s) => `opt_${s}`);
+  const PREV_DAY = SUFFIXES.map((s) => `prev_day_opt_${s}`);
+
+  /** A row whose 30 options-volume values are all different. */
+  const row = (): FeatureRow => ({
+    date: '2026-03-24',
+    ...Object.fromEntries(SAME_DAY.map((k, i) => [k, i + 1])),
+    ...Object.fromEntries(PREV_DAY.map((k, i) => [k, 100 + i])),
+  });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSql.mockResolvedValue([]);
+  });
+
+  it('binds each of the 30 values to its own column', async () => {
+    const features = row();
+
+    await upsertFeatures(features);
+
+    for (const name of [...SAME_DAY, ...PREV_DAY]) {
+      expect(featureUpsertValue(name), name).toBe(features[name]);
+    }
+  });
+
+  it('binds one value to each column of the INSERT, no more and no fewer', async () => {
+    await upsertFeatures(row());
+
+    const call = featureUpserts()[0]!;
+    const list = /INSERT INTO training_features\s*\(([^)]*)\)/.exec(
+      sqlText(call),
+    )![1]!;
+    // call[0] is the strings array; the bound values follow it.
+    expect(call.length - 1).toBe(list.split(',').length);
+  });
+
+  it('keeps the stored value on a conflict, with COALESCE, for all 30', async () => {
+    await upsertFeatures(row());
+
+    const sql = sqlText(featureUpserts()[0]!);
+    for (const name of [...SAME_DAY, ...PREV_DAY]) {
+      expect(sql).toContain(
+        `${name} = COALESCE(EXCLUDED.${name}, training_features.${name})`,
+      );
+    }
+  });
+
+  it.each([...SAME_DAY, ...PREV_DAY])(
+    'does not count %s toward feature_completeness',
+    (name) => {
+      // One filled feature and one options-volume key left null: if the key
+      // counted, the fraction would be 1 of 2.
+      expect(computeCompleteness({ vix: 18, [name]: null })).toBe(1);
+    },
+  );
 });

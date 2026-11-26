@@ -34,7 +34,9 @@ import {
   addMaxPainFeatures,
   addDarkPoolFeatures,
   addOptionsVolumeFeatures,
+  optionsVolumeFeaturesFromRow,
 } from '../_lib/build-features-phase2.js';
+import { priorTradingDay } from '../../src/data/marketHours.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
 import { UwHttpError } from '../_lib/uw-fetch.js';
 import logger from '../_lib/logger.js';
@@ -1306,6 +1308,31 @@ describe('engineerPhase2Features', () => {
       expect(features.opt_put_vol_vs_avg30).toBeCloseTo(200000 / 180000);
     });
 
+    it('fills both groups through the orchestrator, from one request: the date’s row and its previous trading day’s', async () => {
+      process.env.UW_API_KEY = 'test-key';
+      const features = makeFeatures();
+      prefillSqlMocks();
+      // DATE_STR is Tue 2026-03-24; Mon 03-23 is its previous trading day.
+      mockFetchOK([
+        mockOVData,
+        {
+          ...mockOVData,
+          date: '2026-03-23',
+          call_volume: '300000',
+          put_volume: '150000',
+        },
+      ]);
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.opt_call_volume).toBe(150000);
+      expect(features.opt_put_volume).toBe(200000);
+      expect(features.prev_day_opt_call_volume).toBe(300000);
+      expect(features.prev_day_opt_put_volume).toBe(150000);
+      expect(features.prev_day_opt_vol_pcr).toBeCloseTo(0.5);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
     it('handles division by zero (callVol=0)', async () => {
       process.env.UW_API_KEY = 'test-key';
       const features = makeFeatures();
@@ -1354,8 +1381,9 @@ describe('engineerPhase2Features', () => {
         engineerPhase2Features(mockSql as never, DATE_STR, features),
       ).resolves.toBeUndefined();
 
-      // Fallback preserved: feature left undefined.
+      // Fallback preserved: feature left undefined, in both groups.
       expect(features.opt_call_volume).toBeUndefined();
+      expect(features.prev_day_opt_call_volume).toBeUndefined();
       // Failure surfaced to Sentry.
       expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
         expect.any(Error),
@@ -1371,6 +1399,7 @@ describe('engineerPhase2Features', () => {
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
       expect(features.opt_call_volume).toBeUndefined();
+      expect(features.prev_day_opt_call_volume).toBeUndefined();
       // The UW HTTP error itself is captured (later helpers in the run may
       // capture their own errors, so pick this one out).
       const uwErrors = vi
@@ -1393,6 +1422,7 @@ describe('engineerPhase2Features', () => {
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
       expect(features.opt_call_volume).toBeUndefined();
+      expect(features.prev_day_opt_call_volume).toBeUndefined();
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
@@ -1409,6 +1439,7 @@ describe('engineerPhase2Features', () => {
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
       expect(features.opt_call_volume).toBeUndefined();
+      expect(features.prev_day_opt_call_volume).toBeUndefined();
     });
 
     it('handles non-array data from API', async () => {
@@ -1424,6 +1455,7 @@ describe('engineerPhase2Features', () => {
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
       expect(features.opt_call_volume).toBeUndefined();
+      expect(features.prev_day_opt_call_volume).toBeUndefined();
     });
 
     it('treats missing fields as zero via fallback parsing', async () => {
@@ -2304,6 +2336,238 @@ describe('addDarkPoolFeatures (isolated)', () => {
   });
 });
 
+describe('optionsVolumeFeaturesFromRow', () => {
+  /** A reply row as UW sends it: numbers as strings, a fractional avg. */
+  const FULL_ROW = {
+    date: '2026-03-24',
+    call_volume: '200000',
+    put_volume: '300000',
+    call_open_interest: '4000000',
+    put_open_interest: '5000000',
+    call_premium: '1500000.5',
+    put_premium: '2000000.25',
+    bullish_premium: '800000',
+    bearish_premium: '1200000',
+    call_volume_ask_side: '80000',
+    put_volume_bid_side: '90000',
+    avg_30_day_call_volume: '250000.4333',
+    avg_30_day_put_volume: '150000.8',
+  };
+
+  /** The 15 features of FULL_ROW, under `prefix`. */
+  const fullRowFeatures = (prefix: string): FeatureRow => ({
+    [`${prefix}call_volume`]: 200_000,
+    [`${prefix}put_volume`]: 300_000,
+    [`${prefix}call_oi`]: 4_000_000,
+    [`${prefix}put_oi`]: 5_000_000,
+    [`${prefix}call_premium`]: 1_500_000.5,
+    [`${prefix}put_premium`]: 2_000_000.25,
+    [`${prefix}bullish_premium`]: 800_000,
+    [`${prefix}bearish_premium`]: 1_200_000,
+    [`${prefix}call_vol_ask`]: 80_000,
+    [`${prefix}put_vol_bid`]: 90_000,
+    [`${prefix}vol_pcr`]: 1.5,
+    [`${prefix}oi_pcr`]: 1.25,
+    [`${prefix}premium_ratio`]: 0.4,
+    // The avg_30 volumes are parsed as integers: 250000.4333 reads 250000.
+    [`${prefix}call_vol_vs_avg30`]: 0.8,
+    [`${prefix}put_vol_vs_avg30`]: 2,
+  });
+
+  const PREFIXES = ['opt_', 'prev_day_opt_'] as const;
+
+  it.each(PREFIXES)('maps a full row to the 15 features under %s', (prefix) => {
+    expect(optionsVolumeFeaturesFromRow(FULL_ROW, prefix)).toEqual(
+      fullRowFeatures(prefix),
+    );
+  });
+
+  it('gives the two prefixes the same 15 names after the prefix, and nothing else', () => {
+    const suffixes = (prefix: (typeof PREFIXES)[number]) =>
+      Object.keys(optionsVolumeFeaturesFromRow(FULL_ROW, prefix))
+        .map((key) => {
+          expect(key.startsWith(prefix)).toBe(true);
+          return key.slice(prefix.length);
+        })
+        .sort();
+
+    expect(suffixes('prev_day_opt_')).toEqual(suffixes('opt_'));
+    expect(suffixes('opt_')).toHaveLength(15);
+  });
+
+  it.each(PREFIXES)(
+    'makes a zero, a missing field and a non-number null under %s, and sets no ratio',
+    (prefix) => {
+      const features = optionsVolumeFeaturesFromRow(
+        {
+          date: '2026-03-24',
+          call_volume: '0',
+          put_volume: 0,
+          call_open_interest: 'abc',
+          put_open_interest: null,
+          // call_premium, put_premium and the rest are missing
+          bullish_premium: '0.0',
+        },
+        prefix,
+      );
+
+      expect(features).toEqual({
+        [`${prefix}call_volume`]: null,
+        [`${prefix}put_volume`]: null,
+        [`${prefix}call_oi`]: null,
+        [`${prefix}put_oi`]: null,
+        [`${prefix}call_premium`]: null,
+        [`${prefix}put_premium`]: null,
+        [`${prefix}bullish_premium`]: null,
+        [`${prefix}bearish_premium`]: null,
+        [`${prefix}call_vol_ask`]: null,
+        [`${prefix}put_vol_bid`]: null,
+      });
+    },
+  );
+
+  it.each([
+    ['call volume', { call_volume: '0' }, ['vol_pcr']],
+    ['call open interest', { call_open_interest: '0' }, ['oi_pcr']],
+    [
+      'bullish plus bearish premium',
+      { bullish_premium: '0', bearish_premium: '0' },
+      ['premium_ratio'],
+    ],
+    [
+      'the 30-day average call volume',
+      { avg_30_day_call_volume: '0' },
+      ['call_vol_vs_avg30'],
+    ],
+    [
+      'the 30-day average put volume',
+      { avg_30_day_put_volume: '0' },
+      ['put_vol_vs_avg30'],
+    ],
+  ])(
+    'sets no ratio, not even a null, when its denominator, %s, is 0',
+    (_label, override, absent) => {
+      for (const prefix of PREFIXES) {
+        const features = optionsVolumeFeaturesFromRow(
+          { ...FULL_ROW, ...override },
+          prefix,
+        );
+        for (const name of absent) {
+          expect(`${prefix}${name}` in features).toBe(false);
+        }
+        // Every other ratio is still set.
+        expect(Object.keys(features)).toHaveLength(15 - absent.length);
+      }
+    },
+  );
+
+  // A ratio is set only from two finite numbers. A field that does not parse
+  // reads as NaN, and a NaN ratio is never a value: Postgres NUMERIC would
+  // store it as 'NaN'.
+  it.each([
+    [
+      'put volume, the numerator of vol_pcr and put_vol_vs_avg30, is not a number',
+      { put_volume: 'abc' },
+      ['vol_pcr', 'put_vol_vs_avg30'],
+    ],
+    [
+      'put open interest, the numerator of oi_pcr, is not a number',
+      { put_open_interest: 'n/a' },
+      ['oi_pcr'],
+    ],
+    [
+      'call volume, the numerator of call_vol_vs_avg30 and the denominator of vol_pcr, is not a number',
+      { call_volume: 'abc' },
+      ['vol_pcr', 'call_vol_vs_avg30'],
+    ],
+    [
+      'call open interest, the denominator of oi_pcr, is not a number',
+      { call_open_interest: 'abc' },
+      ['oi_pcr'],
+    ],
+    [
+      'the 30-day average call volume is not a number',
+      { avg_30_day_call_volume: 'abc' },
+      ['call_vol_vs_avg30'],
+    ],
+    [
+      'the 30-day average put volume is not a number',
+      { avg_30_day_put_volume: 'abc' },
+      ['put_vol_vs_avg30'],
+    ],
+    [
+      'bullish premium, the numerator of premium_ratio, is not a number',
+      { bullish_premium: 'abc' },
+      ['premium_ratio'],
+    ],
+    [
+      'bearish premium, part of the denominator of premium_ratio, is not a number',
+      { bearish_premium: 'abc' },
+      ['premium_ratio'],
+    ],
+    [
+      'bullish premium is infinite',
+      { bullish_premium: 'Infinity' },
+      ['premium_ratio'],
+    ],
+    [
+      'bearish premium is infinite, so the ratio would be 0 of an infinite total',
+      { bearish_premium: 'Infinity' },
+      ['premium_ratio'],
+    ],
+  ])('sets no ratio, and no NaN, when %s', (_label, override, absent) => {
+    for (const prefix of PREFIXES) {
+      const features = optionsVolumeFeaturesFromRow(
+        { ...FULL_ROW, ...override },
+        prefix,
+      );
+      for (const name of absent) {
+        expect(`${prefix}${name}` in features).toBe(false);
+      }
+      expect(
+        Object.entries(features).filter(
+          ([, value]) => typeof value === 'number' && Number.isNaN(value),
+        ),
+      ).toEqual([]);
+      // Every other ratio is still set.
+      expect(Object.keys(features)).toHaveLength(15 - absent.length);
+    }
+  });
+
+  it('keeps a ratio whose numerator is 0, as 0 and not null', () => {
+    // 0 bullish of 1.2M total premium: a real ratio of 0.
+    const features = optionsVolumeFeaturesFromRow(
+      { ...FULL_ROW, bullish_premium: '0' },
+      'prev_day_opt_',
+    );
+
+    expect(features.prev_day_opt_premium_ratio).toBe(0);
+    expect(features.prev_day_opt_bullish_premium).toBeNull();
+  });
+
+  it('reads integers by truncation, premiums as decimals, and plain numbers as they are', () => {
+    const features = optionsVolumeFeaturesFromRow(
+      {
+        date: '2026-03-24',
+        call_volume: 12345.9,
+        put_volume: '678.9',
+        call_open_interest: '1000.5',
+        call_premium: '1234.56',
+        put_premium: 99.5,
+      },
+      'opt_',
+    );
+
+    expect(features).toMatchObject({
+      opt_call_volume: 12345,
+      opt_put_volume: 678,
+      opt_call_oi: 1000,
+      opt_call_premium: 1234.56,
+      opt_put_premium: 99.5,
+    });
+  });
+});
+
 describe('addOptionsVolumeFeatures (isolated)', () => {
   const DATE_STR = '2026-03-24';
   const originalEnv = process.env;
@@ -2319,11 +2583,30 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
     vi.useRealTimers();
   });
 
+  /** The same-day group's keys a run set, whatever their values. */
+  const sameDayKeys = (features: FeatureRow) =>
+    Object.keys(features).filter((k) => k.startsWith('opt_'));
+
+  /** The previous-day group's keys a run set, whatever their values. */
+  const prevDayKeys = (features: FeatureRow) =>
+    Object.keys(features).filter((k) => k.startsWith('prev_day_opt_'));
+
+  /**
+   * Both groups' keys. A run that must set nothing at all (UW down, a bad
+   * reply, a date the guard skips) is checked with this one, so neither group
+   * can slip through.
+   */
+  const optKeys = (features: FeatureRow) => [
+    ...sameDayKeys(features),
+    ...prevDayKeys(features),
+  ];
+
   it('skips fetch when UW_API_KEY is missing', async () => {
     delete process.env.UW_API_KEY;
     const features: FeatureRow = {};
     await addOptionsVolumeFeatures(DATE_STR, features);
     expect(features.opt_call_volume).toBeUndefined();
+    expect(optKeys(features)).toEqual([]);
   });
 
   /**
@@ -2357,9 +2640,13 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
       } as Response);
     }
 
-    /** The opt_* keys a run set, whatever their values. */
-    const optKeys = (features: FeatureRow) =>
-      Object.keys(features).filter((k) => k.startsWith('opt_'));
+    /** The fingerprint kind of each message sent to Sentry, in order. */
+    const reportedKinds = () =>
+      vi
+        .mocked(Sentry.captureMessage)
+        .mock.calls.map(
+          ([, hint]) => (hint as { fingerprint: string[] }).fingerprint[1],
+        );
 
     const warnedAbout = (date: string) =>
       vi
@@ -2390,6 +2677,10 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
       expect(features.opt_call_volume).toBe(222_000);
       expect(features.opt_put_volume).toBe(444_000);
       expect(features.opt_vol_pcr).toBe(2);
+      // The previous trading day, Mon 03-23, fills the other group.
+      expect(features.prev_day_opt_call_volume).toBe(333_000);
+      expect(features.prev_day_opt_put_volume).toBe(666_000);
+      expect(features.prev_day_opt_vol_pcr).toBe(2);
       expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
     });
 
@@ -2405,31 +2696,38 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
       await addOptionsVolumeFeatures(DATE_STR, features);
 
       expect(features.opt_call_volume).toBe(222_000);
+      expect(features.prev_day_opt_call_volume).toBe(333_000);
     });
 
     it('reads a date sent as a full ISO timestamp, the form UW’s docs show', async () => {
       replyWith([
         dayRow('2026-03-25T00:00:00.000Z', 111_000),
         dayRow('2026-03-24T00:00:00.000Z', 222_000),
+        dayRow('2026-03-23T00:00:00.000Z', 333_000),
       ]);
       const features: FeatureRow = {};
 
       await addOptionsVolumeFeatures(DATE_STR, features);
 
       expect(features.opt_call_volume).toBe(222_000);
+      expect(features.prev_day_opt_call_volume).toBe(333_000);
     });
 
     // The pinned clock is 2026-03-25 14:00 UTC, 10:00 ET: the daily run's own
     // date is 2026-03-25, and DATE_STR (03-24) is a repair or a backfill.
     const LIVE_DATE = '2026-03-25';
 
-    it('sets nothing, logs the requested and the returned dates, and warns Sentry when a repair date has no row in the reply', async () => {
+    it('sets no opt_* feature, logs the requested and the returned dates, and warns Sentry when a repair date has no row in the reply', async () => {
       replyWith([dayRow('2026-03-25', 111_000), dayRow('2026-03-23', 333_000)]);
       const features: FeatureRow = {};
 
       await addOptionsVolumeFeatures(DATE_STR, features);
 
-      expect(optKeys(features)).toEqual([]);
+      expect(sameDayKeys(features)).toEqual([]);
+      // The previous trading day's row is there, so that group is set: the
+      // two lookups are independent.
+      expect(features.prev_day_opt_call_volume).toBe(333_000);
+      expect(reportedKinds()).toEqual(['options-volume-no-row']);
       expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
         { date: DATE_STR, returnedDates: ['2026-03-25', '2026-03-23'] },
         expect.stringContaining('no row for the requested date'),
@@ -2458,7 +2756,9 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
 
       await addOptionsVolumeFeatures(LIVE_DATE, features);
 
-      expect(optKeys(features)).toEqual([]);
+      expect(sameDayKeys(features)).toEqual([]);
+      // 03-24 is the previous trading day of 03-25, and the reply has it.
+      expect(features.prev_day_opt_call_volume).toBe(222_000);
       expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
         expect.stringContaining('no row for the requested date'),
@@ -2483,20 +2783,40 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
       await addOptionsVolumeFeatures('2026-03-25', {});
       await addOptionsVolumeFeatures('2026-03-26', {});
 
+      // 03-25 misses only its own row: its previous trading day, 03-24, is in
+      // the reply. 03-26 misses both its own and 03-25, which is one report.
+      // So there are two reports in all, under the same fingerprint kind.
+      expect(reportedKinds()).toEqual([
+        'options-volume-no-row',
+        'options-volume-no-row',
+      ]);
       const levels = vi
         .mocked(Sentry.captureMessage)
         .mock.calls.map(([, hint]) => (hint as { level: string }).level);
       expect(levels).toEqual(['error', 'warning']);
     });
 
-    it('reports a live date that gets an empty or malformed reply as an error too', async () => {
+    it('reports a live date that gets an empty or malformed reply as one error, naming both dates it needed', async () => {
       replyWith('not a list');
 
       await addOptionsVolumeFeatures(LIVE_DATE, {});
 
+      // One issue, not one per row: the reply has no usable row at all.
+      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({ level: 'error' }),
+        expect.stringContaining(
+          'no row for the requested date or its previous',
+        ),
+        {
+          level: 'error',
+          fingerprint: ['build-features', 'options-volume-no-row', LIVE_DATE],
+          tags: { 'build_features.feature': 'options_volume' },
+          extra: {
+            date: LIVE_DATE,
+            previousDate: '2026-03-24',
+            returnedDates: [],
+          },
+        },
       );
     });
 
@@ -2519,7 +2839,31 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
 
       expect(optKeys(features)).toEqual([]);
       expect(warnedAbout(DATE_STR)).toBe(true);
+      // A reply with no usable row is one report, for both rows, with both
+      // dates in it. A repair date warns, and its issue is shared.
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        { date: DATE_STR, previousDate: '2026-03-23', returnedDates: [] },
+        expect.stringContaining(
+          'no row for the requested date or its previous',
+        ),
+      );
       expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'no row for the requested date or its previous',
+        ),
+        {
+          level: 'warning',
+          fingerprint: ['build-features', 'options-volume-no-row', 'repair'],
+          tags: { 'build_features.feature': 'options_volume' },
+          extra: {
+            date: DATE_STR,
+            previousDate: '2026-03-23',
+            returnedDates: [],
+          },
+        },
+      );
     });
 
     it.each([
@@ -2534,6 +2878,7 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
 
       expect(optKeys(features)).toEqual([]);
       expect(warnedAbout(DATE_STR)).toBe(true);
+      expect(reportedKinds()).toEqual(['options-volume-no-row']);
     });
 
     it.each([
@@ -2552,22 +2897,269 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
       await addOptionsVolumeFeatures(DATE_STR, features);
 
       expect(optKeys(features)).toEqual([]);
-      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+      // None of these rows has a readable date: one report, not two.
+      expect(reportedKinds()).toEqual(['options-volume-no-row']);
     });
 
-    it('still reads the right row when malformed rows sit among the good ones', async () => {
+    it('still reads the right rows when malformed rows sit among the good ones', async () => {
       replyWith([
         null,
         dayRow('2026-03-25', 111_000),
         'x',
         dayRow('2026-03-24', 222_000),
         { date: 20260324 },
+        dayRow('2026-03-23', 333_000),
       ]);
       const features: FeatureRow = {};
 
       await addOptionsVolumeFeatures(DATE_STR, features);
 
       expect(features.opt_call_volume).toBe(222_000);
+      expect(features.prev_day_opt_call_volume).toBe(333_000);
+    });
+
+    describe('the previous trading day’s row', () => {
+      // DATE_STR is Tue 2026-03-24, so its previous trading day is Mon 03-23.
+      const PREV_DATE = '2026-03-23';
+
+      it('fills the prev_day_opt_* group from that row and the opt_* group from the requested one, with one request', async () => {
+        const fetchSpy = replyWith([
+          dayRow('2026-03-24', 222_000),
+          dayRow(PREV_DATE, 333_000),
+        ]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures(DATE_STR, features);
+
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        // Each group is the mapper's output for its own row.
+        expect(features).toEqual({
+          ...optionsVolumeFeaturesFromRow(
+            dayRow('2026-03-24', 222_000),
+            'opt_',
+          ),
+          ...optionsVolumeFeaturesFromRow(
+            dayRow(PREV_DATE, 333_000),
+            'prev_day_opt_',
+          ),
+        });
+        expect(features.opt_call_volume).toBe(222_000);
+        expect(features.prev_day_opt_call_volume).toBe(333_000);
+        expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
+      });
+
+      it('takes it by its date, not by its place: a reply in no order, with other days around it', async () => {
+        // Neither the second row nor the one after the requested date's is
+        // the right one.
+        replyWith([
+          dayRow('2026-03-24', 222_000),
+          dayRow('2026-03-20', 444_000),
+          dayRow(PREV_DATE, 333_000),
+          dayRow('2026-03-25', 111_000),
+        ]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures(DATE_STR, features);
+
+        expect(features.opt_call_volume).toBe(222_000);
+        expect(features.prev_day_opt_call_volume).toBe(333_000);
+      });
+
+      it('never takes another day’s row when the previous trading day’s is missing', async () => {
+        // Fri 03-20 is in the reply, Mon 03-23 is not.
+        replyWith([
+          dayRow('2026-03-25', 111_000),
+          dayRow('2026-03-24', 222_000),
+          dayRow('2026-03-20', 444_000),
+        ]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures(DATE_STR, features);
+
+        expect(prevDayKeys(features)).toEqual([]);
+        // The same-day group is not disturbed by it.
+        expect(features.opt_call_volume).toBe(222_000);
+        expect(reportedKinds()).toEqual(['options-volume-no-prev-row']);
+      });
+
+      it('takes Friday’s row for a Monday: the previous trading day, not the previous calendar day', async () => {
+        replyWith([
+          dayRow('2026-03-23', 555_000),
+          dayRow('2026-03-20', 444_000),
+          dayRow('2026-03-19', 666_000),
+        ]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures('2026-03-23', features);
+
+        expect(features.opt_call_volume).toBe(555_000);
+        expect(features.prev_day_opt_call_volume).toBe(444_000);
+        expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
+      });
+
+      it('skips a market holiday: the Tuesday after Memorial Day takes the Friday before it', async () => {
+        // Mon 2026-05-25 is in MARKET_CLOSED_DATES, so the reply has no row
+        // for it, and the previous trading day of Tue 05-26 is Fri 05-22.
+        vi.setSystemTime(new Date('2026-05-26T21:45:00.000Z'));
+        replyWith([
+          dayRow('2026-05-26', 777_000),
+          dayRow('2026-05-22', 888_000),
+          dayRow('2026-05-21', 999_000),
+        ]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures('2026-05-26', features);
+
+        expect(features.opt_call_volume).toBe(777_000);
+        expect(features.prev_day_opt_call_volume).toBe(888_000);
+        expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
+      });
+
+      it('reports a missing previous row as a warning for a repair date, in one issue for all repairs', async () => {
+        const returnedDates = ['2026-03-24'];
+        replyWith([dayRow('2026-03-24', 222_000)]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures(DATE_STR, features);
+
+        expect(prevDayKeys(features)).toEqual([]);
+        expect(features.opt_call_volume).toBe(222_000);
+        expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+          { date: DATE_STR, previousDate: PREV_DATE, returnedDates },
+          expect.stringContaining('no row for the previous trading day'),
+        );
+        expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+          expect.stringContaining('no row for the previous trading day'),
+          {
+            level: 'warning',
+            fingerprint: [
+              'build-features',
+              'options-volume-no-prev-row',
+              'repair',
+            ],
+            tags: { 'build_features.feature': 'options_volume' },
+            extra: { date: DATE_STR, previousDate: PREV_DATE, returnedDates },
+          },
+        );
+        expect(vi.mocked(Sentry.captureException)).not.toHaveBeenCalled();
+      });
+
+      it('reports it as an error, in an issue of its own per date, for the daily run’s own date', async () => {
+        // 03-25 is the pinned ET date; its previous trading day is 03-24.
+        replyWith([dayRow('2026-03-25', 111_000)]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures('2026-03-25', features);
+
+        expect(features.opt_call_volume).toBe(111_000);
+        expect(prevDayKeys(features)).toEqual([]);
+        expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+          expect.stringContaining('no row for the previous trading day'),
+          {
+            level: 'error',
+            fingerprint: [
+              'build-features',
+              'options-volume-no-prev-row',
+              '2026-03-25',
+            ],
+            tags: { 'build_features.feature': 'options_volume' },
+            extra: {
+              date: '2026-03-25',
+              previousDate: '2026-03-24',
+              returnedDates: ['2026-03-25'],
+            },
+          },
+        );
+      });
+
+      it('sends one report, naming both dates, when the reply has rows but neither of the two', async () => {
+        // Only Wed 03-25: neither Tue 03-24 nor its previous trading day.
+        replyWith([dayRow('2026-03-25', 111_000)]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures(DATE_STR, features);
+
+        expect(optKeys(features)).toEqual([]);
+        expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'no row for the requested date or its previous',
+          ),
+          {
+            level: 'warning',
+            fingerprint: ['build-features', 'options-volume-no-row', 'repair'],
+            tags: { 'build_features.feature': 'options_volume' },
+            extra: {
+              date: DATE_STR,
+              previousDate: PREV_DATE,
+              returnedDates: ['2026-03-25'],
+            },
+          },
+        );
+      });
+
+      it('sends that one report as an error, in an issue of its own, for the daily run’s own date', async () => {
+        // Mon 03-23 is in the reply; the date, Wed 03-25, and its previous
+        // trading day, Tue 03-24, are not.
+        replyWith([dayRow('2026-03-23', 333_000)]);
+
+        await addOptionsVolumeFeatures('2026-03-25', {});
+
+        expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            level: 'error',
+            fingerprint: [
+              'build-features',
+              'options-volume-no-row',
+              '2026-03-25',
+            ],
+          }),
+        );
+      });
+
+      it('sets the prev_day_opt_* group to nulls, with no ratio, from a previous row that is malformed, and leaves the other group alone', async () => {
+        replyWith([
+          dayRow('2026-03-24', 222_000),
+          {
+            date: PREV_DATE,
+            call_volume: 'abc',
+            put_volume: { nested: true },
+            call_open_interest: '',
+            call_premium: 'n/a',
+          },
+        ]);
+        const features: FeatureRow = {};
+
+        await addOptionsVolumeFeatures(DATE_STR, features);
+
+        expect(features.opt_call_volume).toBe(222_000);
+        expect(features.opt_vol_pcr).toBe(2);
+        expect(
+          Object.fromEntries(
+            Object.entries(features).filter(([k]) =>
+              k.startsWith('prev_day_opt_'),
+            ),
+          ),
+        ).toEqual({
+          prev_day_opt_call_volume: null,
+          prev_day_opt_put_volume: null,
+          prev_day_opt_call_oi: null,
+          prev_day_opt_put_oi: null,
+          prev_day_opt_call_premium: null,
+          prev_day_opt_put_premium: null,
+          prev_day_opt_bullish_premium: null,
+          prev_day_opt_bearish_premium: null,
+          prev_day_opt_call_vol_ask: null,
+          prev_day_opt_put_vol_bid: null,
+        });
+        // A row with junk in it is not a missing row, nor an exception.
+        expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
+        expect(vi.mocked(Sentry.captureException)).not.toHaveBeenCalled();
+      });
     });
 
     it('asks for a window of newest rows and sends no date parameter', async () => {
@@ -2608,9 +3200,34 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
         if (day !== 0 && day !== 6) weekdays += 1;
       }
 
+      // The previous-day features also need the oldest accepted date's
+      // previous trading day, a little further back (a weekend, a holiday).
+      // The reply holds one row per trading day, so the weekdays from that
+      // day to today are an upper bound on the rows it must reach.
+      const prevOfOldest = priorTradingDay(dayStr(oldest));
+      let backToPrev = oldest;
+      while (backToPrev < 400 && dayStr(backToPrev) !== prevOfOldest) {
+        backToPrev += 1;
+      }
+      let weekdaysToPrev = 0;
+      for (let back = 0; back <= backToPrev; back += 1) {
+        const day = new Date(`${dayStr(back)}T12:00:00Z`).getUTCDay();
+        if (day !== 0 && day !== 6) weekdaysToPrev += 1;
+      }
+
+      // The two assertions that guard the count are these: `oldest` pins the
+      // guard's width, and `limit >= calendarDates` (45) pins the row count.
+      // Everything below them is looser, so it cannot fail first: it states
+      // why 45 rows also reach the previous trading day, and pins the dates.
       expect(oldest).toBe(44);
       expect(limit).toBeGreaterThanOrEqual(calendarDates);
       expect(limit).toBeGreaterThanOrEqual(weekdays);
+      // 2026-02-09 is the oldest date; Fri 02-06 is its previous trading day,
+      // 47 days back, and 34 weekdays reach it.
+      expect(dayStr(oldest)).toBe('2026-02-09');
+      expect(prevOfOldest).toBe('2026-02-06');
+      expect(backToPrev).toBe(47);
+      expect(limit).toBeGreaterThanOrEqual(weekdaysToPrev);
       // And far under the endpoint's maximum of 500 rows.
       expect(limit).toBeLessThanOrEqual(100);
     });
@@ -2678,6 +3295,8 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
 
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(optKeys(features)).toEqual([]);
+      // A date the guard skips is not a missing row: nothing is reported.
+      expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
     });
   });
 });

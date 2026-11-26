@@ -22,6 +22,7 @@ import { fetchMaxPain } from './max-pain.js';
 import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
+import { priorTradingDay } from '../../src/data/marketHours.js';
 import { getETToday } from '../../src/utils/timezone.js';
 
 /** UW's rolling history window, in trading days. */
@@ -425,6 +426,16 @@ export async function addDarkPoolFeatures(
  * always outnumber trading days, so asking for that many rows reaches the
  * oldest date the guard accepts, and the count follows the guard if its window
  * changes. It stays far under the endpoint's maximum of 500.
+ *
+ * The previous-day features need one more row, the previous trading day's of the
+ * date asked for, and the count already reaches it. That row is at most a
+ * weekend plus a holiday (4 days) behind the oldest date the guard accepts, so
+ * 48 days back; 49 calendar days hold at most 35 weekdays, so at most 35 rows
+ * lie between it and today, and the count is 45. In the window test in
+ * build-features-phase2.test.ts, `oldest` equal to 44 pins the guard's width and
+ * `limit >= calendarDates` pins this count; its walk to the previous row states
+ * the bound above and pins the dates, but is looser than those two, so it cannot
+ * fail first.
  */
 const OPTIONS_VOLUME_ROWS = uwWindowCalendarDays(UW_WINDOW_TRADING_DAYS) + 1;
 
@@ -443,27 +454,173 @@ function optionsVolumeRowDate(row: unknown): string | null {
   return /^(\d{4}-\d{2}-\d{2})(?:T.*)?$/.exec(date)?.[1] ?? null;
 }
 
+/** Which group of options-volume features a mapped row is written to. */
+export type OptionsVolumePrefix = 'opt_' | 'prev_day_opt_';
+
+/**
+ * The 15 options-volume features of one `/stock/SPX/options-volume` reply row,
+ * every name starting with `prefix`: `opt_` for the day's own row, or
+ * `prev_day_opt_` for the previous trading day's. Pure: the row's date is not
+ * read, so the caller must have picked the right row.
+ *
+ * Names after the prefix: call_volume, put_volume, call_oi, put_oi,
+ * call_premium, put_premium, bullish_premium, bearish_premium, call_vol_ask,
+ * put_vol_bid, vol_pcr, oi_pcr, premium_ratio, call_vol_vs_avg30 and
+ * put_vol_vs_avg30.
+ *
+ * The rules, kept from the daily build as it has always read a row:
+ * - a count is read as an integer, a premium as a decimal, and a zero, a
+ *   missing field or a non-number becomes null;
+ * - a ratio is set only when its numerator and its denominator are finite
+ *   numbers and the denominator is above 0. Otherwise it is left out of the
+ *   result altogether, not set to null, and never a NaN (a field that does not
+ *   parse reads as NaN, and Postgres NUMERIC would store it). A numerator of 0
+ *   gives a ratio of 0;
+ * - the 30-day average volumes are read as integers too, so a fractional
+ *   average is truncated before it divides.
+ *
+ * The daily build calls it, and the history repair (phase 2 of the options-
+ * volume design, not written yet) will too, so the two cannot diverge.
+ */
+export function optionsVolumeFeaturesFromRow(
+  ov: Record<string, unknown>,
+  prefix: OptionsVolumePrefix,
+): FeatureRow {
+  const features: FeatureRow = {};
+
+  const callVol = Number.parseInt(String(ov.call_volume ?? '0'), 10);
+  const putVol = Number.parseInt(String(ov.put_volume ?? '0'), 10);
+  const callOI = Number.parseInt(String(ov.call_open_interest ?? '0'), 10);
+  const putOI = Number.parseInt(String(ov.put_open_interest ?? '0'), 10);
+
+  features[`${prefix}call_volume`] = callVol || null;
+  features[`${prefix}put_volume`] = putVol || null;
+  features[`${prefix}call_oi`] = callOI || null;
+  features[`${prefix}put_oi`] = putOI || null;
+
+  const callPrem = Number.parseFloat(String(ov.call_premium ?? '0'));
+  const putPrem = Number.parseFloat(String(ov.put_premium ?? '0'));
+  const bullPrem = Number.parseFloat(String(ov.bullish_premium ?? '0'));
+  const bearPrem = Number.parseFloat(String(ov.bearish_premium ?? '0'));
+  features[`${prefix}call_premium`] = callPrem || null;
+  features[`${prefix}put_premium`] = putPrem || null;
+  features[`${prefix}bullish_premium`] = bullPrem || null;
+  features[`${prefix}bearish_premium`] = bearPrem || null;
+
+  const callAsk = Number.parseInt(String(ov.call_volume_ask_side ?? '0'), 10);
+  const putBid = Number.parseInt(String(ov.put_volume_bid_side ?? '0'), 10);
+  features[`${prefix}call_vol_ask`] = callAsk || null;
+  features[`${prefix}put_vol_bid`] = putBid || null;
+
+  const avg30Call = Number.parseInt(
+    String(ov.avg_30_day_call_volume ?? '0'),
+    10,
+  );
+  const avg30Put = Number.parseInt(String(ov.avg_30_day_put_volume ?? '0'), 10);
+
+  const ratios: Array<[name: string, value: number | undefined]> = [
+    ['vol_pcr', ratioOf(putVol, callVol)],
+    ['oi_pcr', ratioOf(putOI, callOI)],
+    ['premium_ratio', ratioOf(bullPrem, bullPrem + bearPrem)],
+    ['call_vol_vs_avg30', ratioOf(callVol, avg30Call)],
+    ['put_vol_vs_avg30', ratioOf(putVol, avg30Put)],
+  ];
+  for (const [name, value] of ratios) {
+    if (value !== undefined) features[`${prefix}${name}`] = value;
+  }
+
+  return features;
+}
+
+/**
+ * `numerator / denominator`, or undefined when it is not a value: either side
+ * is not a finite number (a field that did not parse reads as NaN), or the
+ * denominator is not above 0. A numerator of 0 is a real ratio of 0.
+ */
+function ratioOf(numerator: number, denominator: number): number | undefined {
+  return Number.isFinite(numerator) &&
+    Number.isFinite(denominator) &&
+    denominator > 0
+    ? numerator / denominator
+    : undefined;
+}
+
+/** What a reply lacks: the date's row, its previous trading day's, or both. */
+type MissingOptionsVolumeRows = 'date' | 'previous-date' | 'both';
+
+/**
+ * Tell the log and Sentry that the reply has no row for a date the build
+ * needs. `date` (the date's own row is missing, the previous day's is there)
+ * and `both` (neither row is there, including an empty, non-array or malformed
+ * reply: one report that names both dates) go under `options-volume-no-row`;
+ * `previous-date` (the date's row is there, the previous trading day's is
+ * missing) goes under `options-volume-no-prev-row`. The level
+ * follows `fields.date`, the date being built: an error when it is the current
+ * ET date, a warning otherwise (see `addOptionsVolumeFeatures`). A live miss
+ * has an issue per date, and repairs share one.
+ */
+function reportNoOptionsVolumeRow(
+  missing: MissingOptionsVolumeRows,
+  fields: { date: string; previousDate?: string; returnedDates: string[] },
+): void {
+  const kind =
+    missing === 'previous-date'
+      ? 'options-volume-no-prev-row'
+      : 'options-volume-no-row';
+  let logMessage =
+    'Options volume: UW returned no row for the requested date, so no opt_* features are set';
+  let sentryMessage = 'Options volume: no row for the requested date';
+  if (missing === 'previous-date') {
+    logMessage =
+      'Options volume: UW returned no row for the previous trading day, so no prev_day_opt_* features are set';
+    sentryMessage = 'Options volume: no row for the previous trading day';
+  } else if (missing === 'both') {
+    logMessage =
+      'Options volume: UW returned no row for the requested date or its previous trading day, so no opt_* or prev_day_opt_* features are set';
+    sentryMessage =
+      'Options volume: no row for the requested date or its previous trading day';
+  }
+  logger.warn(fields, logMessage);
+  const isLiveDate = fields.date === getETToday();
+  Sentry.captureMessage(sentryMessage, {
+    level: isLiveDate ? 'error' : 'warning',
+    fingerprint: ['build-features', kind, isLiveDate ? fields.date : 'repair'],
+    tags: { 'build_features.feature': 'options_volume' },
+    extra: fields,
+  });
+}
+
 /**
  * Options volume + premium + OI features from the UW
  * /stock/SPX/options-volume endpoint. Same UW-window pre-flight as
- * max pain. Output: opt_call_volume / opt_put_volume / opt_*_oi /
- * opt_*_premium / opt_vol_pcr / opt_oi_pcr / opt_premium_ratio /
- * opt_call_vol_vs_avg30 / opt_put_vol_vs_avg30.
+ * max pain. Two groups of 15, from one request (see
+ * `optionsVolumeFeaturesFromRow` for the names and the rules):
+ * - `opt_*` from the reply row dated `dateStr`: the day's own full-day totals,
+ *   known only after the close, so an end-of-day record;
+ * - `prev_day_opt_*` from the row dated `priorTradingDay(dateStr)`: the same 15
+ *   features of the previous trading day, which a model deciding at 10:00 CT
+ *   can read.
  *
- * The values come from the reply row whose own `date` is `dateStr`. When the
- * reply has none (UW has not published the day, it is older than the rows
- * asked for, or the reply is malformed) nothing is set, never another day's
- * row: the reply's date and the requested one are logged and sent to Sentry.
- * The level follows the date, as `reportNoPickDates` in the build-features
- * cron follows the run mode: an error when `dateStr` is the current ET date,
- * the daily run's own (in winter it tries a date once, at 21:45 UTC, so a miss
- * would leave the day empty and unheard); a warning otherwise, for the older
- * dates of backfills and `?date=` repairs. This helper cannot see the run
- * mode, only the date, so `?date=<today ET>` and a backfill whose dates include
- * today count as live too and report at `error`. A live miss has an issue per
- * date, repairs share one. A feature left unset is not a clean slate
- * downstream: the upsert keeps the stored value, so a value written earlier
- * stays until it is repaired.
+ * Each row is the one whose own `date` is asked for, never one by its place in
+ * the reply, and the two lookups are independent: a missing row leaves its
+ * group unset and the other group as it is. When the reply has no row (UW has
+ * not published the day, it is older than the rows asked for, or the reply is
+ * malformed) nothing is set for that date, never another day's row: the
+ * reply's dates and the one asked for are logged and sent to Sentry, a missing
+ * previous-day row under its own fingerprint (`options-volume-no-prev-row`).
+ * A reply with neither row (an empty, non-array or malformed one, or one of
+ * other days) is one report under `options-volume-no-row` that names both
+ * dates, not two. The
+ * level follows the date, as
+ * `reportNoPickDates` in the build-features cron follows the run mode: an
+ * error when `dateStr` is the current ET date, the daily run's own (in winter
+ * it tries a date once, at 21:45 UTC, so a miss would leave the day empty and
+ * unheard); a warning otherwise, for the older dates of backfills and `?date=`
+ * repairs. This helper cannot see the run mode, only the date, so
+ * `?date=<today ET>` and a backfill whose dates include today count as live
+ * too and report at `error`. A live miss has an issue per date, repairs share
+ * one. A feature left unset is not a clean slate downstream: the upsert keeps
+ * the stored value, so a value written earlier stays until it is repaired.
  */
 export async function addOptionsVolumeFeatures(
   dateStr: string,
@@ -483,86 +640,47 @@ export async function addOptionsVolumeFeatures(
       );
       // uwFetch hands back whatever `data` held; only an array is a reply.
       const rows: unknown[] = Array.isArray(reply) ? reply : [];
-      const ov = rows.find((row) => optionsVolumeRowDate(row) === dateStr) as
-        | Record<string, unknown>
-        | undefined;
-      if (ov == null) {
-        const returnedDates = rows.flatMap((row) => {
-          const date = optionsVolumeRowDate(row);
-          return date == null ? [] : [date];
-        });
-        logger.warn(
-          { date: dateStr, returnedDates },
-          'Options volume: UW returned no row for the requested date, so no opt_* features are set',
-        );
-        const isLiveDate = dateStr === getETToday();
-        Sentry.captureMessage('Options volume: no row for the requested date', {
-          level: isLiveDate ? 'error' : 'warning',
-          fingerprint: [
-            'build-features',
-            'options-volume-no-row',
-            isLiveDate ? dateStr : 'repair',
-          ],
-          tags: { 'build_features.feature': 'options_volume' },
-          extra: { date: dateStr, returnedDates },
+      const rowDated = (date: string) =>
+        rows.find((row) => optionsVolumeRowDate(row) === date) as
+          | Record<string, unknown>
+          | undefined;
+      const returnedDates = rows.flatMap((row) => {
+        const date = optionsVolumeRowDate(row);
+        return date == null ? [] : [date];
+      });
+      const previousDate = priorTradingDay(dateStr);
+      const ov = rowDated(dateStr);
+      const previous = rowDated(previousDate);
+
+      if (ov == null && previous == null) {
+        // Neither row is there (an empty reply, a non-array, rows with no
+        // readable date, or rows of other days): one report, naming both
+        // dates, not one per row.
+        reportNoOptionsVolumeRow('both', {
+          date: dateStr,
+          previousDate,
+          returnedDates,
         });
       } else {
-        const callVol = Number.parseInt(String(ov.call_volume ?? '0'), 10);
-        const putVol = Number.parseInt(String(ov.put_volume ?? '0'), 10);
-        const callOI = Number.parseInt(
-          String(ov.call_open_interest ?? '0'),
-          10,
-        );
-        const putOI = Number.parseInt(String(ov.put_open_interest ?? '0'), 10);
-
-        features.opt_call_volume = callVol || null;
-        features.opt_put_volume = putVol || null;
-        features.opt_call_oi = callOI || null;
-        features.opt_put_oi = putOI || null;
-
-        const callPrem = Number.parseFloat(String(ov.call_premium ?? '0'));
-        const putPrem = Number.parseFloat(String(ov.put_premium ?? '0'));
-        const bullPrem = Number.parseFloat(String(ov.bullish_premium ?? '0'));
-        const bearPrem = Number.parseFloat(String(ov.bearish_premium ?? '0'));
-        features.opt_call_premium = callPrem || null;
-        features.opt_put_premium = putPrem || null;
-        features.opt_bullish_premium = bullPrem || null;
-        features.opt_bearish_premium = bearPrem || null;
-
-        const callAsk = Number.parseInt(
-          String(ov.call_volume_ask_side ?? '0'),
-          10,
-        );
-        const putBid = Number.parseInt(
-          String(ov.put_volume_bid_side ?? '0'),
-          10,
-        );
-        features.opt_call_vol_ask = callAsk || null;
-        features.opt_put_vol_bid = putBid || null;
-
-        if (callVol > 0) {
-          features.opt_vol_pcr = putVol / callVol;
-        }
-        if (callOI > 0) {
-          features.opt_oi_pcr = putOI / callOI;
-        }
-        if (bullPrem + bearPrem > 0) {
-          features.opt_premium_ratio = bullPrem / (bullPrem + bearPrem);
+        // The two rows are looked up apart, each by its own date: a missing
+        // one leaves its group unset and does not touch the other.
+        if (ov == null) {
+          reportNoOptionsVolumeRow('date', { date: dateStr, returnedDates });
+        } else {
+          Object.assign(features, optionsVolumeFeaturesFromRow(ov, 'opt_'));
         }
 
-        const avg30Call = Number.parseInt(
-          String(ov.avg_30_day_call_volume ?? '0'),
-          10,
-        );
-        const avg30Put = Number.parseInt(
-          String(ov.avg_30_day_put_volume ?? '0'),
-          10,
-        );
-        if (avg30Call > 0) {
-          features.opt_call_vol_vs_avg30 = callVol / avg30Call;
-        }
-        if (avg30Put > 0) {
-          features.opt_put_vol_vs_avg30 = putVol / avg30Put;
+        if (previous == null) {
+          reportNoOptionsVolumeRow('previous-date', {
+            date: dateStr,
+            previousDate,
+            returnedDates,
+          });
+        } else {
+          Object.assign(
+            features,
+            optionsVolumeFeaturesFromRow(previous, 'prev_day_opt_'),
+          );
         }
       }
     }
