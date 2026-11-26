@@ -141,7 +141,7 @@ def test_gate_fails_no_overlap():
 
 
 def test_gate_fitted_passes_a_high_p99_with_a_note_not_a_reason():
-    # A refit day (fitted medians 0.19-0.56) with a 18.2 pt tape-lag spike.
+    # A refit day (fitted medians 0.19-0.56) with an 18.2 pt tape-lag spike.
     ok, lines = vic.gate(stats_of(0.33, 18.2), fitted=True)
     assert ok is True
     assert len(lines) == 1
@@ -287,6 +287,27 @@ def test_evaluate_fitted_keeps_the_coverage_and_ratio_floors():
     assert any("ratio" in line for line in lines)
 
 
+def test_evaluate_fitted_puts_the_note_after_every_failure_reason():
+    # The gate gives a note; the coverage and ratio checks then add reasons. A
+    # note must come last, never between two reasons.
+    ok, lines = vic.evaluate(stats_of(0.33, 18.2, minutes=300), 0.5, 390, fitted=True)
+    assert ok is False
+    assert len(lines) == 3
+    assert "only 300 of 390" in lines[0]
+    assert "ratio" in lines[1]
+    assert lines[2].startswith("note:")
+    assert "p99" in lines[2]
+
+
+def test_evaluate_fitted_with_a_failing_median_lists_it_before_the_note():
+    ok, lines = vic.evaluate(stats_of(2.5, 18.2, minutes=300), None, 390, fitted=True)
+    assert ok is False
+    assert len(lines) == 3
+    assert "median" in lines[0]
+    assert "only 300 of 390" in lines[1]
+    assert lines[2].startswith("note:")
+
+
 def test_evaluate_no_overlap_keeps_only_its_own_reason():
     # No common minute is "no overlap", not also "only 0 of N".
     ok, reasons = vic.evaluate(vic.minute_stats({0: 1.0}, {9: 1.0}), None, 1)
@@ -381,8 +402,9 @@ def test_args_refuse_any_other_symbol(capsys):
         vic.parse_args(["--symbol", "QQQ", "--date", "2026-03-26"])
     assert exit_info.value.code == 2
     err = capsys.readouterr().err
-    assert "SPX" in err
-    assert "NDX" in err
+    assert "'QQQ'" in err
+    assert "SPX can be checked against the tape" in err
+    assert "NDX is priced only with --export-spots" in err
 
 
 @pytest.mark.parametrize(
@@ -552,6 +574,23 @@ def test_parity_levels_skips_a_non_finite_quote_instead_of_poisoning_the_minute(
     assert vic.parity_levels(quotes)[7] == pytest.approx(24012.0, abs=1e-9)
 
 
+def test_parity_levels_skips_a_null_strike_or_mid_instead_of_aborting_the_day():
+    # A NULL comes back from the tape as None, and math.isfinite(None) raises.
+    quotes = [
+        *both_sides(7, 24000, 100.0, 90.0),  # 24010
+        (7, None, "c", 100.0),  # NULL strike
+        (7, None, "p", 90.0),
+        *both_sides(7, 24050, 60.0, 98.0),  # 24012
+        (7, 24150, "c", None),  # NULL mid
+        (7, 24150, "p", 100.0),
+        *both_sides(7, 24100, 25.0, 111.0),  # 24014
+        (8, 24000, None, 50.0),  # NULL side: neither a call nor a put
+    ]
+    levels = vic.parity_levels(quotes)
+    assert set(levels) == {7}
+    assert levels[7] == pytest.approx(24012.0, abs=1e-9)
+
+
 def test_parity_levels_of_nothing_is_empty():
     assert vic.parity_levels([]) == {}
     assert vic.parity_levels(iter([])) == {}
@@ -596,6 +635,7 @@ def test_write_spots_refuses_an_existing_file_and_leaves_it_unchanged(tmp_path):
     with pytest.raises(FileExistsError):
         vic.write_spots(tmp_path, second)
     assert path.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [path]  # the second run's temp is gone
 
 
 def test_write_spots_writes_no_file_for_a_price_that_is_not_a_number(tmp_path):
@@ -607,10 +647,68 @@ def test_write_spots_writes_no_file_for_a_price_that_is_not_a_number(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_write_spots_removes_the_partial_file_when_the_write_fails(
+def test_write_spots_leaves_nothing_but_the_final_file(tmp_path):
+    doc = vic.spots_document("SPX", date(2026, 3, 26), "tape", {1: 5800.0})
+    path = vic.write_spots(tmp_path, doc)
+    assert list(tmp_path.iterdir()) == [path]  # the temp file is gone
+
+
+def test_write_spots_shows_the_final_name_only_once_the_whole_file_is_written(
     tmp_path, monkeypatch
 ):
-    real_open = Path.open
+    real_link = os.link
+    seen = {}
+
+    def watching_link(src, dst, *args, **kwargs):
+        seen["final_exists"] = Path(dst).exists()
+        seen["temp_name"] = Path(src).name
+        seen["temp_text"] = Path(src).read_text(encoding="utf-8")
+        real_link(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", watching_link)
+    doc = vic.spots_document("SPX", date(2026, 3, 26), "tape", {1: 5800.0, 2: 5801.0})
+    path = vic.write_spots(tmp_path, doc)
+    # At the link the final name is free, and the temp file already holds the
+    # whole document under a name no consumer would glob as a price file.
+    assert seen["final_exists"] is False
+    assert not seen["temp_name"].endswith("-spots.json")
+    assert json.loads(seen["temp_text"]) == doc
+    assert json.loads(path.read_text(encoding="utf-8")) == doc
+
+
+def test_write_spots_leaves_no_final_file_when_the_link_fails(tmp_path, monkeypatch):
+    def no_link(src, dst, *args, **kwargs):
+        raise OSError("hard links are not supported here")
+
+    monkeypatch.setattr(os, "link", no_link)
+    doc = vic.spots_document("SPX", date(2026, 3, 26), "tape", {1: 5800.0})
+    with pytest.raises(OSError, match="hard links"):
+        vic.write_spots(tmp_path, doc)
+    assert list(tmp_path.iterdir()) == []  # no final file, and the temp is removed
+
+
+def test_a_killed_write_leaves_no_file_a_rerun_would_keep(tmp_path, monkeypatch):
+    # A kill between the temp write and the link runs no cleanup, so the temp
+    # file stays. It must not look like a price file to the next run.
+    class Killed(BaseException):
+        pass
+
+    def killed(src, dst, *args, **kwargs):
+        raise Killed
+
+    monkeypatch.setattr(os, "link", killed)
+    monkeypatch.setattr(Path, "unlink", lambda self, *args, **kwargs: None)
+    doc = vic.spots_document("SPX", date(2026, 3, 26), "tape", {1: 5800.0})
+    with pytest.raises(Killed):
+        vic.write_spots(tmp_path, doc)
+    monkeypatch.undo()
+    assert not (tmp_path / "SPX-2026-03-26-spots.json").exists()
+    assert [p for p in tmp_path.iterdir() if p.name.endswith("-spots.json")] == []
+    assert len(list(tmp_path.iterdir())) == 1  # the stray temp file, as after a kill
+
+
+def test_write_spots_leaves_nothing_when_the_temp_write_fails(tmp_path, monkeypatch):
+    real_fdopen = os.fdopen
 
     class DiskFull:
         """Takes a few bytes, then fails, as a full disk does."""
@@ -631,13 +729,12 @@ def test_write_spots_removes_the_partial_file_when_the_write_fails(
             raise OSError("No space left on device")
 
     monkeypatch.setattr(
-        Path, "open", lambda self, *a, **kw: DiskFull(real_open(self, *a, **kw))
+        os, "fdopen", lambda fd, *a, **kw: DiskFull(real_fdopen(fd, *a, **kw))
     )
     doc = vic.spots_document("SPX", date(2026, 3, 26), "tape", {1: 5800.0})
     with pytest.raises(OSError, match="No space"):
         vic.write_spots(tmp_path, doc)
-    # No half file is left for a re-run to "keep".
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.iterdir()) == []  # no half file, no temp
 
 
 # ── credentials ──────────────────────────────────────────────────────────────
@@ -722,6 +819,81 @@ def test_load_credentials_names_what_is_missing_and_never_a_value(
     assert "DATABASE_URL" in message
     assert "R2_ACCESS_KEY_ID" not in message  # that one is set
     assert "value-that-must-not-print" not in message
+
+
+R2_ONLY_ENV = "\n".join(
+    [
+        "R2_ACCESS_KEY_ID=key-id",
+        "R2_SECRET_ACCESS_KEY=secret",
+        "R2_ENDPOINT_URL=https://r2.example",
+        "R2_BUCKET_FULLTAPE=bucket",
+    ]
+)
+
+
+def test_the_allowed_names_are_the_r2_names_and_database_url():
+    assert vic.ALLOWED_ENV_NAMES == (*vic.R2_ENV_NAMES, "DATABASE_URL")
+    assert vic.R2_ENV_NAMES == (
+        "R2_ACCESS_KEY_ID",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_ENDPOINT_URL",
+        "R2_BUCKET_FULLTAPE",
+    )
+
+
+def test_read_allowed_env_reads_only_the_names_it_is_given(tmp_path):
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(R2_ONLY_ENV + "\nDATABASE_URL=postgres://u:p@h/d\n")
+    assert set(vic.read_allowed_env(env_file, vic.R2_ENV_NAMES)) == set(
+        vic.R2_ENV_NAMES
+    )
+    assert "DATABASE_URL" in vic.read_allowed_env(env_file)
+
+
+def test_load_credentials_with_the_r2_names_needs_no_database_url(
+    tmp_path, monkeypatch
+):
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(R2_ONLY_ENV, encoding="utf-8")
+    monkeypatch.setattr(os, "environ", {})
+    vic.load_credentials(env_file, vic.R2_ENV_NAMES)
+    assert set(os.environ) == set(vic.R2_ENV_NAMES)
+
+
+def test_load_credentials_with_the_r2_names_does_not_load_database_url(
+    tmp_path, monkeypatch
+):
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        R2_ONLY_ENV + "\nDATABASE_URL=postgres://u:p@h/d\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(os, "environ", {})
+    vic.load_credentials(env_file, vic.R2_ENV_NAMES)
+    assert "DATABASE_URL" not in os.environ
+
+
+def test_load_credentials_by_default_still_requires_database_url(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(R2_ONLY_ENV, encoding="utf-8")
+    monkeypatch.setattr(os, "environ", {})
+    with pytest.raises(RuntimeError) as err:
+        vic.load_credentials(env_file)
+    message = str(err.value)
+    assert "DATABASE_URL" in message
+    assert "R2_ACCESS_KEY_ID" not in message  # those are set
+
+
+def test_load_credentials_with_the_r2_names_still_names_a_missing_one(
+    tmp_path, monkeypatch
+):
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        R2_ONLY_ENV.replace("R2_ENDPOINT_URL=https://r2.example\n", ""),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(os, "environ", {})
+    with pytest.raises(RuntimeError, match="R2_ENDPOINT_URL"):
+        vic.load_credentials(env_file, vic.R2_ENV_NAMES)
 
 
 def test_main_checkout_comes_from_the_git_common_dir():
@@ -1459,8 +1631,11 @@ def test_main_refuses_ndx_before_reading_anything(monkeypatch, capsys):
 
 
 def install_export_fakes(monkeypatch, tape=None, parity=None):
-    """Fake every read; the returned list names the reads that ran, in order."""
-    calls: list[str] = []
+    """Fake every read; the returned list names the reads that ran, in order.
+
+    A credentials load shows as ("credentials", file name, names asked for).
+    """
+    calls: list = []
 
     def reading(name, result):
         def read(*args):
@@ -1473,7 +1648,11 @@ def install_export_fakes(monkeypatch, tape=None, parity=None):
 
     monkeypatch.setattr(vic, "main_checkout_dir", lambda: Path("the-main-checkout"))
     monkeypatch.setattr(
-        vic, "load_credentials", lambda path: calls.append(f"credentials {path.name}")
+        vic,
+        "load_credentials",
+        lambda path, names=vic.ALLOWED_ENV_NAMES: calls.append(
+            ("credentials", path.name, names)
+        ),
     )
     monkeypatch.setattr(vic, "fetch_index_and_etf", reading("candles", {}))
     monkeypatch.setattr(vic, "fetch_tape_spots", reading("tape", tape or {}))
@@ -1498,9 +1677,9 @@ def test_export_spx_writes_the_tape_minutes_and_reads_no_candles(
         "minutes": {str(M0): 5800.5, str(M0 + 1): 5801.0},
     }
     out = capsys.readouterr().out
-    assert "2 minutes" in out
-    assert str(path) in out
-    assert calls == ["credentials .env.local", "tape"]  # no candles, no parity
+    assert f"SPX 2026-03-26 tape: 2 minutes -> {path}" in out
+    # The R2 names only, then the tape read: no candles, no parity.
+    assert calls == [("credentials", ".env.local", vic.R2_ENV_NAMES), "tape"]
 
 
 def test_export_ndx_writes_the_parity_minutes_with_source_parity(
@@ -1514,8 +1693,10 @@ def test_export_ndx_writes_the_parity_minutes_with_source_parity(
     assert doc["date"] == "2026-10-20"
     assert doc["source"] == "parity"
     assert doc["minutes"] == {str(M0): 24010.25}
-    assert "1 minutes" in capsys.readouterr().out
-    assert calls == ["credentials .env.local", "parity"]
+    out = capsys.readouterr().out
+    assert f"NDX 2026-10-20 parity: 1 minute -> {path}" in out
+    assert "1 minutes" not in out
+    assert calls == [("credentials", ".env.local", vic.R2_ENV_NAMES), "parity"]
 
 
 @pytest.mark.parametrize("symbol", ["SPX", "NDX"])
@@ -1583,7 +1764,7 @@ def test_export_read_failure_exits_2_prints_no_secret_and_writes_nothing(
 def test_export_missing_credentials_exits_2_and_writes_nothing(
     tmp_path, monkeypatch, capsys
 ):
-    def no_credentials(path):
+    def no_credentials(path, names=None):
         raise RuntimeError("missing credentials: R2_ENDPOINT_URL")
 
     install_export_fakes(monkeypatch, tape={M0: 5800.5})
@@ -1591,6 +1772,47 @@ def test_export_missing_credentials_exits_2_and_writes_nothing(
     assert run_export("SPX", tmp_path) == 2
     assert "R2_ENDPOINT_URL" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
+
+
+def write_checkout_env(tmp_path, text):
+    """A fake main checkout holding an .env.local; returns the checkout dir."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".env.local").write_text(text, encoding="utf-8")
+    return checkout
+
+
+def test_export_runs_with_no_database_url_in_the_env_file(
+    tmp_path, monkeypatch, capsys
+):
+    # The real load_credentials, on an env file with the four R2 names only.
+    checkout = write_checkout_env(tmp_path, R2_ONLY_ENV)
+    monkeypatch.setattr(os, "environ", {})
+    monkeypatch.setattr(vic, "main_checkout_dir", lambda: checkout)
+    monkeypatch.setattr(vic, "fetch_tape_spots", lambda day: {M0: 5800.5})
+    out_dir = tmp_path / "spots"
+    assert run_export("SPX", out_dir) == 0
+    assert (out_dir / "SPX-2026-03-26-spots.json").is_file()
+    assert "DATABASE_URL" not in os.environ
+    capsys.readouterr()
+
+
+def test_a_check_still_refuses_to_run_without_a_database_url(
+    tmp_path, monkeypatch, capsys
+):
+    checkout = write_checkout_env(tmp_path, R2_ONLY_ENV)
+    monkeypatch.setattr(os, "environ", {})
+    monkeypatch.setattr(vic, "main_checkout_dir", lambda: checkout)
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("read something without all the credentials")
+
+    monkeypatch.setattr(vic, "fetch_index_and_etf", must_not_run)
+    monkeypatch.setattr(vic, "fetch_tape_spots", must_not_run)
+    assert run_main([]) == 2
+    err = capsys.readouterr().err
+    assert "missing credentials" in err
+    assert "DATABASE_URL" in err
 
 
 def test_export_to_a_path_that_is_a_file_exits_2_and_does_not_claim_kept(

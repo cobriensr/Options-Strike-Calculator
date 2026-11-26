@@ -54,7 +54,9 @@ carries no NDX price, so the level comes from same-day NDXP put-call parity
 (strike + call mid - put mid, from the NBBO on each print), the median over the
 strikes within 0.5% of the minute's rough level. An existing file is kept, never
 rewritten (`kept <path>`, exit 0), so a re-run reuses what it wrote. A date with
-no minute exits 2 and writes nothing.
+no minute exits 2 and writes nothing. The file is written to a temp file and
+then hard-linked to its name, so the name never holds a partial file, even if
+the run is killed.
 
 The tape check is SPX only. UW leaves `underlying_price` NULL on every NDXP and
 NDX print (on 2026-11-20: 40,526 and 5,823 prints, none with a price), so the
@@ -63,8 +65,10 @@ own close and ratio checks, and gets a price file only through --export-spots.
 
 Credentials: the four R2_* names and DATABASE_URL, read from `.env.local` in
 the main checkout (found through `git rev-parse --git-common-dir`, so this
-works from a worktree) and kept in process memory. No other name in the file
-is read, and no value is printed: an error message is redacted first.
+works from a worktree) and kept in process memory. `--export-spots` reads only
+R2, so it needs and loads the four R2_* names and not DATABASE_URL. No other
+name in the file is read, and no value is printed: an error message is
+redacted first.
 
 Exit codes: 0 PASS, 1 FAIL (including no overlap), 2 usage error or a read
 that could not run (no verdict). `--export-spots` exits 0 for a file written or
@@ -81,6 +85,7 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -117,14 +122,15 @@ PARITY_MIN_STRIKES = 2
 TAPE_THREADS = 4
 TAPE_MEMORY_LIMIT = "3000MiB"
 
-# The only names read from .env.local.
-ALLOWED_ENV_NAMES = (
+# The only names read from .env.local. The Full Tape read needs the R2 ones;
+# the candle check also needs DATABASE_URL.
+R2_ENV_NAMES = (
     "R2_ACCESS_KEY_ID",
     "R2_SECRET_ACCESS_KEY",
     "R2_ENDPOINT_URL",
     "R2_BUCKET_FULLTAPE",
-    "DATABASE_URL",
 )
+ALLOWED_ENV_NAMES = (*R2_ENV_NAMES, "DATABASE_URL")
 
 NO_OVERLAP = "no overlap: no minute is in both the candles and the tape"
 
@@ -237,15 +243,10 @@ def minute_stats(candles: Mapping[int, float], tape: Mapping[int, float]) -> dic
     }
 
 
-def gate(stats: dict, fitted: bool = False) -> tuple[bool, list[str]]:
-    """The SPX gate: median |d| <= 2 and p99 |d| <= 5. No overlap fails.
-
-    With `fitted` (a day refit to the tape) a p99 over 5 is not a failure: it
-    comes back as a `note:` line after the reasons, and the verdict is the
-    median's alone. The lines are the reasons the gate failed, then any note.
-    """
+def _gate_lines(stats: dict, fitted: bool) -> tuple[list[str], list[str]]:
+    """The gate's failure reasons and its notes, kept apart."""
     if stats["median_abs"] is None:
-        return False, [NO_OVERLAP]
+        return [NO_OVERLAP], []
     reasons = []
     notes = []
     if stats["median_abs"] > MEDIAN_ABS_MAX:
@@ -258,6 +259,17 @@ def gate(stats: dict, fitted: bool = False) -> tuple[bool, list[str]]:
             notes.append(f"note: {p99} (tape lag, not gated on a fitted day)")
         else:
             reasons.append(p99)
+    return reasons, notes
+
+
+def gate(stats: dict, fitted: bool = False) -> tuple[bool, list[str]]:
+    """The SPX gate: median |d| <= 2 and p99 |d| <= 5. No overlap fails.
+
+    With `fitted` (a day refit to the tape) a p99 over 5 is not a failure: it
+    comes back as a `note:` line after the reasons, and the verdict is the
+    median's alone. The lines are the reasons the gate failed, then any note.
+    """
+    reasons, notes = _gate_lines(stats, fitted)
     return not reasons, reasons + notes
 
 
@@ -294,23 +306,22 @@ def evaluate(
     `candle_minutes`, or a tape holding a few of the day's minutes would pass
     on that sample. No common minute is already "no overlap" and gets no
     second reason. The ratio check runs only when a share was computed.
-    `fitted` is the gate's: a p99 over 5 pt becomes a note.
+    `fitted` is the gate's: a p99 over 5 pt becomes a note. The lines are every
+    failure reason first, then any note, so a note never sits between reasons.
     """
-    ok, reasons = gate(stats, fitted)
+    reasons, notes = _gate_lines(stats, fitted)
     compared = stats["minutes"]
     if compared and compared / candle_minutes < COVERAGE_MIN:
-        ok = False
         reasons.append(
             f"only {compared} of {candle_minutes} candle minutes have a tape spot "
             f"(under {COVERAGE_MIN:.0%})"
         )
     if share is not None and share < RATIO_SHARE_MIN:
-        ok = False
         reasons.append(
             f"ratio share {share:.1%} is under {RATIO_SHARE_MIN:.0%} "
             f"(within {RATIO_TOL:g} of the day's ratio)"
         )
-    return ok, reasons
+    return not reasons, reasons + notes
 
 
 # ── The price file ───────────────────────────────────────────────────────────
@@ -329,11 +340,13 @@ def parity_levels(
     rough level is the median of those; the strikes kept are those with
     |strike - rough| <= band * rough (the bound is inclusive), and with at
     least `min_strikes` of them the level is their median. A minute with fewer
-    has no level and is left out. A quote with a non-finite strike or mid is
-    skipped, as `minute_stats` skips a non-finite value.
+    has no level and is left out. A quote whose strike or mid is NULL (None) or
+    non-finite is skipped, as `minute_stats` skips a non-finite value.
     """
     by_minute: dict[int, dict[float, dict[str, float]]] = {}
     for minute, strike, side, mid in quotes:
+        if strike is None or mid is None:
+            continue
         if math.isfinite(strike) and math.isfinite(mid):
             by_minute.setdefault(minute, {}).setdefault(strike, {})[side] = mid
     levels: dict[int, float] = {}
@@ -373,21 +386,30 @@ def spots_path(out_dir: Path, symbol: str, day: date | str) -> Path:
 def write_spots(out_dir: Path, doc: dict) -> Path:
     """Write the price file to <out_dir>/<SYMBOL>-<date>-spots.json, exclusively.
 
-    An existing file raises FileExistsError and is left as it was. The document
-    is serialized first, so a price that is not JSON (NaN) raises before a file
-    exists; a failed write removes the partial file, so a later run never
-    "keeps" half a file.
+    The final name only ever appears whole. The document is written and synced
+    to a temp file in the same directory (its name does not end in
+    `-spots.json`), then hard-linked to the final name: `os.link` raises
+    FileExistsError when the final file exists, which leaves it as it was, so
+    the create is still exclusive. The temp file is removed afterwards, on the
+    error path too. A kill mid-write leaves at most a stray temp file, never a
+    truncated price file for a later run to "keep". The document is serialized
+    first, so a price that is not JSON (NaN) raises before any file exists.
     """
     text = json.dumps(doc, allow_nan=False) + "\n"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = spots_path(out_dir, doc["symbol"], doc["date"])
-    handle = path.open("x", encoding="utf-8")  # FileExistsError: nothing to undo
+    fd, temp_name = tempfile.mkstemp(
+        dir=out_dir, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temp = Path(temp_name)
     try:
-        with handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-    except BaseException:
-        path.unlink(missing_ok=True)  # the file is ours: open("x") created it
-        raise
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
     return path
 
 
@@ -410,8 +432,8 @@ def _symbol(value: str) -> str:
     symbol = value.strip().upper()
     if symbol not in ("SPX", "NDX"):
         raise argparse.ArgumentTypeError(
-            "only SPX can be checked against the tape (NDX only priced, with "
-            f"--export-spots), got {value!r}"
+            f"unknown symbol {value!r}: SPX can be checked against the tape, "
+            "and NDX is priced only with --export-spots"
         )
     return symbol
 
@@ -522,13 +544,15 @@ def apply_cut(closes: Mapping[int, float], cut: int | None) -> dict[int, float]:
 _ASSIGNMENT_RE = re.compile(r"^([A-Z_][A-Z0-9_]*)=(.*)$")
 
 
-def read_allowed_env(path: Path) -> dict[str, str]:
-    """The ALLOWED_ENV_NAMES assignments in an env file, and nothing else.
+def read_allowed_env(
+    path: Path, names: tuple[str, ...] = ALLOWED_ENV_NAMES
+) -> dict[str, str]:
+    """The assignments of `names` in an env file (the allowed five by default).
 
     `scripts/_cli_paths.load_env_file` copies every name in the file into
-    os.environ; this tool is allowed five. Same line rules: `NAME=value` after
-    strip(), surrounding quotes removed, first assignment of a name wins, a
-    missing file gives {}.
+    os.environ; this tool is allowed five, and an export reads four. Same line
+    rules: `NAME=value` after strip(), surrounding quotes removed, first
+    assignment of a name wins, a missing file gives {}.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -537,7 +561,7 @@ def read_allowed_env(path: Path) -> dict[str, str]:
     found: dict[str, str] = {}
     for line in text.splitlines():
         match = _ASSIGNMENT_RE.match(line.strip())
-        if match and match.group(1) in ALLOWED_ENV_NAMES:
+        if match and match.group(1) in names:
             found.setdefault(match.group(1), match.group(2).strip('"').strip("'"))
     return found
 
@@ -570,16 +594,20 @@ def main_checkout_dir() -> Path:
     return main_checkout_from_common_dir(out)
 
 
-def load_credentials(env_path: Path) -> None:
-    """Put the five allowed names from the env file into os.environ.
+def load_credentials(
+    env_path: Path, names: tuple[str, ...] = ALLOWED_ENV_NAMES
+) -> None:
+    """Put `names` from the env file into os.environ (default: the five allowed).
 
-    A name already set (non-empty) in the shell keeps its value. Raises with
-    the names still missing, never a value.
+    A name already set (non-empty) in the shell keeps its value. A name outside
+    `names` is neither loaded nor required: the price-file export passes the R2
+    names and so needs no DATABASE_URL. Raises with the names still missing,
+    never a value.
     """
-    for name, value in read_allowed_env(env_path).items():
+    for name, value in read_allowed_env(env_path, names).items():
         if value and not os.environ.get(name):
             os.environ[name] = value
-    missing = [name for name in ALLOWED_ENV_NAMES if not os.environ.get(name)]
+    missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise RuntimeError(
             f"missing credentials: {', '.join(missing)} "
@@ -706,7 +734,8 @@ def export_spots(symbol: str, day: date, out_dir: Path) -> int:
         return EXIT_PASS
     source, why_empty = SPOT_SOURCES[symbol]
     try:
-        load_credentials(main_checkout_dir() / ".env.local")
+        # An export reads only R2: it needs no DATABASE_URL.
+        load_credentials(main_checkout_dir() / ".env.local", R2_ENV_NAMES)
         minutes = fetch_tape_spots(day) if symbol == "SPX" else fetch_parity_levels(day)
         if not minutes:
             print(
@@ -719,7 +748,8 @@ def export_spots(symbol: str, day: date, out_dir: Path) -> int:
     except Exception as exc:  # the CLI boundary: name it, redacted, no verdict
         print(f"error: {type(exc).__name__}: {redact(str(exc))}", file=sys.stderr)
         return EXIT_ERROR
-    print(f"{symbol} {day} {source}: {len(minutes)} minutes -> {written}")
+    count = f"{len(minutes)} minute" + ("" if len(minutes) == 1 else "s")
+    print(f"{symbol} {day} {source}: {count} -> {written}")
     return EXIT_PASS
 
 
