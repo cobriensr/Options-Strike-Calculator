@@ -22,26 +22,44 @@ import { fetchMaxPain } from './max-pain.js';
 import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
+
+/** UW's rolling history window, in trading days. */
+const UW_WINDOW_TRADING_DAYS = 30;
+
+/**
+ * The calendar-day bound for a window of `days` trading days:
+ *   ceil(trading days * 7/5) + safety buffer
+ * 44 for the 30-day window. `isWithinUWWindow` and the options-volume row
+ * count both come from this one expression, so they cannot drift apart.
+ */
+function uwWindowCalendarDays(days: number): number {
+  return Math.ceil((days * 7) / 5) + 2;
+}
 
 /**
  * Check whether `dateStr` falls inside the Unusual Whales 30-trading-day
- * rolling history window. UW returns HTTP 403 with
- * `historic_data_access_missing` for max_pain and options_volume lookups on
- * dates older than that window; pre-flighting lets us skip the fetch entirely
- * and avoid noisy warn logs during blanket backfills.
+ * rolling history window. For max_pain, which takes a `date`, UW returns HTTP
+ * 403 with `historic_data_access_missing` on dates older than that window;
+ * pre-flighting lets us skip the fetch entirely and avoid noisy warn logs
+ * during blanket backfills. For options_volume, which takes no `date`, the
+ * guard bounds which dates `addOptionsVolumeFeatures` tries: its request asks
+ * for as many of the newest rows as this window can hold (see
+ * `OPTIONS_VOLUME_ROWS`), so an older date is skipped rather than reported as
+ * a missing row.
  *
- * The calculation is a calendar-day approximation:
- *   calendar days ≈ ceil(trading days * 7/5) + safety buffer
- * For 30 trading days, 44 calendar days covers the window with a small
- * over-inclusion margin. Erring generous is safe — at worst we issue one
- * extra API call whose 403 is still caught by the surrounding try-block.
+ * The calculation is a calendar-day approximation (`uwWindowCalendarDays`):
+ * for 30 trading days, 44 calendar days covers the window with a small
+ * over-inclusion margin. Erring generous is safe: at worst max_pain gets one
+ * extra call whose 403 the surrounding try-block catches, and options_volume
+ * finds no row for the date and reports it.
  *
  * Exported for direct unit testing.
  */
 export function isWithinUWWindow(
   dateStr: string,
   today: Date = new Date(),
-  days = 30,
+  days = UW_WINDOW_TRADING_DAYS,
 ): boolean {
   const parsed = new Date(`${dateStr}T12:00:00Z`);
   if (Number.isNaN(parsed.getTime())) return false;
@@ -63,8 +81,7 @@ export function isWithinUWWindow(
   if (targetDay >= todayDay) return true;
 
   const daysAgo = Math.round((todayDay - targetDay) / (24 * 60 * 60 * 1000));
-  const calendarWindow = Math.ceil((days * 7) / 5) + 2;
-  return daysAgo <= calendarWindow;
+  return daysAgo <= uwWindowCalendarDays(days);
 }
 
 // ── Phase helpers ───────────────────────────────────────────────
@@ -392,14 +409,24 @@ export async function addDarkPoolFeatures(
 
 /**
  * How many of the newest rows to ask `/stock/SPX/options-volume` for. The
- * endpoint has no `date` parameter: it returns trading days newest first (the
- * live reply for `limit=40` on 2026-11-25 ran back to 2026-10-01), so a date is
- * found by its row's own `date`. `isWithinUWWindow` lets a date through up to
- * 44 calendar days back: 45 dates counting today, at most 33 of them trading
- * days. 40 rows reach the oldest of those, with room to spare, and stay far
- * under the endpoint's maximum of 500.
+ * endpoint has no `date` parameter: it returns the newest trading days, one row
+ * a day, so a date is found by its row's own `date`.
+ *
+ * The order is a probe observation, not something UW documents: the live reply
+ * for `limit=40` on 2026-11-25 ran newest first, back to 2026-10-01. The code
+ * does not rely on it, because a row is found by its own date, wherever it sits.
+ * What the order does decide is which rows the limit keeps. If UW ever sent
+ * oldest first, the newest days would fall outside the limit, the daily run's
+ * own date would find no row, and the error-level report in
+ * `addOptionsVolumeFeatures` would say so.
+ *
+ * `isWithinUWWindow` lets a date through up to `uwWindowCalendarDays` calendar
+ * days back, which is that many plus one dates counting today. Calendar dates
+ * always outnumber trading days, so asking for that many rows reaches the
+ * oldest date the guard accepts, and the count follows the guard if its window
+ * changes. It stays far under the endpoint's maximum of 500.
  */
-const OPTIONS_VOLUME_ROWS = 40;
+const OPTIONS_VOLUME_ROWS = uwWindowCalendarDays(UW_WINDOW_TRADING_DAYS) + 1;
 
 /**
  * A reply row's own date as `YYYY-MM-DD`, or null when the row is not an
@@ -426,10 +453,14 @@ function optionsVolumeRowDate(row: unknown): string | null {
  * The values come from the reply row whose own `date` is `dateStr`. When the
  * reply has none (UW has not published the day, it is older than the rows
  * asked for, or the reply is malformed) nothing is set, never another day's
- * row: the reply's date and the requested one are logged and Sentry gets a
- * warning. A feature left unset is not a clean slate downstream: the upsert
- * keeps the stored value, so a value written earlier stays until it is
- * repaired.
+ * row: the reply's date and the requested one are logged and sent to Sentry.
+ * The level follows who is asking, as `reportNoPickDates` in the build-features
+ * cron does: an error when `dateStr` is the current ET date, the daily run's
+ * own (in winter it tries a date once, at 21:45 UTC, so a miss would leave the
+ * day empty and unheard); a warning otherwise, for backfills and `?date=`
+ * repairs. A live miss has an issue per date, repairs share one. A feature
+ * left unset is not a clean slate downstream: the upsert keeps the stored
+ * value, so a value written earlier stays until it is repaired.
  */
 export async function addOptionsVolumeFeatures(
   dateStr: string,
@@ -461,8 +492,15 @@ export async function addOptionsVolumeFeatures(
           { date: dateStr, returnedDates },
           'Options volume: UW returned no row for the requested date, so no opt_* features are set',
         );
+        const isLiveDate = dateStr === getETDateStr(new Date());
         Sentry.captureMessage('Options volume: no row for the requested date', {
-          level: 'warning',
+          level: isLiveDate ? 'error' : 'warning',
+          fingerprint: [
+            'build-features',
+            'options-volume-no-row',
+            isLiveDate ? dateStr : 'repair',
+          ],
+          tags: { 'build_features.feature': 'options_volume' },
           extra: { date: dateStr, returnedDates },
         });
       } else {

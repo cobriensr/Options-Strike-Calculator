@@ -36,6 +36,7 @@ import {
   addOptionsVolumeFeatures,
 } from '../_lib/build-features-phase2.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
+import { UwHttpError } from '../_lib/uw-fetch.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import type { FeatureRow } from '../_lib/build-features-types.js';
@@ -1245,6 +1246,8 @@ describe('engineerPhase2Features', () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
         ok: false,
         status: 500,
+        headers: new Headers(),
+        text: async () => 'upstream down',
         json: async () => ({}),
       } as Response);
     }
@@ -1368,6 +1371,17 @@ describe('engineerPhase2Features', () => {
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
       expect(features.opt_call_volume).toBeUndefined();
+      // The UW HTTP error itself is captured (later helpers in the run may
+      // capture their own errors, so pick this one out).
+      const uwErrors = vi
+        .mocked(Sentry.captureException)
+        .mock.calls.map(([err]) => err)
+        .filter((err) => err instanceof UwHttpError);
+      expect(uwErrors).toHaveLength(1);
+      expect(uwErrors[0]).toMatchObject({
+        status: 500,
+        message: 'UW API 500: upstream down',
+      });
     });
 
     it('handles missing UW_API_KEY', async () => {
@@ -2380,10 +2394,11 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
     });
 
     it('takes the row by its date, not by its place in the reply', async () => {
+      // The match is last, and the reply is in no date order.
       replyWith([
         dayRow('2026-03-23', 333_000),
-        dayRow('2026-03-24', 222_000),
         dayRow('2026-03-25', 111_000),
+        dayRow('2026-03-24', 222_000),
       ]);
       const features: FeatureRow = {};
 
@@ -2404,7 +2419,11 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
       expect(features.opt_call_volume).toBe(222_000);
     });
 
-    it('sets nothing, logs the requested and the returned dates, and warns Sentry when the reply has no row for the date', async () => {
+    // The pinned clock is 2026-03-25 14:00 UTC, 10:00 ET: the daily run's own
+    // date is 2026-03-25, and DATE_STR (03-24) is a repair or a backfill.
+    const LIVE_DATE = '2026-03-25';
+
+    it('sets nothing, logs the requested and the returned dates, and warns Sentry when a repair date has no row in the reply', async () => {
       replyWith([dayRow('2026-03-25', 111_000), dayRow('2026-03-23', 333_000)]);
       const features: FeatureRow = {};
 
@@ -2415,18 +2434,70 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
         { date: DATE_STR, returnedDates: ['2026-03-25', '2026-03-23'] },
         expect.stringContaining('no row for the requested date'),
       );
+      // A warning, in one issue for all repairs: the project's high-priority
+      // rule skips warnings, so a `?date=` or backfill miss does not page.
       expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
         expect.stringContaining('no row for the requested date'),
-        expect.objectContaining({
+        {
           level: 'warning',
+          fingerprint: ['build-features', 'options-volume-no-row', 'repair'],
+          tags: { 'build_features.feature': 'options_volume' },
           extra: {
             date: DATE_STR,
             returnedDates: ['2026-03-25', '2026-03-23'],
           },
-        }),
+        },
       );
       // A missing row is not an exception: nothing went wrong in the code.
       expect(vi.mocked(Sentry.captureException)).not.toHaveBeenCalled();
+    });
+
+    it('reports an error, in an issue of its own per date, when the daily run’s own date has no row: the day would otherwise stay empty unheard', async () => {
+      replyWith([dayRow('2026-03-24', 222_000), dayRow('2026-03-23', 333_000)]);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(LIVE_DATE, features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+        expect.stringContaining('no row for the requested date'),
+        {
+          level: 'error',
+          fingerprint: ['build-features', 'options-volume-no-row', LIVE_DATE],
+          tags: { 'build_features.feature': 'options_volume' },
+          extra: {
+            date: LIVE_DATE,
+            returnedDates: ['2026-03-24', '2026-03-23'],
+          },
+        },
+      );
+    });
+
+    it('takes the current date by the ET calendar, as the daily run does, not the UTC one', async () => {
+      // 01:30 UTC on 03-26 is 21:30 ET on 03-25. The daily run's date is
+      // still 03-25; 03-26 is a date in the future, not the run's own.
+      vi.setSystemTime(new Date('2026-03-26T01:30:00.000Z'));
+      replyWith([dayRow('2026-03-24', 222_000)]);
+
+      await addOptionsVolumeFeatures('2026-03-25', {});
+      await addOptionsVolumeFeatures('2026-03-26', {});
+
+      const levels = vi
+        .mocked(Sentry.captureMessage)
+        .mock.calls.map(([, hint]) => (hint as { level: string }).level);
+      expect(levels).toEqual(['error', 'warning']);
+    });
+
+    it('reports a live date that gets an empty or malformed reply as an error too', async () => {
+      replyWith('not a list');
+
+      await addOptionsVolumeFeatures(LIVE_DATE, {});
+
+      expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ level: 'error' }),
+      );
     });
 
     it('never uses the newest row for an older date', async () => {
@@ -2506,8 +2577,42 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
 
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       const url = String(fetchSpy.mock.calls[0]?.[0]);
-      expect(url).toContain('/stock/SPX/options-volume?limit=40');
+      expect(url).toContain('/stock/SPX/options-volume?limit=');
       expect(url).not.toContain('date=');
+    });
+
+    it('asks for enough rows to reach the oldest date the window guard lets through', async () => {
+      const fetchSpy = replyWith([dayRow('2026-03-24', 222_000)]);
+      await addOptionsVolumeFeatures(DATE_STR, {});
+      const limit = Number(
+        new URL(String(fetchSpy.mock.calls[0]?.[0])).searchParams.get('limit'),
+      );
+
+      // Walk back from the pinned clock's date to the oldest date the guard
+      // accepts, using the guard itself.
+      const today = new Date('2026-03-25T14:00:00.000Z');
+      const dayStr = (back: number) =>
+        new Date(today.getTime() - back * 86_400_000)
+          .toISOString()
+          .slice(0, 10);
+      let oldest = 0;
+      while (oldest < 400 && isWithinUWWindow(dayStr(oldest + 1), today)) {
+        oldest += 1;
+      }
+      // Calendar dates from the oldest accepted one to today, and the
+      // trading days among them: the rows the reply needs to include it.
+      const calendarDates = oldest + 1;
+      let weekdays = 0;
+      for (let back = 0; back <= oldest; back += 1) {
+        const day = new Date(`${dayStr(back)}T12:00:00Z`).getUTCDay();
+        if (day !== 0 && day !== 6) weekdays += 1;
+      }
+
+      expect(oldest).toBe(44);
+      expect(limit).toBeGreaterThanOrEqual(calendarDates);
+      expect(limit).toBeGreaterThanOrEqual(weekdays);
+      // And far under the endpoint's maximum of 500 rows.
+      expect(limit).toBeLessThanOrEqual(100);
     });
 
     it('surfaces a failed request to Sentry as before, setting nothing', async () => {
@@ -2520,6 +2625,49 @@ describe('addOptionsVolumeFeatures (isolated)', () => {
       expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
         expect.any(Error),
       );
+    });
+
+    it('captures the UW HTTP error, and sets nothing, on a non-2xx reply', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 500,
+        headers: new Headers(),
+        text: async () => 'upstream down',
+      } as Response);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledTimes(1);
+      const captured = vi.mocked(Sentry.captureException).mock.calls[0]?.[0];
+      expect(captured).toBeInstanceOf(UwHttpError);
+      expect(captured).toMatchObject({
+        status: 500,
+        message: 'UW API 500: upstream down',
+      });
+      // A failed fetch is an exception, not a missing-row report.
+      expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
+    });
+
+    it('captures the parse error, and sets nothing, when a 2xx reply is not JSON', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON at position 0');
+        },
+      } as unknown as Response);
+      const features: FeatureRow = {};
+
+      await addOptionsVolumeFeatures(DATE_STR, features);
+
+      expect(optKeys(features)).toEqual([]);
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+        expect.any(SyntaxError),
+      );
+      expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalled();
     });
 
     it('does not ask UW for a date outside the 30-trading-day window', async () => {
