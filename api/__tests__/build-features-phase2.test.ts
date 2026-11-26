@@ -3628,12 +3628,17 @@ describe('dpDayComplete (real SQL, pglite)', () => {
     );
   }
 
-  async function print(symbol: string, date: string): Promise<void> {
+  /** A print dated `date`, by default at 15:00Z: inside every session below. */
+  async function print(
+    symbol: string,
+    date: string,
+    executedAt = `${date}T15:00:00Z`,
+  ): Promise<void> {
     await pg.query(
       `INSERT INTO dark_pool_prints
          (date, symbol, executed_at, price, size, premium)
        VALUES ($1::date, $2, $3::timestamptz, 580, 100, 58000)`,
-      [date, symbol, `${date}T15:00:00Z`],
+      [date, symbol, executedAt],
     );
   }
 
@@ -3675,13 +3680,70 @@ describe('dpDayComplete (real SQL, pglite)', () => {
 
   it.each([
     ['only QQQ prints', 'QQQ', EDT_DAY.date],
-    ['only prints of another date', 'SPY', '2026-04-20'],
+    // Dated another day, though executed inside this day's session: the
+    // levels query reads the `date` column.
+    ['only prints dated another day', 'SPY', '2026-04-20'],
   ])('keeps dp when the date has %s', async (_label, symbol, printDate) => {
-    await print(symbol, printDate);
+    await print(symbol, printDate, `${EDT_DAY.date}T15:00:00Z`);
     await indexBars('SPX', EDT_DAY.date, EDT_DAY.open, 390);
     await etfBars('SPY', EDT_DAY.open, 390);
 
     await expect(ask(EDT_DAY.date)).resolves.toBe(false);
+  });
+
+  // The levels query keeps a print only when both candle tables have a row for
+  // its minute, and the bars are known complete only from the open to the
+  // close. A day whose prints all fall outside that window has no level to
+  // build, and an overwrite would store NULL for all seven columns.
+  describe('counts only the SPY prints inside the regular session', () => {
+    // Bars are full on every case; the prints are the only fault.
+    it.each([
+      ['a pre-market print', '2026-04-21T12:00:00Z'],
+      ['a print one second before the open', '2026-04-21T13:29:59Z'],
+      ['a print exactly at the 16:00 ET close', '2026-04-21T20:00:00Z'],
+      ['an after-hours print', '2026-04-21T21:00:00Z'],
+    ])('keeps dp when the only SPY print is %s', async (_label, executedAt) => {
+      await print('SPY', EDT_DAY.date, executedAt);
+      await indexBars('SPX', EDT_DAY.date, EDT_DAY.open, 390);
+      await etfBars('SPY', EDT_DAY.open, 390);
+
+      await expect(ask(EDT_DAY.date)).resolves.toBe(false);
+    });
+
+    it.each([
+      ['exactly at the 09:30 ET open', '2026-04-21T13:30:00Z'],
+      ['one second before the close', '2026-04-21T19:59:59Z'],
+    ])('counts a print %s', async (_label, executedAt) => {
+      await print('SPY', EDT_DAY.date, executedAt);
+      await indexBars('SPX', EDT_DAY.date, EDT_DAY.open, 390);
+      await etfBars('SPY', EDT_DAY.open, 390);
+
+      await expect(ask(EDT_DAY.date)).resolves.toBe(true);
+    });
+
+    it('is true when one print is inside the session beside others outside it', async () => {
+      await print('SPY', EDT_DAY.date, '2026-04-21T12:00:00Z');
+      await print('SPY', EDT_DAY.date, '2026-04-21T15:00:00Z');
+      await print('SPY', EDT_DAY.date, '2026-04-21T21:00:00Z');
+      await indexBars('SPX', EDT_DAY.date, EDT_DAY.open, 390);
+      await etfBars('SPY', EDT_DAY.open, 390);
+
+      await expect(ask(EDT_DAY.date)).resolves.toBe(true);
+    });
+
+    it.each([
+      ['exactly at the 13:00 ET close', '2026-11-27T18:00:00Z'],
+      ['one second after it', '2026-11-27T18:00:01Z'],
+    ])(
+      'keeps dp on a half day when the only SPY print is %s',
+      async (_label, executedAt) => {
+        await print('SPY', HALF_DAY.date, executedAt);
+        await indexBars('SPX', HALF_DAY.date, HALF_DAY.open, 210);
+        await etfBars('SPY', HALF_DAY.open, 210);
+
+        await expect(ask(HALF_DAY.date)).resolves.toBe(false);
+      },
+    );
   });
 
   describe('keeps dp when SPX bars or SPY ETF bars are short', () => {

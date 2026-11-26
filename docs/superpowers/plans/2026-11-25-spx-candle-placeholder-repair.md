@@ -40,7 +40,7 @@
 - **Tape gates** (spot-check tool, SPX only): median |d| ≤ 2 pt and p99 ≤ 5 pt; the ratio within 1e-6 on ≥ 99% of minutes, only where ETF rows are final (≤ 2026-04-27).
   - NDX has no tape price (UW leaves `underlying_price` NULL on NDX/NDXP prints), so the spec's NDX tape gate is replaced by the repair tool's NDX close and ratio checks.
 - **Feature guard:** `|round4(v)| ≥ 10000` gives NULL.
-- **Dark-pool overwrite:** only when the read succeeded, the date has `dark_pool_prints` rows, and it has the full `cashSessionMinutes` of SPX regular bars and of SPY ETF bars. A failed read sets the status to `partial` and lists the date in `dpReadFailed`; no prints, short bars or no `spx_open` is a data state, recorded in `dpKept`.
+- **Dark-pool overwrite:** only when the read succeeded, the date has SPY `dark_pool_prints` in the regular session, and it has the full `cashSessionMinutes` of SPX regular bars and of SPY ETF bars. A failed read sets the status to `partial` and lists the date in `dpReadFailed`; no prints, short bars or no `spx_open` is a data state, recorded in `dpKept`.
 - **SQL inside a transaction is tagged templates only.** Bulk writes use `unnest` batches of at most 500 rows.
 - No migration, no env var, no new dependency, no new cron. Tests never touch a real DB or network (pglite and `vi.mock` only).
 - `scripts/_tape_reader.py` is a nightly watch path; don't edit it.
@@ -246,7 +246,7 @@ export async function upsertFeatures(features: FeatureRow, opts?: { overwrite?: 
 **Rules:**
 - `engineerPhase2Features` returns `{ dpReadOk: boolean }`, true when `getDarkPoolLevels` resolved with no caught error. It is not a `FeatureRow` key, so completeness is unchanged.
 - A new exported `dpDayComplete(sql, date): Promise<boolean>`, in `build-features-phase2.ts`, makes one query. It is true when the date has all three:
-  1. at least 1 `dark_pool_prints` row with `symbol = 'SPY'` (the levels query filters SPY, `dark-pool-query.ts:183`);
+  1. at least one SPY print in the regular session (`09:30 ET ≤ executed_at < close`): a `dark_pool_prints` row with `symbol = 'SPY'` (the levels query filters SPY, `dark-pool-query.ts:183`). The window is the one of condition 3, where the candles are proven complete; a print outside it may have no candle minute to join, so it yields no level;
   2. `cashSessionMinutes(date)` SPX bars with `market_time = 'r'` in `index_candles_1m`;
   3. `cashSessionMinutes(date)` SPY bars in `etf_candles_1m` within the ET regular session. That table has no `date` or `market_time`, so the window is `09:30 ET ≤ timestamp < close`, with the close from `getMarketCloseHourET(date)` (13:00 on a half day). Build both instants with the repo's ET helpers.
 
@@ -255,7 +255,7 @@ export async function upsertFeatures(features: FeatureRow, opts?: { overwrite?: 
   - Keep it a separate function, so `build-features-phase2.test.ts`'s positional mocks don't shift. In `build-features.test.ts`, mock it at the module boundary and expect one added call in the sequence.
 - **Status.**
   - A dark-pool read failure (`dpReadOk` false) on any date sets the run's status to `partial`, even on a one-date run. Set it explicitly in the cron's result, not through `errors`/`deriveCronStatus`, which would return `error` when 1 of 1 dates "fails" (`cron-instrumentation.ts:556-561`) and would misname a written row as a failed write.
-  - No prints, or short bars, is a data state, not a failure: the status is unchanged, and the date is listed in metadata `dpKept`. This follows the 11-22 no-pick pattern. The spec's 1b text is updated to match.
+  - No prints, short bars, or no `spx_open` is a data state, not a failure: the status is unchanged, and the date is listed in metadata `dpKept`. This follows the 11-22 no-pick pattern. The spec's 1b text is updated to match.
 
 - [ ] **Step 1: Failing tests:**
   - `overwrites dp on a full day with prints`;

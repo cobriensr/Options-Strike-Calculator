@@ -461,12 +461,17 @@ export async function addDarkPoolFeatures(
  * Whether `dateStr` has all the data the dark-pool levels read stands on, so a
  * rebuild may overwrite its stored dp_* columns, NULLs included. All three:
  * 1. at least one `dark_pool_prints` row with `symbol = 'SPY'` (the levels
- *    query reads SPY and scales it to SPX);
+ *    query reads SPY and scales it to SPX) executed in the regular session,
+ *    09:30 ET <= `executed_at` < the close (13:00 ET on a half day). The
+ *    levels query keeps a print only when both candle tables have a row for
+ *    its minute, and conditions 2 and 3 prove the candles complete only inside
+ *    that window. A day whose prints all fall outside it (pre-market,
+ *    after-hours) has no level to build, so it would not pass for complete;
  * 2. `cashSessionMinutes(dateStr)` SPX bars with `market_time = 'r'` in
  *    `index_candles_1m`;
  * 3. `cashSessionMinutes(dateStr)` SPY bars in `etf_candles_1m` from 09:30 ET
- *    up to the close (13:00 ET on a half day). That table has no date or
- *    market_time column, so the window is the two instants.
+ *    up to the close. That table has no date or market_time column, so the
+ *    window is the same two instants as condition 1's.
  * The levels query joins both candle tables on each print's minute, so a
  * minute missing from either one drops that minute's prints from the levels.
  * A rebuild over such a day, or over one with no prints (the legacy dates),
@@ -493,6 +498,8 @@ export async function dpDayComplete(
       EXISTS (
         SELECT 1 FROM dark_pool_prints
         WHERE symbol = 'SPY' AND date = ${dateStr}::date
+          AND executed_at >= ${openIso}::timestamptz
+          AND executed_at < ${closeIso}::timestamptz
       ) AS has_prints,
       (
         SELECT COUNT(*) FROM index_candles_1m
