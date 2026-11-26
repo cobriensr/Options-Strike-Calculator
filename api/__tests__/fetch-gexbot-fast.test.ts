@@ -69,6 +69,12 @@ const FETCH_TASKS = STORED_ROWS + CLASSIC_BASIC_COUNT;
 // flows from the classic call (and is NOT sourced from orderflow).
 const CLASSIC_ZERO_GAMMA = 4242;
 
+// The state major call and put level prices the orderflow payload carries.
+// Distinct from each other and from every classic value, so a test can tell
+// which call a stored level came from.
+const ORDERFLOW_ZERO_MCALL = 6010.5;
+const ORDERFLOW_ZERO_MPUT = 5950.25;
+
 // Realistic orderflow body — the LIVE payload omits zero_gamma / sum_gex_* /
 // major_* / delta_risk_reversal / min_dte / sec_min_dte (spec-vs-live drift).
 function makeOrderflowBody(ticker: string) {
@@ -78,6 +84,8 @@ function makeOrderflowBody(ticker: string) {
     spot: 100.5,
     z_mlgamma: 102,
     z_msgamma: 98,
+    zero_mcall: ORDERFLOW_ZERO_MCALL,
+    zero_mput: ORDERFLOW_ZERO_MPUT,
     zcvr: 1.25,
     zgr: 0.83,
     dexoflow: 1234.5,
@@ -155,6 +163,24 @@ const insertEcho = async (strings: unknown, ...args: unknown[]) =>
   Array.isArray(strings) && strings.join('').includes('RETURNING 1')
     ? Array.from({ length: (args[0] as unknown[]).length }, () => ({}))
     : [];
+
+/**
+ * The value a snapshot INSERT bound to `column`. The INSERT is a tagged
+ * template: call[0] holds the SQL pieces and call[1..] the bound values, in
+ * the order of the column list (one value per column), so the position comes
+ * from the SQL's own column list rather than a hard-coded index.
+ */
+function snapshotValue(call: readonly unknown[], column: string): unknown {
+  const sqlText = (call[0] as string[]).join('');
+  const list = /INSERT INTO gexbot_snapshots \(([^)]*)\)/.exec(sqlText)?.[1];
+  const columns = (list ?? '').split(',').map((c) => c.trim());
+  const at = columns.indexOf(column);
+  expect(
+    at,
+    `${column} is in the snapshot INSERT's column list`,
+  ).toBeGreaterThan(-1);
+  return call[at + 1];
+}
 
 describe('fetch-gexbot-fast handler', () => {
   const originalEnv = process.env;
@@ -342,6 +368,18 @@ describe('fetch-gexbot-fast handler', () => {
     const spxSnapshot = mockSql.mock.calls.find((c) => c[1] === 'SPX');
     expect(spxSnapshot).toBeDefined();
     expect(spxSnapshot?.[4]).toBe(CLASSIC_ZERO_GAMMA);
+    // The same lookup the fail-open test uses to read NULLs: here it must find
+    // the classic majors' values (so a NULL there is not a wrong position) and
+    // the orderflow call's own levels, unchanged by the merge.
+    expect(snapshotValue(spxSnapshot!, 'zero_gamma')).toBe(CLASSIC_ZERO_GAMMA);
+    expect(snapshotValue(spxSnapshot!, 'major_pos_vol')).toBe(1);
+    expect(snapshotValue(spxSnapshot!, 'major_pos_oi')).toBe(2);
+    expect(snapshotValue(spxSnapshot!, 'major_neg_vol')).toBe(3);
+    expect(snapshotValue(spxSnapshot!, 'major_neg_oi')).toBe(4);
+    expect(snapshotValue(spxSnapshot!, 'zero_mcall')).toBe(
+      ORDERFLOW_ZERO_MCALL,
+    );
+    expect(snapshotValue(spxSnapshot!, 'zero_mput')).toBe(ORDERFLOW_ZERO_MPUT);
   });
 
   it('fails open: classic-basic failure for a ticker still stores its snapshot with NULL aggregates', async () => {
@@ -393,6 +431,22 @@ describe('fetch-gexbot-fast handler', () => {
     const spxSnapshot = mockSql.mock.calls.find((c) => c[1] === 'SPX');
     expect(spxSnapshot).toBeDefined();
     expect(spxSnapshot?.[4]).toBeNull();
+    // The four classic majors come only from the classic call, so they are
+    // NULL too. The state major call and put come from the orderflow call and
+    // keep their values.
+    expect(snapshotValue(spxSnapshot!, 'zero_gamma')).toBeNull();
+    for (const column of [
+      'major_pos_vol',
+      'major_pos_oi',
+      'major_neg_vol',
+      'major_neg_oi',
+    ]) {
+      expect(snapshotValue(spxSnapshot!, column), column).toBeNull();
+    }
+    expect(snapshotValue(spxSnapshot!, 'zero_mcall')).toBe(
+      ORDERFLOW_ZERO_MCALL,
+    );
+    expect(snapshotValue(spxSnapshot!, 'zero_mput')).toBe(ORDERFLOW_ZERO_MPUT);
   });
 
   // ── Partial failure ───────────────────────────────────────
