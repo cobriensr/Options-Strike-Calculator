@@ -1,0 +1,797 @@
+"""scripts/enrich_interval_ba_outcomes.py: forward SPX paths for Interval B/A alerts, from the tape.
+
+Each test runs the script's real SQL over a small tape written in tmp_path, in both tape layouts
+(2026-11-24 tape facts: before 2026-05-04 `executed_at` is a naive TIMESTAMP holding UTC and the
+prices are DECIMAL(18,4); from then on TIMESTAMPTZ and DOUBLE). The DuckDB connection runs under
+a non-UTC session time zone, so a naive column read through the session zone would shift.
+
+The boundaries are patched (R3, and the scripts conftest blocks both stores):
+- `fulltape_connection` returns a local DuckDB connection, `r2_url` and `export_url` the local
+  files' paths;
+- `psycopg2.connect` returns a fake connection whose cursor hands back the table rows;
+- `load_env` does nothing and `OUT_DIR` is a folder in tmp_path.
+
+Run from the repo root with the ml venv:
+
+    ml/.venv/Scripts/python -m pytest scripts/test_enrich_interval_ba_outcomes.py -q
+"""
+
+from __future__ import annotations
+
+import csv
+import sys
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import duckdb
+import psycopg2
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import enrich_interval_ba_outcomes as mod  # noqa: E402
+
+DAY = date(2026, 11, 17)  # a Tuesday: CST, so the 15:00 CT close is 21:00 UTC
+DAY_ISO = DAY.isoformat()
+CLOSE = datetime(2026, 11, 17, 21, 0, tzinfo=UTC)
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+SPXW_C = 'SPXW261117C06700000'
+SPXW_P = 'SPXW261117P06600000'
+SPX_C = 'SPX261117C06700000'  # root SPX: another product
+SPY_C = 'SPY261117C00670000'
+
+LAYOUTS = ['naive', 'tz']
+
+
+def at(clock: str, day: date = DAY) -> datetime:
+    """An aware UTC instant on `day` from 'HH:MM:SS[.ffffff]'."""
+    return datetime.fromisoformat(f'{day.isoformat()}T{clock}+00:00')
+
+
+# --- the tape ---------------------------------------------------------------------------------
+
+
+def tick(
+    clock: str,
+    chain: str,
+    spot: str | None,
+    *,
+    label: str | None = None,
+    canceled: bool = False,
+) -> dict[str, object]:
+    """One tape row. The underlying_symbol label defaults to the OCC root."""
+    return {
+        'at': at(clock),
+        'chain': chain,
+        'label': label if label is not None else chain[:-15],
+        'spot': spot,
+        'canceled': canceled,
+    }
+
+
+_LAYOUT_SQL = {
+    'naive': ('TIMESTAMP', 'DECIMAL(18,4)', 'make_timestamp($us)'),
+    'tz': ('TIMESTAMPTZ', 'DOUBLE', "timezone('UTC', make_timestamp($us))"),
+}
+
+
+def write_tape(tmp_path: Path, rows: list[dict[str, object]], layout: str = 'tz') -> str:
+    """Write the rows, in list order, as that day's Full Tape parquet and return its path.
+
+    The time goes in as epoch microseconds, so the stored instant is exact: make_timestamp
+    gives the naive UTC wall clock, and timezone('UTC', ...) the same instant as a TIMESTAMPTZ.
+    """
+    time_type, number, time_sql = _LAYOUT_SQL[layout]
+    path = tmp_path / f'{DAY_ISO}-fulltape.parquet'
+    db = duckdb.connect()
+    try:
+        db.execute(
+            f'CREATE TABLE tape (n INTEGER, executed_at {time_type}, option_chain_id VARCHAR,'
+            f' underlying_symbol VARCHAR, underlying_price {number}, canceled BOOLEAN)'
+        )
+        for n, row in enumerate(rows):
+            assert isinstance(row['at'], datetime)
+            db.execute(
+                f'INSERT INTO tape VALUES ($n, {time_sql}, $chain, $label,'
+                f' CAST($spot AS {number}), $canceled)',
+                {
+                    'n': n,
+                    'us': (row['at'] - EPOCH) // timedelta(microseconds=1),
+                    'chain': row['chain'],
+                    'label': row['label'],
+                    'spot': row['spot'],
+                    'canceled': row['canceled'],
+                },
+            )
+        db.execute(
+            f"COPY (SELECT * EXCLUDE (n) FROM tape ORDER BY n) TO '{path.as_posix()}'"
+            ' (FORMAT parquet)'
+        )
+    finally:
+        db.close()
+    return path.as_posix()
+
+
+def local_connection() -> duckdb.DuckDBPyConnection:
+    """A DuckDB connection under a session zone that is not UTC."""
+    db = duckdb.connect()
+    db.execute("SET TimeZone='America/Chicago'")
+    return db
+
+
+@pytest.fixture
+def con():
+    db = local_connection()
+    yield db
+    db.close()
+
+
+def path_for(db, tape: str, chain: str, fired_at: datetime, entry: float):
+    """The forward path of an alert, from the script's own readers over the tape."""
+    key = (chain, mod.epoch_us(fired_at))
+    t0_spot = mod.load_t0_spots(db, tape, [key]).get(key)
+    root = mod.load_root_spot_series(db, tape, chain[:-15])
+    return mod.build_forward_path(root, t0_spot, fired_at, entry, CLOSE)
+
+
+# --- t=0 and the forward steps ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_t0_is_last_print_at_or_before_fired_at(tmp_path, con, layout):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('14:30:10', SPXW_C, '6700.00'),
+            tick('14:30:44.999999', SPXW_C, '6700.50'),
+            tick('14:30:45', SPXW_C, '6701.00'),  # exactly at fired_at: it counts (<=)
+            tick('14:30:45.000001', SPXW_C, '6702.00'),  # a microsecond later: it does not
+            tick('14:30:50', SPXW_C, '6703.00'),  # last of the minute: the old t=0
+        ],
+        layout,
+    )
+    fired_at = at('14:30:45')
+
+    first = path_for(con, tape, SPXW_C, fired_at, 6701.0)[0]
+
+    assert first == (0, fired_at, 6701.0, 0.0)
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_t0_comes_from_the_alerts_own_contract(tmp_path, con, layout):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('14:30:40', SPXW_C, '6700.00'),
+            tick('14:30:44', SPXW_P, '6699.00'),  # a later print, but of another contract
+        ],
+        layout,
+    )
+
+    first = path_for(con, tape, SPXW_C, at('14:30:45'), 6700.0)[0]
+
+    assert first[2] == 6700.0
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_forward_steps_sit_k_times_five_minutes_after_the_alert(tmp_path, con, layout):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('14:30:45', SPXW_C, '6701.00'),
+            tick('14:35:44', SPXW_P, '6710.00'),
+            tick('14:35:45', SPXW_P, '6711.00'),  # exactly at the step: counts, and is last
+            tick('14:35:45.000001', SPXW_C, '6720.00'),  # just after the step
+            tick('14:36:30', SPXW_C, '6730.00'),  # the end of that minute: the old t=5
+        ],
+        layout,
+    )
+
+    path = path_for(con, tape, SPXW_C, at('14:30:45'), 6701.0)
+
+    # Steps after t=0 read every contract of the root, not only the alert's own: the print
+    # at the step is SPXW_P's, and SPXW_C has nothing at or before 14:35:45 but its first.
+    assert path[1] == (5, at('14:35:45'), 6711.0, (6711.0 - 6701.0) / 6701.0 * 100.0)
+    # Nothing prints after 14:36:30: the last print carries forward to later steps.
+    assert path[2][:3] == (10, at('14:40:45'), 6730.0)
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_the_path_ends_at_the_close_and_includes_it(tmp_path, con, layout):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('20:50:00', SPXW_C, '6701.00'),
+            tick('20:54:00', SPXW_C, '6710.00'),
+            tick('20:59:59.999999', SPXW_C, '6720.00'),
+            tick('21:00:00', SPXW_C, '6725.00'),
+            tick('21:00:00.000001', SPXW_C, '6730.00'),
+        ],
+        layout,
+    )
+
+    on_the_close = path_for(con, tape, SPXW_C, at('20:50:00'), 6701.0)
+    past_the_close = path_for(con, tape, SPXW_C, at('20:50:01'), 6701.0)
+
+    assert [(t, spot) for t, _, spot, _ in on_the_close] == [(0, 6701.0), (5, 6710.0), (10, 6725.0)]
+    assert on_the_close[-1][1] == CLOSE
+    assert [t for t, *_ in past_the_close] == [0, 5]  # 21:00:01 is after the close
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_a_contract_with_no_print_before_the_alert_has_no_t0_but_later_steps(
+    tmp_path, con, layout
+):
+    tape = write_tape(
+        tmp_path,
+        [tick('20:50:30', SPXW_C, '6701.00'), tick('20:55:00', SPXW_P, '6710.00')],
+        layout,
+    )
+
+    path = path_for(con, tape, SPXW_C, at('20:50:00'), 6700.0)
+
+    assert [(t, spot) for t, _, spot, _ in path] == [(5, 6710.0), (10, 6710.0)]
+
+
+# --- the tape's readers -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_spxw_selected_by_occ_root_not_underlying_symbol(tmp_path, con, layout):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('14:30:00', SPXW_C, '6701.00', label='SPX'),  # SPXW root, labeled SPX: kept
+            tick('14:31:00', SPXW_P, '6702.00'),  # SPXW root, labeled SPXW: kept
+            tick('14:32:00', SPX_C, '6000.00'),  # SPX root, labeled SPX: another product
+            tick('14:33:00', SPX_C, '6001.00', label='SPXW'),  # SPX root, labeled SPXW: dropped
+            tick('14:34:00', SPY_C, '670.00'),
+        ],
+        layout,
+    )
+
+    spxw = mod.load_root_spot_series(con, tape, 'SPXW')
+    spy = mod.load_root_spot_series(con, tape, 'SPY')
+
+    assert spxw.spot.tolist() == [6701.0, 6702.0]
+    assert spy.spot.tolist() == [670.0]
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_series_read_epoch_microseconds_whatever_the_layout_and_session_zone(
+    tmp_path, con, layout
+):
+    tape = write_tape(tmp_path, [tick('14:30:00.123456', SPXW_C, '6701.00')], layout)
+    wanted = (SPXW_C, mod.epoch_us(at('14:30:00.123456')))
+
+    series = mod.load_root_spot_series(con, tape, 'SPXW')
+
+    assert series.us.tolist() == [(at('14:30:00.123456') - EPOCH) // timedelta(microseconds=1)]
+    assert mod.load_t0_spots(con, tape, [wanted]) == {wanted: 6701.0}
+
+
+def test_the_readers_skip_canceled_prints_and_prints_with_no_usable_spot(tmp_path, con):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('14:30:00', SPXW_C, '6701.00'),
+            tick('14:30:01', SPXW_C, '6999.00', canceled=True),
+            tick('14:30:02', SPXW_C, None),
+            tick('14:30:03', SPXW_C, '0.00'),
+            tick('14:30:04', SPXW_C, 'NaN'),  # DuckDB sorts NaN above every number
+            tick('14:30:05', SPXW_C, 'Infinity'),
+            tick('14:30:06', SPXW_C, '6702.00'),
+        ],
+    )
+    last = (SPXW_C, mod.epoch_us(at('14:30:05')))
+
+    assert mod.load_root_spot_series(con, tape, 'SPXW').spot.tolist() == [6701.0, 6702.0]
+    # At 14:30:05 the last usable print of the contract is the 14:30:00 one.
+    assert mod.load_t0_spots(con, tape, [last]) == {last: 6701.0}
+
+
+def test_a_text_canceled_column_reads_like_a_boolean_one(tmp_path, con):
+    """Tapes uploaded from the old archive may hold 't' / 'f' text in `canceled`."""
+    path = (tmp_path / 'text-canceled.parquet').as_posix()
+    con.execute(
+        f"""
+        COPY (
+            SELECT * FROM (VALUES
+                (TIMESTAMP '2026-11-17 14:30:00', '{SPXW_C}', 6701.0, 'f'),
+                (TIMESTAMP '2026-11-17 14:30:01', '{SPXW_C}', 6999.0, 't'),
+                (TIMESTAMP '2026-11-17 14:30:02', '{SPXW_C}', 6702.0, '')
+            ) AS tape(executed_at, option_chain_id, underlying_price, canceled)
+        ) TO '{path}' (FORMAT parquet)
+        """
+    )
+
+    assert mod.load_root_spot_series(con, path, 'SPXW').spot.tolist() == [6701.0, 6702.0]
+
+
+def test_same_microsecond_prints_keep_file_order_so_the_later_row_is_last(tmp_path, con):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('14:30:00', SPXW_C, '6701.00'),
+            tick('14:30:00', SPXW_C, '6702.00'),
+            tick('14:30:00', SPXW_P, '6703.00'),
+        ],
+    )
+    c_at = (SPXW_C, mod.epoch_us(at('14:30:00')))
+
+    root = mod.load_root_spot_series(con, tape, 'SPXW')
+
+    assert root.at_or_before(c_at[1]) == 6703.0
+    assert mod.load_t0_spots(con, tape, [c_at]) == {c_at: 6702.0}
+
+
+def test_t0_spots_answer_each_chain_and_instant_asked_and_leave_out_the_unanswerable(
+    tmp_path, con
+):
+    tape = write_tape(
+        tmp_path,
+        [
+            tick('14:30:00', SPXW_C, '6701.00'),
+            tick('14:30:30', SPXW_C, '6702.00'),
+            tick('14:30:10', SPXW_P, '6703.00'),
+        ],
+    )
+    asked = [
+        (SPXW_C, mod.epoch_us(at('14:30:29'))),  # the first print is the last at or before
+        (SPXW_C, mod.epoch_us(at('14:30:30'))),  # the second
+        (SPXW_C, mod.epoch_us(at('14:29:59'))),  # before any print of the contract
+        (SPXW_P, mod.epoch_us(at('14:30:11'))),
+        (SPY_C, mod.epoch_us(at('14:30:11'))),  # a contract the tape never printed
+    ]
+
+    assert mod.load_t0_spots(con, tape, asked) == {
+        asked[0]: 6701.0,
+        asked[1]: 6702.0,
+        asked[3]: 6703.0,
+    }
+    assert mod.load_t0_spots(con, tape, []) == {}
+
+
+def test_object_exists_says_whether_the_object_is_there(tmp_path, con):
+    tape = write_tape(tmp_path, [tick('14:30:00', SPXW_C, '6701.00')])
+
+    assert mod.object_exists(con, tape) is True
+    assert mod.object_exists(con, (tmp_path / 'missing.parquet').as_posix()) is False
+
+
+# --- the two sources ------------------------------------------------------------------------------
+
+# The columns of the tool's export, in its order (spec 6.5). test_export_columns_match_the_tool
+# holds this copy to the tool's own schema.
+_UTC_US = pa.timestamp('us', tz='UTC')
+EXPORT_SCHEMA = pa.schema(
+    [
+        ('option_chain', pa.string()),
+        ('ticker', pa.string()),
+        ('option_type', pa.string()),
+        ('strike', pa.decimal128(10, 3)),
+        ('expiry', pa.date32()),
+        ('bucket_start', _UTC_US),
+        ('bucket_end', _UTC_US),
+        ('fired_at', _UTC_US),
+        ('ratio_pct', pa.decimal128(5, 2)),
+        ('ask_premium', pa.decimal128(14, 2)),
+        ('total_premium', pa.decimal128(14, 2)),
+        ('trade_count', pa.int32()),
+        ('top_trade_premium', pa.decimal128(14, 2)),
+        ('top_trade_size', pa.int32()),
+        ('top_trade_executed_at', _UTC_US),
+        ('top_trade_is_sweep', pa.bool_()),
+        ('top_trade_is_floor', pa.bool_()),
+        ('underlying_price', pa.decimal128(10, 2)),
+        ('confluence_tickers', pa.list_(pa.string())),
+    ]
+)
+
+
+def export_row(
+    chain: str,
+    fired_clock: str,
+    spot: str | None,
+    *,
+    total: str = '300000.00',
+    expiry: date = DAY,
+) -> dict[str, object]:
+    fired = at(fired_clock, expiry)
+    bucket = fired - timedelta(seconds=fired.timestamp() % 300)
+    return {
+        'option_chain': chain,
+        'ticker': chain[:-15],
+        'option_type': chain[-9],
+        'strike': Decimal('6700.000'),
+        'expiry': expiry,
+        'bucket_start': bucket,
+        'bucket_end': bucket + timedelta(seconds=300),
+        'fired_at': fired,
+        'ratio_pct': Decimal('80.00'),
+        'ask_premium': Decimal(total) * Decimal('0.8'),
+        'total_premium': Decimal(total),
+        'trade_count': 3,
+        'top_trade_premium': Decimal('100000.00'),
+        'top_trade_size': 10,
+        'top_trade_executed_at': fired,
+        'top_trade_is_sweep': False,
+        'top_trade_is_floor': False,
+        'underlying_price': Decimal(spot) if spot is not None else None,
+        'confluence_tickers': [],
+    }
+
+
+def write_export(
+    tmp_path: Path, rows: list[dict[str, object]], schema: pa.Schema = EXPORT_SCHEMA
+) -> str:
+    path = tmp_path / f'replay-{DAY_ISO}.parquet'
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
+    return path.as_posix()
+
+
+TABLE_COLUMNS = (
+    'id',
+    'option_chain',
+    'ticker',
+    'option_type',
+    'strike',
+    'expiry',
+    'fired_at',
+    'ratio_pct',
+    'total_premium',
+    'trade_count',
+    'underlying_price',
+    'top_trade_is_sweep',
+)
+
+
+def table_row(
+    alert_id: int,
+    chain: str,
+    fired_clock: str,
+    spot: str | None,
+    *,
+    total: str = '300000.00',
+) -> dict[str, object]:
+    """A row as psycopg2 hands it back from interval_ba_alerts."""
+    return {
+        'id': alert_id,
+        'option_chain': chain,
+        'ticker': chain[:-15],
+        'option_type': chain[-9],
+        'strike': Decimal('6700.000'),
+        'expiry': DAY,
+        'fired_at': at(fired_clock),
+        'ratio_pct': Decimal('80.00'),
+        'total_premium': Decimal(total),
+        'trade_count': 3,
+        'underlying_price': Decimal(spot) if spot is not None else None,
+        'top_trade_is_sweep': False,
+    }
+
+
+def fake_table(monkeypatch, rows: list[dict[str, object]]) -> MagicMock:
+    """psycopg2.connect returns a connection whose cursor hands back the rows. Returns the
+    cursor, so a test can read the SQL it was given."""
+    cur = MagicMock()
+    cur.description = [SimpleNamespace(name=name) for name in TABLE_COLUMNS]
+    cur.fetchall.return_value = [tuple(row[name] for name in TABLE_COLUMNS) for row in rows]
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cur
+    monkeypatch.setattr(psycopg2, 'connect', MagicMock(return_value=conn))
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://fake.invalid/none')
+    return cur
+
+
+def test_export_alerts_have_the_tables_keys_and_types(tmp_path, con, monkeypatch):
+    url = write_export(tmp_path, [export_row(SPXW_C, '20:50:00', '6701.00')])
+    cur = fake_table(monkeypatch, [table_row(7, SPXW_C, '20:50:00', '6701.00')])
+
+    from_export = mod.fetch_export_alerts(con, url, 'SPXW', None, None, None)
+    from_table = mod.fetch_alerts(psycopg2.connect(), 'SPXW', None, None, None)
+
+    assert cur.execute.called
+    assert len(from_export) == len(from_table) == 1
+    export_alert, table_alert = from_export[0], from_table[0]
+    assert set(export_alert) == set(table_alert)
+    for key, value in table_alert.items():
+        if key != 'id':
+            assert export_alert[key] == value, key
+            assert type(export_alert[key]) is type(value), key
+    assert table_alert['id'] == 7
+    # The export has no ids; its key is the table's unique key, the contract and the bucket.
+    bucket_s = int(at('20:50:00').timestamp()) // 300 * 300
+    assert export_alert['id'] == f'{SPXW_C}@{bucket_s}'
+
+
+def test_export_filters_by_ticker_expiry_and_limit_in_fired_order(tmp_path, con):
+    other_day = DAY + timedelta(days=1)
+    url = write_export(
+        tmp_path,
+        [
+            export_row(SPXW_C, '20:55:00', '6710.00'),
+            export_row(SPXW_P, '20:50:00', '6701.00'),
+            export_row(SPY_C, '20:51:00', '670.00'),
+            export_row('SPXW261118C06700000', '15:00:00', '6700.00', expiry=other_day),
+        ],
+    )
+
+    both_days = mod.fetch_export_alerts(con, url, 'SPXW', None, None, None)
+    one_day = mod.fetch_export_alerts(con, url, 'SPXW', DAY_ISO, DAY_ISO, None)
+    first = mod.fetch_export_alerts(con, url, 'SPXW', DAY_ISO, DAY_ISO, 1)
+
+    assert [a['option_chain'] for a in both_days] == [SPXW_P, SPXW_C, 'SPXW261118C06700000']
+    assert [a['option_chain'] for a in one_day] == [SPXW_P, SPXW_C]
+    assert [a['option_chain'] for a in first] == [SPXW_P]
+
+
+def test_table_fetch_does_not_drop_rows_with_a_null_spot(monkeypatch):
+    cur = fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', None)])
+
+    alerts = mod.fetch_alerts(psycopg2.connect(), 'SPXW', '2026-11-17', None, None)
+
+    sql, params = cur.execute.call_args.args
+    assert 'underlying_price IS NOT NULL' not in sql
+    assert params == ['SPXW', '2026-11-17']
+    assert alerts[0]['underlying_price'] is None
+
+
+@pytest.fixture
+def run(monkeypatch, tmp_path):
+    """main() with the boundaries patched. Returns tmp_path, the folder the tape, the export
+    and the output live in."""
+    opened: list[duckdb.DuckDBPyConnection] = []
+
+    def connect(**_limits):
+        db = local_connection()
+        opened.append(db)
+        return db
+
+    monkeypatch.setattr(mod, 'load_env', lambda: None)
+    monkeypatch.setattr(mod, 'OUT_DIR', tmp_path / 'out')
+    monkeypatch.setattr(mod, 'fulltape_connection', connect)
+    monkeypatch.setattr(
+        mod, 'r2_url', lambda day: (tmp_path / f'{day}-fulltape.parquet').as_posix()
+    )
+    monkeypatch.setattr(
+        mod, 'export_url', lambda end: (tmp_path / f'replay-{end}.parquet').as_posix()
+    )
+    yield tmp_path
+    for db in opened:
+        db.close()
+
+
+def read_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline='', encoding='utf-8') as f:
+        return list(csv.DictReader(f))
+
+
+def outcome_csv(out: Path, *, export: bool = False) -> Path:
+    pattern = 'interval-ba-outcomes-export-2*.csv' if export else 'interval-ba-outcomes-2*.csv'
+    (path,) = out.glob(pattern)
+    return path
+
+
+# An alert near the close, so its path is three points: t=0, 5 and 10 (21:00:00).
+CLOSE_TAPE = [
+    tick('20:49:30', SPXW_C, '6700.00'),
+    tick('20:50:00', SPXW_C, '6701.00'),  # the crossing tick
+    tick('20:55:00', SPXW_P, '6710.00'),
+    tick('20:59:59', SPXW_P, '6720.00'),
+    tick('21:00:00.500', SPXW_P, '6730.00'),  # after the last step
+]
+
+
+@pytest.mark.parametrize('layout', LAYOUTS)
+def test_reads_the_table_or_the_export_schema(run, monkeypatch, layout):
+    write_tape(run, CLOSE_TAPE, layout)
+    write_export(run, [export_row(SPXW_C, '20:50:00', '6701.00')])
+    fake_table(monkeypatch, [table_row(7, SPXW_C, '20:50:00', '6701.00')])
+
+    assert mod.main(['--source', 'table']) == 0
+    assert mod.main(['--source', 'export', '--export-end', DAY_ISO]) == 0
+
+    assert psycopg2.connect.call_count == 1  # the export source never opens the database
+    from_table = read_rows(outcome_csv(run / 'out'))
+    from_export = read_rows(outcome_csv(run / 'out', export=True))
+    bucket_s = int(at('20:50:00').timestamp()) // 300 * 300
+    assert {r['alert_id'] for r in from_table} == {'7'}
+    assert {r['alert_id'] for r in from_export} == {f'{SPXW_C}@{bucket_s}'}
+    assert [{k: v for k, v in r.items() if k != 'alert_id'} for r in from_table] == [
+        {k: v for k, v in r.items() if k != 'alert_id'} for r in from_export
+    ]
+    assert [(r['t_minutes'], r['spx_price'], r['pct_change']) for r in from_table] == [
+        ('0', '6701.00', '0.0000'),
+        ('5', '6710.00', '0.1343'),
+        ('10', '6720.00', '0.2835'),
+    ]
+    assert list(from_table[0]) == [
+        'alert_id',
+        'option_chain',
+        'option_type',
+        'severity',
+        'fired_at',
+        't_minutes',
+        'ts_utc',
+        'spx_price',
+        'pct_change',
+    ]
+    assert from_table[0]['severity'] == 'warning'
+    assert from_table[0]['fired_at'] == '2026-11-17T20:50:00+00:00'
+    assert from_table[2]['ts_utc'] == '2026-11-17T21:00:00+00:00'
+
+
+def test_the_summary_names_its_source_and_what_it_skipped(run, monkeypatch):
+    write_tape(run, CLOSE_TAPE)
+    fake_table(
+        monkeypatch,
+        [
+            table_row(1, SPXW_C, '20:50:00', '6701.00', total='1500000.00'),
+            table_row(2, SPXW_P, '20:50:00', None),
+        ],
+    )
+
+    mod.main(['--source', 'table'])
+
+    (summary,) = (run / 'out').glob('interval-ba-outcomes-summary-2*.md')
+    text = summary.read_text(encoding='utf-8')
+    assert 'Source: table' in text
+    assert '1 skipped (no spot in the row or on the tape)' in text
+    assert '| extreme | C | 1 |' in text
+
+
+def test_other_tickers_read_their_own_root_and_write_their_own_file(run, monkeypatch):
+    write_tape(
+        run,
+        [
+            tick('20:50:00', SPY_C, '670.00'),
+            tick('20:55:00', SPY_C, '671.00'),
+            tick('20:55:00', SPXW_C, '6710.00'),
+        ],
+    )
+    fake_table(monkeypatch, [table_row(5, SPY_C, '20:50:00', '670.00')])
+
+    mod.main(['--source', 'table', '--ticker', 'spy'])
+
+    (path,) = (run / 'out').glob('interval-ba-outcomes-spy-2*.csv')
+    assert [(r['t_minutes'], r['spx_price']) for r in read_rows(path)] == [
+        ('0', '670.00'),
+        ('5', '671.00'),
+        ('10', '671.00'),
+    ]
+
+
+def test_a_dry_run_writes_nothing(run, monkeypatch):
+    write_tape(run, CLOSE_TAPE)
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00')])
+
+    assert mod.main(['--source', 'table', '--dry-run']) == 0
+
+    assert not list((run / 'out').glob('*'))
+
+
+def test_rows_with_null_spot_are_skipped_only_when_the_tape_has_none(run, monkeypatch, capsys):
+    write_tape(run, CLOSE_TAPE)
+    fake_table(
+        monkeypatch,
+        [
+            # NULL spot, and the contract printed before the alert: the tape's print is the entry.
+            table_row(1, SPXW_C, '20:50:00', None),
+            # NULL spot, and the contract's first print is after the alert: the tape has none.
+            table_row(2, SPXW_P, '20:50:00', None),
+            # A spot in the row: it never needed the tape's.
+            table_row(3, SPXW_P, '20:50:00', '6705.00'),
+        ],
+    )
+
+    mod.main(['--source', 'table'])
+
+    rows = read_rows(outcome_csv(run / 'out'))
+    by_alert: dict[str, list[tuple[str, str, str]]] = {}
+    for r in rows:
+        by_alert.setdefault(r['alert_id'], []).append(
+            (r['t_minutes'], r['spx_price'], r['pct_change'])
+        )
+    assert set(by_alert) == {'1', '3'}
+    # Alert 1: the tape's last print of its contract at or before 20:50:00 is the entry, and
+    # is also t=0, so t=0 sits at 0.
+    assert by_alert['1'][:2] == [('0', '6701.00', '0.0000'), ('5', '6710.00', '0.1343')]
+    # Alert 3 has no print of its own contract before the alert: no t=0 row, and the path
+    # starts at t=5 against the row's own 6705.00.
+    assert by_alert['3'][0] == ('5', '6710.00', '0.0746')
+    assert '1 skipped (no spot in the row or on the tape)' in capsys.readouterr().out
+
+
+def test_a_missing_tape_day_is_skipped_by_name_and_the_other_days_still_run(
+    run, monkeypatch, capsys
+):
+    write_tape(run, CLOSE_TAPE)
+    next_day = DAY + timedelta(days=1)
+    row = table_row(2, 'SPXW261118C06700000', '20:50:00', '6701.00')
+    row['expiry'] = next_day
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00'), row])
+
+    assert mod.main(['--source', 'table']) == 0
+
+    assert {r['alert_id'] for r in read_rows(outcome_csv(run / 'out'))} == {'1'}
+    assert f'{next_day.isoformat()}  SKIP: tape not in R2' in capsys.readouterr().out
+
+
+def test_a_tape_with_no_prints_of_the_root_skips_the_day(run, monkeypatch, capsys):
+    write_tape(run, [tick('20:50:00', SPY_C, '670.00')])
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00')])
+
+    mod.main(['--source', 'table'])
+
+    assert read_rows(outcome_csv(run / 'out')) == []
+    assert f'{DAY_ISO}  SKIP: no SPXW prints on the tape' in capsys.readouterr().out
+
+
+def test_an_unreadable_tape_stops_the_run_instead_of_reading_as_a_missing_day(
+    run, monkeypatch
+):
+    (run / f'{DAY_ISO}-fulltape.parquet').write_bytes(b'not a parquet file')
+    fake_table(monkeypatch, [table_row(1, SPXW_C, '20:50:00', '6701.00')])
+
+    with pytest.raises(duckdb.Error):
+        mod.main(['--source', 'table'])
+
+
+def test_no_matching_alerts_exits_with_a_message(run, monkeypatch):
+    fake_table(monkeypatch, [])
+
+    with pytest.raises(SystemExit, match='No alerts matched the filter'):
+        mod.main(['--source', 'table'])
+
+
+@pytest.mark.parametrize(
+    'argv',
+    [
+        ['--source', 'export'],  # no end date: no object to read
+        ['--source', 'table', '--export-end', DAY_ISO],  # an end date the table ignores
+        ['--source', 'export', '--export-end', '2026-13-45'],  # not a date
+        ['--source', 'files'],
+    ],
+)
+def test_bad_source_flags_are_refused_before_anything_runs(run, argv):
+    with pytest.raises(SystemExit) as stopped:
+        mod.main(argv)
+
+    assert stopped.value.code == 2
+    assert not (run / 'out').exists()
+
+
+def test_a_missing_export_names_the_key_it_looked_for(run):
+    with pytest.raises(SystemExit, match='research/interval-ba/replay-2026-11-17.parquet'):
+        mod.main(['--source', 'export', '--export-end', DAY_ISO])
+
+
+def test_an_export_without_the_columns_the_script_reads_names_them(run):
+    narrow = pa.schema(
+        [f for f in EXPORT_SCHEMA if f.name not in ('fired_at', 'underlying_price')]
+    )
+    rows = [
+        {k: v for k, v in export_row(SPXW_C, '20:50:00', '6701.00').items() if k in narrow.names}
+    ]
+    write_export(run, rows, narrow)
+
+    with pytest.raises(SystemExit, match='fired_at, underlying_price'):
+        mod.main(['--source', 'export', '--export-end', DAY_ISO])
+
+
+def test_export_columns_match_the_tool():
+    """The script copies the export's schema instead of importing the tool (a production run
+    hashes the tool's files). This holds the copies, here and in the script, to the tool's."""
+    import interval_ba_tape as tool
+
+    wanted = [(name, str(kind)) for name, kind in tool._EXPORT_COLUMNS]
+    assert [(f.name, str(f.type)) for f in EXPORT_SCHEMA] == wanted
+    assert set(mod.EXPORT_COLUMNS) <= {name for name, _ in wanted}
+    assert mod.EXPORT_PREFIX == tool.EXPORT_PREFIX
