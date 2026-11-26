@@ -1713,6 +1713,39 @@ describe('databaseOf', () => {
     },
   );
 
+  // The host a parse gives must be what follows the last `@` in the string
+  // (the predicate `dbHost` shares, in db-host.ts). These parse with a user
+  // and a host, so the guard on a missing user did not see them: the driver
+  // would POST the connection string, password and all, to the parsed host.
+  it.each([
+    [
+      'an @ in the password, then a slash',
+      'postgres://owner:p@ss/34@ep-plan.neon.tech/neondb',
+    ],
+    [
+      'an @ in the password, then a question mark',
+      'postgres://owner:p@ss?34@ep-plan.neon.tech/neondb',
+    ],
+    [
+      'an @ in the password, then a hash',
+      'postgres://owner:p@ss#34@ep-plan.neon.tech/neondb',
+    ],
+    ['an @ in the user', 'postgres://ow@ner/34@ep-plan.neon.tech/neondb'],
+    [
+      'an @ after the database name',
+      'postgres://owner:pw@ep-plan.neon.tech/neondb@x',
+    ],
+    // The host is repeated after the `@`, so the shared test trusts it; the
+    // older guard (no user, no password parsed, but an `@`) still takes it.
+    [
+      'no user or password parsed, and an @ after the host that repeats it',
+      'postgres://ep-plan.neon.tech/neondb@ep-plan.neon.tech/x',
+    ],
+  ])('gives the sentinel when %s', (_label, url) => {
+    // The exact fixed text: nothing of the URL can be in it.
+    expect(databaseOf(url)).toBe(SENTINEL);
+  });
+
   it.each([
     ['undefined', undefined],
     ['an empty string', ''],

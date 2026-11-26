@@ -1815,41 +1815,59 @@ describe('undo', () => {
  * part of the user or the password (or, for the last two, text after the
  * database name); `tokens` are the parts that must not appear.
  */
-const AWKWARD_URLS: Array<[label: string, url: string, tokens: string[]]> = [
+const AWKWARD_URLS: Array<
+  [
+    label: string,
+    url: string,
+    tokens: string[],
+    // Whether the shape alone shows the URL's host is not what the string
+    // says. The last entry has a real host: it parses and is trusted, the
+    // text after the database name is only the name, and a connection to it
+    // fails at the server, so no name derived from it is ever printed.
+    unusableByShape: boolean,
+  ]
+> = [
   [
     'a slash after a numeric password prefix',
     'postgres://owner:12/34@ep-plan.neon.tech/neondb',
     ['owner', '12', '34'],
+    true,
   ],
   [
     'an @ in the password, then a slash',
     'postgres://owner:p@ss/34@ep-plan.neon.tech/neondb',
     ['owner', 'ss', '34'],
+    true,
   ],
   [
     'an @ in the password, then a question mark',
     'postgres://owner:p@ss?34@ep-plan.neon.tech/neondb',
     ['owner', 'ss', '34'],
+    true,
   ],
   [
     'an @ in the password, then a hash',
     'postgres://owner:p@ss#34@ep-plan.neon.tech/neondb',
     ['owner', 'ss', '34'],
+    true,
   ],
   [
     'an @ in the user',
     'postgres://ow@ner/34@ep-plan.neon.tech/neondb',
     ['ow', 'ner', '34'],
+    true,
   ],
   [
     'an @ after the database name',
     'postgres://owner:pw@ep-plan.neon.tech/neondb@x',
     ['owner', 'pw', '@x'],
+    true,
   ],
   [
     'a parameter after the database name',
     'postgres://owner:pw@ep-plan.neon.tech/neondb;password=x',
     ['owner', 'pw', 'password', '=x'],
+    false,
   ],
 ];
 
@@ -1993,16 +2011,20 @@ describe('the database check prints only what the file recorded', () => {
 });
 
 describe('a dry run with no usable DATABASE_URL', () => {
-  it.each([
+  // The unusable ones by shape, each of which the driver would take (with the
+  // user or part of the password as the host) and then POST the whole
+  // connection string to that host on the first query: refused before getDb().
+  const UNUSABLE: Array<[label: string, url: string | undefined]> = [
     ['unset', undefined],
     ['empty', ''],
     ['not a URL', 'not a url'],
-    [
-      'a URL whose password is cut short',
-      'postgres://owner:12/34@ep-plan.neon.tech/neondb',
-    ],
-  ])(
-    'is refused before getDb(), naming no part of the URL: %s',
+    ...AWKWARD_URLS.filter(([, , , unusable]) => unusable).map(
+      ([label, url]): [string, string] => [label, url],
+    ),
+  ];
+
+  it.each(UNUSABLE)(
+    'is refused before getDb() and before any fetch, naming no part of the URL: %s',
     async (_label, url) => {
       if (url === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = url;
@@ -2010,6 +2032,7 @@ describe('a dry run with no usable DATABASE_URL', () => {
 
       const failure = await failureOf(dry());
 
+      // The exact fixed text: nothing of the URL can be in it.
       expect(failure.message).toBe(
         'DATABASE_URL is missing or is not a usable database URL. Nothing was read or written.',
       );

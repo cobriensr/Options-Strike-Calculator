@@ -26,9 +26,14 @@
  * bars, the candles the page computed its range from). APP_URL and OWNER_SECRET
  * are read only when such a date is planned, and the history origin goes to
  * stderr just before the first call. None of the three is printed as it is. The
- * history origin is, and the database is named, `host/name`, in a "Database:"
- * line after the run, once a query on DATABASE_URL has succeeded (a failed run
- * names none). It prints the counts, a per-date table, a
+ * history origin is. The database is named, `host/name`, in a "Database:" line
+ * after the run: no name derived from DATABASE_URL is printed or written until
+ * a query on it has succeeded, so a failed run names none. A DATABASE_URL the
+ * database driver will not parse gives a fixed message (`getDb` replaces the
+ * driver's error for it, which holds the whole connection string). The driver's
+ * other errors, and the database server's own error text on a failed first
+ * query, pass through as they are, and the latter can name the role ("password authentication failed for user ..."). It prints the counts, a
+ * per-date table, a
  * block for every repair with the stored and the new values and the candles used
  * (so a row can be recomputed by hand), the lists by id (lag, look-ahead,
  * incomplete-range, the NULL-median rows and every other row left alone), the

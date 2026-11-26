@@ -94,14 +94,19 @@
  * asks the app instead. The database's `spx_candles_1m` is SPY-translated and is
  * not them. The environment is DATABASE_URL, and APP_URL and OWNER_SECRET only
  * when a date from FIRST_CANDLE_DATE on is planned; none is printed as it is. The
- * database is named, as `host/name`, and the origin goes to stderr, and the
- * database name is derived from DATABASE_URL only after a query on it has
- * succeeded (see `databaseOf`).
+ * origin goes to stderr. The tool prints or writes no name derived from
+ * DATABASE_URL (`host/name`, see `databaseOf`) until a query on it has
+ * succeeded. What it cannot promise: `getDb` replaces a driver error that echoes
+ * the connection string (the one for a URL it will not parse) with a fixed
+ * message, but the driver's other errors, and the database server's error text
+ * for a failed first query, pass through as they are, and the latter may name
+ * the role ("password authentication failed for user ...").
  *
  * The run. A dry run is the default: it writes a plan file (what it would write,
  * with the scope and the database, `host/name`) under the backup directory and
- * nothing to the database. It refuses before `getDb()` when DATABASE_URL names no
- * usable database, without printing it. `--apply --plan F`
+ * nothing to the database. It refuses before `getDb()` when DATABASE_URL is
+ * missing, does not parse, or parses with a host that is not what the string
+ * says, without printing it. `--apply --plan F`
  * refuses first if F was written for another database, or if F's scope covers
  * more than one date and `--all` is not also given (the owner's rule: one date
  * first, then all; a `--date` plan, or a `--since` and `--until` naming one day,
@@ -146,6 +151,7 @@ import {
   type SlotCandle,
 } from '../../src/utils/snapshot-slot.js';
 import { getETToday, getETTotalMinutes } from '../../src/utils/timezone.js';
+import { readableUrl } from './db-host.js';
 import {
   FETCH_PAUSE_MS,
   fetchHistory,
@@ -1291,36 +1297,32 @@ function readFileAs<T>(file: string, schema: z.ZodType<T>, what: string): T {
 const NO_DATABASE = '(DATABASE_URL missing or not a URL)';
 
 /**
- * The database a URL names, `host/name`, read off a parse of the URL. A Neon
- * project can hold several databases on one host, so the host alone does not
- * say which one a file was written for.
+ * The database a URL names, `host/name`, for a file to record and a report to
+ * name. A Neon project can hold several databases on one host, so the host
+ * alone does not say which one a file was written for.
  *
- * This is a guess from a parse, not proof. A URL with an `@`, or a `/`, `?` or
- * `#`, in the wrong place can parse so that the user or part of the password
- * lands in the host or the path (`postgres://owner:12/34@host/db` gives the
- * host `owner`, and `postgres://owner:p@ss/34@host/db` gives `ss/34@host/db`).
- * The guard below turns the form that has no user and no password parsed, but
- * an `@` in the string, into `NO_DATABASE`; the rest it cannot tell apart, and
- * the rule does not lean on it. The rule: a value derived from the current
+ * It is read off a parse of the raw URL, and it is `NO_DATABASE` for a URL that
+ * is missing, does not parse, or parses so that its host is not what the string
+ * says (`readableUrl`, the test `dbHost` shares): `postgres://owner:p@ss/34@h/db`
+ * parses with the host `ss`, which a driver would send the whole connection
+ * string to. The guard below also takes the form with no user and no password
+ * parsed but an `@` in the string. That screens the shapes known to put the user
+ * or part of the password where the host should be, and no more: the path is the
+ * database name and is whatever follows the host (`/neondb;password=x`), so this
+ * function cannot promise that nothing of the URL is in what it returns.
+ *
+ * The safety rests on where the value is used. A value derived from the current
  * DATABASE_URL is printed or written only after a query on that URL has
- * succeeded, since a URL the driver connects with is not one of these. Before
- * any connection, the refusals print the name a file recorded and never this
- * one, and `NO_DATABASE` never matches.
+ * succeeded, and before any connection the refusals print only the name a file
+ * recorded. `NO_DATABASE` never matches.
  */
 export function databaseOf(url: string | undefined): string {
-  try {
-    const parsed = new URL(url ?? '');
-    if (
-      parsed.username === '' &&
-      parsed.password === '' &&
-      url?.includes('@')
-    ) {
-      throw new Error('userinfo was cut short');
-    }
-    return `${parsed.hostname}${parsed.pathname}`;
-  } catch {
+  const parsed = readableUrl(url);
+  if (parsed === null) return NO_DATABASE;
+  if (parsed.username === '' && parsed.password === '' && url?.includes('@')) {
     return NO_DATABASE;
   }
+  return `${parsed.hostname}${parsed.pathname}`;
 }
 
 /**
