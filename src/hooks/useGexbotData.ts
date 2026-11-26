@@ -49,6 +49,13 @@ export interface SnapshotsLatestRow {
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
+  /** The vendor's level prices (see the server's `SnapshotsLatestRow`). */
+  zeroMcall: number | null;
+  zeroMput: number | null;
+  majorPosVol: number | null;
+  majorPosOi: number | null;
+  majorNegVol: number | null;
+  majorNegOi: number | null;
   /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
   minDte: number | null;
 }
