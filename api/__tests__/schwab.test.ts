@@ -868,6 +868,130 @@ describe('schwab', () => {
   });
 
   // ============================================================
+  // Where the stored tokens stand: the 60 s buffer, the refresh expiry
+  // ============================================================
+  //
+  // `assessTokens` and `basicAuthHeader` are private to schwab.ts, so their
+  // rules are pinned here, through `getAccessToken`, with the clock fixed.
+  // A refresh shows as one call to the token endpoint.
+
+  describe('where the stored tokens stand', () => {
+    const NOW = Date.UTC(2026, 10, 24, 15, 0, 0);
+
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(NOW);
+    });
+
+    /** Store tokens that expire `accessIn` and `refreshIn` ms from NOW. */
+    function storeTokens(accessIn: number, refreshIn: number) {
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'stored-access',
+        refreshToken: 'stored-refresh',
+        expiresAt: NOW + accessIn,
+        refreshExpiresAt: NOW + refreshIn,
+      });
+      const fetchMock = vi.fn().mockResolvedValue(
+        tokenResponse({
+          access_token: 'new-access',
+          refresh_token: 'stored-refresh',
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    // The access token is used as stored while `now < expiresAt - 60 s`, and
+    // refreshed from the moment that stops holding.
+    it.each([
+      ['10 minutes left: used as stored', 600_000, false],
+      [
+        'a millisecond more than the buffer left: used as stored',
+        60_001,
+        false,
+      ],
+      ['exactly the buffer left: refreshed', 60_000, true],
+      ['a millisecond less than the buffer left: refreshed', 59_999, true],
+      ['no time left: refreshed', 0, true],
+      ['expired a minute ago: refreshed', -60_000, true],
+    ])(
+      'with the access token having %s',
+      async (_label, accessIn, refreshed) => {
+        const fetchMock = storeTokens(accessIn, 3 * DAY_MS);
+
+        expect(await getAccessToken()).toEqual({
+          token: refreshed ? 'new-access' : 'stored-access',
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(refreshed ? 1 : 0);
+      },
+    );
+
+    // The refresh token has no buffer, and it is still good at the very tick it
+    // expires (`now > refreshExpiresAt` is what lapses it): a millisecond later
+    // it is refused. Both access-token states are checked, because the login is
+    // judged before the access token is read.
+    const STILL_VALID = [
+      ['a millisecond before the refresh token expires', 1],
+      ['at the very tick the refresh token expires', 0],
+    ] as const;
+
+    it.each(STILL_VALID)(
+      'uses a fresh access token as stored %s',
+      async (_label, refreshIn) => {
+        const fetchMock = storeTokens(600_000, refreshIn);
+
+        expect(await getAccessToken()).toEqual({ token: 'stored-access' });
+        expect(fetchMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(STILL_VALID)(
+      'still refreshes a stale access token %s: the login counts as valid',
+      async (_label, refreshIn) => {
+        const fetchMock = storeTokens(0, refreshIn);
+
+        expect(await getAccessToken()).toEqual({ token: 'new-access' });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('reports a login that lapsed a millisecond ago, and does not call Schwab', async () => {
+      const fetchMock = storeTokens(600_000, -1);
+
+      const result = await getAccessToken();
+
+      expect(result).toMatchObject({ error: { type: 'expired_refresh' } });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('sends the client credentials as one Basic header, as they are, with the stored refresh token', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id+chars=';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret/&';
+      const fetchMock = storeTokens(0, 3 * DAY_MS);
+
+      await getAccessToken();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe(TOKEN_URL);
+      expect(init.method).toBe('POST');
+      // base64 of the literal text "id+chars=:secret/&": the id, a colon, the
+      // secret, with nothing in either escaped first.
+      expect(init.headers).toEqual({
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: 'Basic aWQrY2hhcnM9OnNlY3JldC8m',
+      });
+      const body = init.body as URLSearchParams;
+      expect(body.get('grant_type')).toBe('refresh_token');
+      expect(body.get('refresh_token')).toBe('stored-refresh');
+    });
+  });
+
+  // ============================================================
   // Refresh-token lifetime + rejection (2026-09-29 logout incident)
   // ============================================================
 
