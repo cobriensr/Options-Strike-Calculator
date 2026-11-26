@@ -67,3 +67,41 @@ export function readableUrl(databaseUrl: string | undefined): URL | null {
 export function dbHost(databaseUrl: string | undefined): string {
   return readableUrl(databaseUrl)?.hostname ?? DB_HOST_UNREADABLE;
 }
+
+/** What `databaseOf` returns for a URL that is missing or does not parse. */
+export const NO_DATABASE = '(DATABASE_URL missing or not a URL)';
+
+/**
+ * The database a URL names, `host/name`, for a file to record and a report to
+ * name. A Neon project can hold several databases on one host, so the host
+ * alone does not say which one a file was written for.
+ *
+ * It is read off a parse of the raw URL, and it is `NO_DATABASE` for a URL that
+ * is missing, does not parse, holds a tab, CR, LF or NUL away from its ends, or
+ * parses so that its host is not what the string says (`readableUrl`, the test
+ * `dbHost` shares): `postgres://owner:p@ss/34@h/db` parses with the host `ss`,
+ * which a driver would send the whole connection string to. The guard below
+ * also takes the form with no user and no password parsed but an `@` in the
+ * string, so `databaseOf` refuses everything `dbHost` refuses, and
+ * `postgres://@host/db` besides. That screens the shapes known to put the user
+ * or part of the password where the host should be, and no more: the path is the
+ * database name and is whatever follows the host (`/neondb;password=x`), so this
+ * function cannot promise that nothing of the URL is in what it returns.
+ *
+ * The safety rests on where the value is used. A value derived from the current
+ * DATABASE_URL is printed or written only after a query on that URL has
+ * succeeded, and before any connection the refusals print only the name a file
+ * recorded. `NO_DATABASE` never matches.
+ *
+ * It lives here, next to `readableUrl`, so the repair tools that name their
+ * database in a plan or backup file (the stale opening range, the options
+ * volume) share one rule.
+ */
+export function databaseOf(url: string | undefined): string {
+  const parsed = readableUrl(url);
+  if (parsed === null) return NO_DATABASE;
+  if (parsed.username === '' && parsed.password === '' && url?.includes('@')) {
+    return NO_DATABASE;
+  }
+  return `${parsed.hostname}${parsed.pathname}`;
+}
