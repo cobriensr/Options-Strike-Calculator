@@ -137,6 +137,119 @@ describe('db.ts', () => {
       delete process.env.DATABASE_URL;
       expect(() => getDb()).toThrow('DATABASE_URL not configured');
     });
+
+    describe('when the driver rejects the connection string', () => {
+      // `neon()` re-parses the URL and, on failure, throws a message that ends
+      // with the whole connection string: user and password included. getDb
+      // must not pass that up (the CLI prints it, and in api/ it reaches Sentry).
+      const URL_WITH_SECRET = String.raw`postgres://owner:s3\cret@ep-plan.neon.tech/neondb`;
+
+      function driverRejects() {
+        vi.mocked(neon).mockImplementation(() => {
+          throw new TypeError(
+            `Database connection string provided to \`neon()\` is not a valid URL. Connection string: ${URL_WITH_SECRET}`,
+          );
+        });
+      }
+
+      function failureOf(run: () => unknown): Error {
+        try {
+          run();
+        } catch (err) {
+          return err as Error;
+        }
+        throw new Error('getDb was expected to throw and did not');
+      }
+
+      it('throws a fixed message with no part of the URL in it', () => {
+        process.env.DATABASE_URL = URL_WITH_SECRET;
+        driverRejects();
+
+        const failure = failureOf(() => getDb());
+
+        expect(failure.message).toBe(
+          'DATABASE_URL is not a URL the database driver accepts',
+        );
+        for (const part of ['owner', 's3', 'cret', 'ep-plan', 'neondb']) {
+          expect(failure.message).not.toContain(part);
+        }
+      });
+
+      it('carries no cause, which would hold the driver’s message and the URL', () => {
+        process.env.DATABASE_URL = URL_WITH_SECRET;
+        driverRejects();
+
+        const failure = failureOf(() => getDb());
+
+        expect(failure.cause).toBeUndefined();
+        expect('cause' in failure).toBe(false);
+      });
+
+      it('caches nothing: the next call builds a client again', () => {
+        process.env.DATABASE_URL = URL_WITH_SECRET;
+        driverRejects();
+        expect(() => getDb()).toThrow();
+
+        // The URL is fixed and the driver accepts it now.
+        vi.mocked(neon).mockReset();
+        vi.mocked(neon).mockReturnValue(mockSql as never);
+
+        expect(getDb()).toBe(mockSql);
+        expect(neon).toHaveBeenCalledTimes(1);
+      });
+
+      // Only an error that echoes the URL is replaced. The driver's other
+      // constructor errors say nothing of it, and the test harness's block
+      // (src/__tests__/db-guard.ts) is an error a test must see by name.
+      it.each([
+        [
+          'the driver’s format error, which prints only a generic example',
+          new Error(
+            'Database connection string format for `neon()` should be: postgresql://user:password@host.tld/dbname?option=value',
+          ),
+        ],
+        [
+          'the driver’s no-string error',
+          new Error('No database connection string was provided to `neon()`.'),
+        ],
+        [
+          'an error from the test harness’s database block',
+          new Error(
+            'tests must not connect to a database; this test tried: neon.',
+          ),
+        ],
+      ])('passes %s up as it is, the same error', (_label, thrown) => {
+        process.env.DATABASE_URL =
+          'postgres://owner:pw@ep-plan.neon.tech/neondb';
+        vi.mocked(neon).mockImplementation(() => {
+          throw thrown;
+        });
+
+        expect(failureOf(() => getDb())).toBe(thrown);
+      });
+
+      it('replaces an error that echoes the URL even when it is not an Error object', () => {
+        process.env.DATABASE_URL = URL_WITH_SECRET;
+        vi.mocked(neon).mockImplementation(() => {
+          // A driver could throw a string.
+          throw `bad connection string ${URL_WITH_SECRET}`;
+        });
+
+        expect(failureOf(() => getDb()).message).toBe(
+          'DATABASE_URL is not a URL the database driver accepts',
+        );
+      });
+
+      it('leaves a URL the driver accepts alone: it is passed through unchanged', () => {
+        process.env.DATABASE_URL =
+          'postgresql://owner:pw@ep-plan.neon.tech/neondb?sslmode=require';
+
+        expect(getDb()).toBe(mockSql);
+        expect(neon).toHaveBeenCalledWith(
+          'postgresql://owner:pw@ep-plan.neon.tech/neondb?sslmode=require',
+        );
+      });
+    });
   });
 
   // ============================================================

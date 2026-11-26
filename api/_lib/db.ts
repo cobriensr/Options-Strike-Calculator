@@ -40,7 +40,22 @@ export function getDb() {
   if (!_db) {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL not configured');
-    _db = neon(url);
+    try {
+      _db = neon(url);
+    } catch (err) {
+      // The driver re-parses the URL, and when it rejects it the message it
+      // throws ends with the whole connection string, password included. Callers
+      // print or report what getDb throws (a script's CLI, Sentry in api/), so
+      // an error that echoes the URL does not pass: a fixed message replaces it,
+      // with no `cause` (which would hold the same text). Any other error goes
+      // up as it is (the driver's other constructor errors name no URL, and a
+      // test's database block must reach the test by name). A URL the driver
+      // accepts is untouched, and nothing is cached, so the next call retries.
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes(url)) throw err;
+      // eslint-disable-next-line preserve-caught-error -- the cause is the text to hide
+      throw new Error('DATABASE_URL is not a URL the database driver accepts');
+    }
   }
   return _db;
 }
