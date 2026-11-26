@@ -18,21 +18,30 @@
  * - look-ahead: a replayed (`is_backtest`) row before 10:00 ET that holds the
  *   date's complete range. A replay from before the as-of fix read the whole
  *   day. Counted and listed, never written (snapshot-builder phase 6 owns it).
+ *   If the complete range cannot be read (a bad price on a bar that has ended by
+ *   9:00 CT), such a replayed row that is not the as-of range is `skip`
+ *   `no-as-of-state`: it could be a look-ahead, so it is not judged.
  * - rebase: inside the band [as-of range, range with the bar running at the
  *   slot], and not the as-of range. A live save before 10:00 ET legitimately
  *   saw the running bar. Counted, never written (a methodology question).
- * - lag: a live row before 10:00 ET that holds a range between the as-of range a
- *   bar earlier, widened by the open of the bar that ended at the slot, and the
- *   as-of range: a page that answered a bar behind. Counted and listed, never
- *   written.
+ * - lag: a live row that holds a range between the as-of range a bar earlier,
+ *   widened by the open of the bar that ended at the slot, and the as-of range:
+ *   a page that answered a bar behind. Before 10:00 ET on any date, and at 9:00
+ *   CT (where the range completes) from the live fix on (2026-11-23); at 9:00 CT
+ *   before the fix, the same row is an incomplete-range. Counted and listed,
+ *   never written.
+ * Rebase, lag and incomplete-range all yield to evidence of a carried-over
+ * range: a row that holds the previous trading date's own range (the range most
+ * of that date's rows from 10:00 ET on hold, within 0.05) is stale whatever
+ * window it falls in by chance, and is repaired.
  * - incomplete-range: a live row from 10:00 ET on, saved before the live fix
  *   (2026-11-23), whose range is narrower than the complete one only by the last
  *   seconds of the 9:55 bar (it sits between the range through the 9:50 bar,
  *   widened by the 9:55 bar's open, and the complete range). The owner decided
  *   (2026-11-25) to repair these. Their own kind, counted and listed apart, and
  *   written like any repair.
- * - stale (a repair): anything else outside the band. A previous session's range
- *   always lands here.
+ * - stale (a repair): anything else outside the band, and a carried-over range
+ *   wherever it falls. A previous session's range always lands here.
  * At 8:30 CT, with no ended bar, the band's lower bound is the open.
  *
  * What a repair gets. All four columns are recomputed: high and low from the
@@ -87,10 +96,15 @@
  * host and the origin are).
  *
  * The run. A dry run is the default: it writes a plan file (what it would write,
- * with the scope and the database host) under the backup directory and nothing
- * to the database. `--apply --plan F` plans afresh, refuses if any row's new
- * values, or the set of rows, differ from F (a row F lists that already holds its
- * new values is fine: a second apply writes nothing), writes the backup file
+ * with the scope and the database, `host/name`, never the user or the password)
+ * under the backup directory and nothing to the database. `--apply --plan F`
+ * refuses first if F was written for another database, or if F's scope covers
+ * more than one date and `--all` is not also given (the owner's rule: one date
+ * first, then all; a `--date` plan, or a `--since` and `--until` naming one day,
+ * applies without it). It then plans afresh and refuses if any row's new values,
+ * or the stored values the repair replaces (its before values, and the features
+ * row's), or the set of rows, differ from F (a row F lists that already holds
+ * its new values is fine: a second apply writes nothing), writes the backup file
  * (with `wx`: an existing file is never overwritten, and the run stops before
  * any write), and then, one date at a time, the date's rows (500 to a statement,
  * R5) and its features row in one transaction, each row only where it still holds
@@ -128,7 +142,6 @@ import {
   type SlotCandle,
 } from '../../src/utils/snapshot-slot.js';
 import { getETToday, getETTotalMinutes } from '../../src/utils/timezone.js';
-import { dbHost } from './econ-label-backfill.js';
 import {
   FETCH_PAUSE_MS,
   fetchHistory,
@@ -511,6 +524,7 @@ function lagWindow(
 function judgeWithCandles(
   row: RangeRow,
   candles: readonly SlotCandle[],
+  previousOwn: OwnRange | null,
 ): RowResult {
   const slot = parseEntryTimeMinutes(row.entry_time);
   const ref = refOf(row, slot);
@@ -559,24 +573,36 @@ function judgeWithCandles(
   const complete = early
     ? (spxSlotStateAsOf(candles, COMPLETE_FROM_CT)?.openingRange ?? null)
     : asOf;
-  if (
-    !live &&
-    early &&
-    complete != null &&
-    near(stored.high, complete.high) &&
-    near(stored.low, complete.low)
-  ) {
-    return { kind: 'look-ahead', row: ref, stored };
+  if (!live && early) {
+    // A replay before 10:00 ET may hold the date's whole range, read ahead.
+    // Without that range (a bad price on a bar that has ended by 9:00 CT) it
+    // cannot be told from a repairable row, so it is not judged.
+    if (complete == null) return skip(ref, 'no-as-of-state');
+    if (near(stored.high, complete.high) && near(stored.low, complete.low)) {
+      return { kind: 'look-ahead', row: ref, stored };
+    }
   }
 
+  // A range that is the previous date's own is carried over, whatever window
+  // it falls in by chance: it is stale, and it is repaired below.
+  const carriedOver =
+    previousOwn != null &&
+    near(stored.high, previousOwn.high) &&
+    near(stored.low, previousOwn.low);
   const band: Window = {
     high: [floor.high, ceil.high],
     low: [ceil.low, floor.low],
   };
-  if (inWindow(stored, band)) {
+  if (!carriedOver && inWindow(stored, band)) {
     return { kind: 'rebase', row: ref, stored, asOf };
   }
-  if (live && early) {
+  // A page a bar behind: any slot before 10:00 ET, and from the live fix on
+  // the 9:00 CT slot too, where the range completes. Before the fix that slot
+  // is the incomplete-range kind below, which is written, not only counted.
+  // Past 9:00 CT the window is only the complete range, which `ok` took above,
+  // so the date test covers those slots without changing a result.
+  const lagSlot = early || row.date >= LIVE_FIX_DATE;
+  if (!carriedOver && live && lagSlot) {
     const window = lagWindow(candles, slot);
     if (window != null && inWindow(stored, window)) {
       return { kind: 'lag', row: ref, stored };
@@ -589,7 +615,7 @@ function judgeWithCandles(
     band,
   });
   if (repair.kind !== 'repair') return repair;
-  if (live && !early && row.date < LIVE_FIX_DATE) {
+  if (!carriedOver && live && !early && row.date < LIVE_FIX_DATE) {
     // The page's range at 10:00 ET lacked the 9:55 bar's last seconds.
     const window = lagWindow(candles, COMPLETE_FROM_CT);
     if (window != null && inWindow(stored, window)) {
@@ -672,6 +698,10 @@ const sameOr = (a: OrValues, b: OrValues): boolean =>
   sameNumeric(a.consumed, b.consumed) &&
   a.signal === b.signal;
 
+/** `high/low/consumed/signal`, NULL written out, for a message. */
+const showOr = (v: OrValues): string =>
+  `${v.high ?? 'NULL'}/${v.low ?? 'NULL'}/${v.consumed ?? 'NULL'}/${v.signal ?? 'NULL'}`;
+
 /**
  * Whether the date's features row follows the pick row, the row
  * `build-features` takes (the repair never changes which one: it reads none of
@@ -715,8 +745,10 @@ function featureStatus(
 /**
  * Judge every row of one date. `candles` null is a date before Schwab's bars:
  * the date's own range stands in, and a stale row is repaired to it only when it
- * holds `previousOwnRange`, the previous trading date's own range. Rows are
- * judged in id order. Never throws.
+ * holds `previousOwnRange`, the previous trading date's own range. With
+ * candles, a row that holds that range is carried over and stale, whatever lag
+ * window or band it falls in by chance. Rows are judged in id order. Never
+ * throws.
  */
 export function planDate(input: {
   date: string;
@@ -725,7 +757,7 @@ export function planDate(input: {
   feature: FeatureRow | null;
   /** The previous session's close from /api/history; null if it gave none. */
   previousClose: number | null;
-  /** The previous trading date's own range; read only when `candles` is null. */
+  /** The previous trading date's own range, if its rows name one. */
   previousOwnRange?: OwnRange | null;
 }): DatePlan {
   const rows = [...input.rows].sort((a, b) => a.id - b.id);
@@ -735,7 +767,7 @@ export function planDate(input: {
   const results = rows.map((row) =>
     candles == null
       ? judgeOwnRange(row, own, previousOwn)
-      : judgeWithCandles(row, candles),
+      : judgeWithCandles(row, candles, previousOwn),
   );
   return {
     date: input.date,
@@ -1160,7 +1192,7 @@ const FeaturesSchema = z.array(
 const BackupSchema = z.strictObject({
   note: z.string(),
   createdAt: z.string(),
-  dbHost: z.string(),
+  database: z.string(),
   scope: z.string(),
   rows: RowsSchema,
   features: FeaturesSchema,
@@ -1168,7 +1200,7 @@ const BackupSchema = z.strictObject({
 const PlanSchema = z.strictObject({
   note: z.string(),
   createdAt: z.string(),
-  dbHost: z.string(),
+  database: z.string(),
   scope: z.strictObject({
     date: DateText.nullable(),
     since: DateText.nullable(),
@@ -1221,6 +1253,18 @@ function scopeLabel(scope: PlanFile['scope']): string {
   return `${scope.since ?? 'first'}..${scope.until ?? 'last'}`;
 }
 
+/**
+ * Whether a plan reaches more than one date: its scope is not a single date
+ * (`--date`, or `--since` and `--until` naming the same one). This is the scope
+ * the dry run was given, not the dates that happened to need a write: a dry
+ * run with no arguments is an all-dates plan even when one date has repairs.
+ */
+function coversManyDates(plan: Pick<PlanFile, 'scope'>): boolean {
+  const { date, since, until } = plan.scope;
+  if (date != null) return false;
+  return !(since != null && since === until);
+}
+
 /** Read a JSON file this script wrote, or say it is not one. */
 function readFileAs<T>(file: string, schema: z.ZodType<T>, what: string): T {
   try {
@@ -1233,9 +1277,23 @@ function readFileAs<T>(file: string, schema: z.ZodType<T>, what: string): T {
   }
 }
 
+/**
+ * The database a URL names: its host and its database name, `host/name`. A
+ * Neon project can hold several databases on one host, so the host alone does
+ * not say which one a file was written for. Never the user or the password.
+ */
+export function databaseOf(url: string | undefined): string {
+  try {
+    const parsed = new URL(url ?? '');
+    return `${parsed.hostname}${parsed.pathname}`;
+  } catch {
+    return '(DATABASE_URL missing or not a URL)';
+  }
+}
+
 /** Refuse a file written for another database than DATABASE_URL names. */
 function requireSameDatabase(file: string, recorded: string): void {
-  const current = dbHost(process.env.DATABASE_URL);
+  const current = databaseOf(process.env.DATABASE_URL);
   if (recorded !== current) {
     throw new Error(
       `${file} was written for the database ${recorded}, and DATABASE_URL names ${current}. Nothing was written.`,
@@ -1256,6 +1314,11 @@ export interface RunOptions {
    */
   apply: boolean;
   planFile: string | null;
+  /**
+   * The owner's one-date-first rule: an apply of a plan that covers more than
+   * one date needs this as a confirmation. A single-date plan does not.
+   */
+  all: boolean;
   backupDir: string;
 }
 
@@ -1315,7 +1378,6 @@ async function planDates(
     const rows = await readRows(sql, date);
     let candles: readonly SlotCandle[] | null = null;
     let previousClose: number | null = null;
-    let previousOwnRange: OwnRange | null = null;
     if (date >= FIRST_CANDLE_DATE) {
       if (access == null) {
         access = historyAccess(process.env);
@@ -1345,9 +1407,12 @@ async function planDates(
       }
       candles = history.history.candles;
       previousClose = previousCloseOf(date, history.history.previousDay);
-    } else {
-      previousOwnRange = ownRangeOf(await readRows(sql, priorTradingDay(date)));
     }
+    // The previous trading date's most common stored range: evidence of a
+    // range carried over, for a date with candles and one without.
+    const previousOwnRange = ownRangeOf(
+      await readRows(sql, priorTradingDay(date)),
+    );
     const feature = await readFeature(sql, date);
     plans.push(
       planDate({
@@ -1389,9 +1454,18 @@ export function comparePlan(
     const was = listed.get(r.row.id);
     if (was == null) {
       problems.push(`row ${r.row.id} is planned now and is not in the file`);
-    } else if (!sameOr(was.after, r.after)) {
+      continue;
+    }
+    if (!sameOr(was.after, r.after)) {
       problems.push(
-        `row ${r.row.id}: the new values differ from the file's (${was.after.high}/${was.after.low}/${was.after.consumed}/${was.after.signal} then, ${r.after.high}/${r.after.low}/${r.after.consumed}/${r.after.signal} now)`,
+        `row ${r.row.id}: the new values differ from the file's (${showOr(was.after)} then, ${showOr(r.after)} now)`,
+      );
+    }
+    // The values the repair replaces are part of what was reviewed: a row that
+    // changed to another stale value since would be overwritten unreviewed.
+    if (!sameOr(was.before, r.before)) {
+      problems.push(
+        `row ${r.row.id}: the stored values changed since the dry run (${showOr(was.before)} then, ${showOr(r.before)} now)`,
       );
     }
   }
@@ -1418,6 +1492,13 @@ export function comparePlan(
       !sameNumeric(was.after.consumed, copy.after.consumed)
     ) {
       problems.push(`the features copy for ${date} differs from the file's`);
+    } else if (
+      was.before.signal !== copy.before.signal ||
+      !sameNumeric(was.before.consumed, copy.before.consumed)
+    ) {
+      problems.push(
+        `the features row for ${date} changed since the dry run (${was.before.signal}/${was.before.consumed} then, ${copy.before.signal}/${copy.before.consumed} now)`,
+      );
     }
   }
   for (const was of file.features) {
@@ -1448,7 +1529,17 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
       ? null
       : readFileAs(opts.planFile, PlanSchema, 'dry-run plan');
   if (reviewed != null)
-    requireSameDatabase(opts.planFile ?? '', reviewed.dbHost);
+    requireSameDatabase(opts.planFile ?? '', reviewed.database);
+  if (
+    opts.apply &&
+    reviewed != null &&
+    !opts.all &&
+    coversManyDates(reviewed)
+  ) {
+    throw new Error(
+      `${opts.planFile} covers more than one date (${scopeLabel(reviewed.scope)}). Apply one date first: dry-run with --date <date> and apply that plan. To apply every date in this plan, add --all. Nothing was written.`,
+    );
+  }
   const scope = reviewed?.scope ?? {
     date: opts.date,
     since: opts.since,
@@ -1506,7 +1597,7 @@ export async function runRepair(opts: RunOptions): Promise<RunResult> {
     {
       note: PLAN_NOTE,
       createdAt: new Date().toISOString(),
-      dbHost: dbHost(process.env.DATABASE_URL),
+      database: databaseOf(process.env.DATABASE_URL),
       scope,
       summary: planSummary(plans),
       rows: writesOf(plans),
@@ -1553,7 +1644,7 @@ async function applyPlans(
     {
       note: BACKUP_NOTE,
       createdAt: new Date().toISOString(),
-      dbHost: dbHost(process.env.DATABASE_URL),
+      database: databaseOf(process.env.DATABASE_URL),
       scope: ctx.scope,
       rows,
       features,
@@ -1613,7 +1704,7 @@ export async function runUndo(opts: {
   apply: boolean;
 }): Promise<UndoResult> {
   const parsed = readFileAs(opts.file, BackupSchema, 'backup');
-  requireSameDatabase(opts.file, parsed.dbHost);
+  requireSameDatabase(opts.file, parsed.database);
   const base = {
     apply: opts.apply,
     rows: parsed.rows.length,
@@ -1677,6 +1768,8 @@ export function exitCodeOfUndo(result: UndoResult): 0 | 1 {
 
 export interface CliArgs {
   apply: boolean;
+  /** Confirms an apply of a plan that covers more than one date. */
+  all: boolean;
   date: string | null;
   since: string | null;
   until: string | null;
@@ -1699,14 +1792,17 @@ OWNER_SECRET, only for a date from 2026-03-05 on) and each row is one of:
   ok            the range as of its slot
   rebase        inside [that range, the range with the bar running at the
                 slot]: counted, never written
-  lag           a live row before 10:00 ET a bar behind the as-of range:
-                counted and listed, never written
+  lag           a live row a bar behind the as-of range, before 10:00 ET, or
+                at 9:00 CT from 2026-11-23 on: counted and listed, never
+                written
   look-ahead    a replayed row before 10:00 ET holding the date's complete
                 range: counted and listed, never written
   incomplete    a live row from 10:00 ET on, before 2026-11-23, narrower than
                 the complete range only by the 9:55 bar's last seconds:
                 written, counted apart (the owner's call, 2026-11-25)
-  stale         anything else outside the band: written
+  stale         anything else outside the band: written, and so is a row that
+                holds the previous trading date's own range, which is a
+                carried-over page whatever window it falls in
 A written row gets all four columns (high, low, pct consumed and signal, graded
 by the same function the live page uses). A row with a NULL median_hl_pct, or
 one not above 0, is not graded: it is listed on its own and nothing is written
@@ -1720,10 +1816,16 @@ per-date table, a block for every repair with the stored and the new values and
 the candles used, the lists by id, and the rows whose stored prev_close is not
 the real previous session's close (reported only). It writes a plan file under
 ${BACKUP_DIR}/. --apply needs --plan <that file>: it plans afresh, refuses
-unless every row and its new values are the file's, writes a backup file under
-${BACKUP_DIR}/ first (never overwriting one), then each date's rows (500 to a
-statement) and features row in one transaction, each row only where it still
-holds the values the dry run read. --plan without --apply only checks the file.
+unless every row, the values it holds now and its new values are the file's (and
+the file was written for this database, host and name), writes a backup file
+under ${BACKUP_DIR}/ first (never overwriting one), then each date's rows (500
+to a statement) and features row in one transaction, each row only where it
+still holds the values the dry run read. --plan without --apply only checks the
+file.
+
+One date first: a plan whose scope covers more than one date (a dry run with no
+--date, or a --since and --until range of more than one day) is applied only
+with --all as well. Dry-run one date with --date, apply that plan, then the rest.
 
 Options:
   --date <D>         only this date, YYYY-MM-DD
@@ -1731,6 +1833,8 @@ Options:
   --until <D>        last date to cover, YYYY-MM-DD (never today or later)
   --plan <f>         a dry-run file: check it, or with --apply write it
   --apply            write the plan named by --plan
+  --all              with --apply --plan: confirm a plan that covers more than
+                     one date (apply one date first, then this)
   --dry-run          the default, said aloud; contradicts --apply
   --undo-file <f>    restore a backup (with --apply; without it, only counts)
   --backup-dir <d>   where the plan and the backup go (default ${BACKUP_DIR})
@@ -1757,6 +1861,7 @@ function checkDate(flag: string, value: string | undefined): string {
 export function parseArgs(argv: readonly string[]): CliArgs {
   const args: CliArgs = {
     apply: false,
+    all: false,
     date: null,
     since: null,
     until: null,
@@ -1780,6 +1885,9 @@ export function parseArgs(argv: readonly string[]): CliArgs {
         break;
       case '--dry-run':
         dryRun = true;
+        break;
+      case '--all':
+        args.all = true;
         break;
       case '--date':
         args.date = checkDate(flag, next);
@@ -1832,6 +1940,11 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   if (args.apply && args.undoFile == null && args.planFile == null) {
     throw new Error(
       'Refusing to apply without --plan <dry-run file>: the dry run names what will be written',
+    );
+  }
+  if (args.all && !(args.apply && args.planFile != null)) {
+    throw new Error(
+      '--all only confirms --apply --plan <dry-run file>: it lets a plan that covers more than one date be applied. Apply one date first',
     );
   }
   return args;

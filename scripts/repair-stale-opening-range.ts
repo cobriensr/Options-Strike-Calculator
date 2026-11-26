@@ -4,13 +4,15 @@
  * phase 3). The rule for which rows are stale, what a repair writes, the rows it
  * leaves alone and why is in scripts/_lib/stale-opening-range.ts.
  *
- * Four steps, from the repo root. Run the dry run outside 13:00-23:00 UTC on a
- * weekday (it calls /api/history about once a second per snapshot date):
+ * The steps, from the repo root: one date first, then every date. Run the dry
+ * run outside 13:00-23:00 UTC on a weekday (it calls /api/history about once a
+ * second per snapshot date):
  *
  *   npx tsx scripts/repair-stale-opening-range.ts --date 2026-11-16     # dry run, one date: writes a plan file
- *   npx tsx scripts/repair-stale-opening-range.ts                       # dry run, every date
- *   npx tsx scripts/repair-stale-opening-range.ts --plan docs/tmp/stale-opening-range/dry-run-<scope>-<time>.json
- *   npx tsx scripts/repair-stale-opening-range.ts --apply --plan docs/tmp/stale-opening-range/dry-run-<scope>-<time>.json
+ *   npx tsx scripts/repair-stale-opening-range.ts --apply --plan docs/tmp/stale-opening-range/dry-run-2026-11-16-<time>.json
+ *   npx tsx scripts/repair-stale-opening-range.ts                       # dry run, every date: writes a plan file
+ *   npx tsx scripts/repair-stale-opening-range.ts --plan docs/tmp/stale-opening-range/dry-run-all-<time>.json
+ *   npx tsx scripts/repair-stale-opening-range.ts --apply --all --plan docs/tmp/stale-opening-range/dry-run-all-<time>.json
  *   npx tsx scripts/repair-stale-opening-range.ts --undo-file docs/tmp/stale-opening-range/backup-<scope>-<time>.json --apply
  *
  * A row with a NULL `median_hl_pct`, or one not above 0, is NOT graded and
@@ -32,8 +34,12 @@
  * (reported, never repaired), and the dates it could not read. It writes a plan
  * file under docs/tmp/stale-opening-range/ and nothing to the database.
  *
- * `--apply --plan F` plans afresh and refuses unless every row and its new
- * values are the ones in F. Then it writes a backup file under
+ * `--apply --plan F` refuses at once if F was written for another database (host
+ * and name), or if F's scope covers more than one date and `--all` is not also
+ * given: one date first, then all. A one-date plan (`--date`, or `--since` and
+ * `--until` naming one day) needs no `--all`. It plans afresh and refuses unless
+ * every row, the values it holds now and its new values are the ones in F. Then
+ * it writes a backup file under
  * docs/tmp/stale-opening-range/ (relative to the working directory; an existing
  * file is never overwritten), and one date at a time the rows, 500 to a
  * statement, and that date's `training_features` copy in one transaction, each
@@ -88,6 +94,7 @@ async function main(): Promise<number> {
     until: args.until,
     apply: args.apply,
     planFile: args.planFile,
+    all: args.all,
     backupDir: args.backupDir,
   });
   console.log(formatReport(result));

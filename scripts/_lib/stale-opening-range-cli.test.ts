@@ -188,6 +188,7 @@ describe('repair-stale-opening-range CLI', () => {
       until: null,
       apply: false,
       planFile: null,
+      all: false,
       backupDir: BACKUP_DIR,
     });
     expect(runUndo).not.toHaveBeenCalled();
@@ -246,7 +247,7 @@ describe('repair-stale-opening-range CLI', () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  it('applies the reviewed plan with --apply --plan: prints the apply report and the backup file', async () => {
+  it('applies the reviewed plan with --apply --plan --all, passing the confirmation on: prints the apply report and the backup file', async () => {
     runRepair.mockResolvedValue({
       apply: true,
       dates: [repairedDate],
@@ -255,14 +256,16 @@ describe('repair-stale-opening-range CLI', () => {
       applied: APPLIED,
     });
 
-    expect(await runCli('--apply', '--plan', PLAN_FILE)).toBe(0);
+    expect(await runCli('--apply', '--plan', PLAN_FILE, '--all')).toBe(0);
 
+    // The no-argument dry run above pins the default, `all: false`.
     expect(runRepair).toHaveBeenCalledWith({
       date: null,
       since: null,
       until: null,
       apply: true,
       planFile: PLAN_FILE,
+      all: true,
       backupDir: BACKUP_DIR,
     });
     const out = printed(log);

@@ -507,16 +507,20 @@ const options = (over: Partial<RunOptions> = {}): RunOptions => ({
   until: null,
   apply: false,
   planFile: null,
+  all: false,
   backupDir,
   ...over,
 });
 const dry = (over: Partial<RunOptions> = {}) => runRepair(options(over));
-/** A dry run, then the apply of exactly the plan file it wrote. */
-async function applyPlanOf(over: Partial<RunOptions> = {}) {
+/**
+ * A dry run, then the apply of exactly the plan file it wrote. `all` is the
+ * confirmation an all-dates plan needs; a one-date plan does not.
+ */
+async function applyPlanOf(over: Partial<RunOptions> = {}, all = false) {
   const planned = await dry(over);
-  return runRepair(options({ apply: true, planFile: planned.planFile }));
+  return runRepair(options({ apply: true, planFile: planned.planFile, all }));
 }
-const applyAll = () => applyPlanOf();
+const applyAll = () => applyPlanOf({}, true);
 const applyDate = (date: string) => applyPlanOf({ date });
 
 /** The error a run rejects with; a run that does not reject fails the test. */
@@ -534,7 +538,7 @@ const filesIn = (prefix: string): string[] =>
 const backups = (): string[] => filesIn('backup-');
 const plansOnDisk = (): string[] => filesIn('dry-run-');
 interface BackupFile {
-  dbHost: string;
+  database: string;
   scope: string;
   rows: Array<{
     id: number;
@@ -757,11 +761,33 @@ describe('a dry run', () => {
     ]);
   });
 
+  it('reads the previous trading date’s own range for a date with candles, and repairs a row that holds it instead of counting it a lag', async () => {
+    // 06-01 holds 7186/7175 on two rows from 10:00 ET on: its own range. A
+    // live row at 8:40 CT on 06-02 holds the same pair, which is also what a
+    // page a bar behind would hold there.
+    await db.query(
+      'TRUNCATE market_snapshots, training_features RESTART IDENTITY',
+    );
+    const carried = ['7186.00', '7175.00', '0.3900', 'GREEN'] as const;
+    await seed([
+      { date: '2026-06-01', entry: '9:05 AM CT', spx: '7195.00', or: carried },
+      { date: '2026-06-01', entry: '10:00 AM CT', spx: '7195.00', or: carried },
+      { date: '2026-06-02', entry: '8:40 AM CT', spx: '7192.00', or: carried },
+    ]);
+
+    const withEvidence = await dry({ date: '2026-06-02' });
+    await db.query(`DELETE FROM market_snapshots WHERE date = '2026-06-01'`);
+    const without = await dry({ date: '2026-06-02' });
+
+    expect(withEvidence.dates[0]?.rows[0]?.kind).toBe('repair');
+    expect(without.dates[0]?.rows[0]?.kind).toBe('lag');
+  });
+
   it('writes a plan file with the scope, the database host, every write and every features copy', async () => {
     const result = await dry({ date: '2026-05-22' });
 
     const plan = readJson<{
-      dbHost: string;
+      database: string;
       scope: {
         date: string | null;
         since: string | null;
@@ -771,7 +797,8 @@ describe('a dry run', () => {
       rows: Array<{ id: number; kind: string; after: Record<string, string> }>;
       features: Array<{ date: string; pickId: number }>;
     }>(result.planFile);
-    expect(plan.dbHost).toBe('ep-plan.neon.tech');
+    // The host and the database name, never the user or the password.
+    expect(plan.database).toBe('ep-plan.neon.tech/neondb');
     expect(plan.scope).toEqual({
       date: '2026-05-22',
       since: null,
@@ -958,7 +985,7 @@ describe('apply', () => {
 
     expect(backups()).toHaveLength(1);
     const file = readBackup(result.backupFile);
-    expect(file.dbHost).toBe('ep-plan.neon.tech');
+    expect(file.database).toBe('ep-plan.neon.tech/neondb');
     expect(file.scope).toBe('2026-05-22');
     expect(file.rows.map((r) => [r.id, r.kind])).toEqual([
       [10, 'repair'],
@@ -1013,7 +1040,9 @@ describe('apply', () => {
   it('applies the same plan twice: the second writes nothing and makes no second backup', async () => {
     const planned = await dry();
     const apply = () =>
-      runRepair(options({ apply: true, planFile: planned.planFile }));
+      runRepair(
+        options({ apply: true, planFile: planned.planFile, all: true }),
+      );
     const first = await apply();
     const updatesAfterFirst = updateSizes.length;
 
@@ -1222,17 +1251,141 @@ describe('the plan an apply is held to', () => {
     expect(backups()).toEqual([]);
   });
 
-  it('refuses a plan written for another database, before reading any row', async () => {
+  it.each([
+    ['another host', 'postgres://owner:pw@ep-other.neon.tech/neondb'],
+    [
+      'the same host, another database',
+      'postgres://owner:pw@ep-plan.neon.tech/otherdb',
+    ],
+  ])(
+    'refuses a plan written for %s, before reading any row',
+    async (_label, url) => {
+      const planned = await dry({ date: '2026-05-22' });
+      process.env.DATABASE_URL = url;
+      statements.length = 0;
+
+      await expect(apply(planned.planFile)).rejects.toThrow(
+        /written for the database ep-plan\.neon\.tech\/neondb, and DATABASE_URL names ep-/,
+      );
+
+      expect(statements).toEqual([]);
+      expect(backups()).toEqual([]);
+    },
+  );
+
+  it('refuses when a row’s stored values changed to another stale value since the dry run', async () => {
     const planned = await dry({ date: '2026-05-22' });
-    process.env.DATABASE_URL = 'postgres://owner:pw@ep-other.neon.tech/neondb';
-    statements.length = 0;
+    // Row 11 still needs the same repair, but it no longer holds what the
+    // owner reviewed: applying would overwrite a value nobody has seen.
+    await db.query(
+      `UPDATE market_snapshots SET opening_range_high = 7160.00 WHERE id = 11`,
+    );
+    const stored = await dump();
 
     await expect(apply(planned.planFile)).rejects.toThrow(
-      /written for the database ep-plan\.neon\.tech, and DATABASE_URL names ep-other\.neon\.tech/,
+      /row 11: the stored values changed since the dry run \(7170\.52\/7130\.33\/0\.5000\/MODERATE then, 7160\.00\/7130\.33\/0\.5000\/MODERATE now\)/,
     );
 
-    expect(statements).toEqual([]);
+    expect(await dump()).toEqual(stored);
     expect(backups()).toEqual([]);
+    expect(updateSizes).toEqual([]);
+  });
+
+  it.each([
+    ['its consumed value', 'MODERATE', '0.6000', 'MODERATE/0.6000'],
+    ['its signal', 'GREEN', '0.5000', 'GREEN/0.5000'],
+  ])(
+    'refuses when the features row changed since the dry run too: %s',
+    async (_label, signal, consumed, shownNow) => {
+      const planned = await dry({ date: '2026-05-22' });
+      // The pick row (12) and its features row moved together, so the copy is
+      // still planned: the rows would be repaired and the features copied from
+      // values nobody reviewed.
+      await db.query(
+        `UPDATE market_snapshots
+            SET opening_range_signal = '${signal}',
+                opening_range_pct_consumed = ${consumed}
+          WHERE id = 12`,
+      );
+      await db.query(
+        `UPDATE training_features
+            SET opening_range_signal = '${signal}',
+                opening_range_pct_consumed = ${consumed}
+          WHERE date = '2026-05-22'`,
+      );
+
+      const failure = await failureOf(apply(planned.planFile));
+
+      expect(failure.message).toMatch(/row 12: the stored values changed/);
+      expect(failure.message).toContain(
+        `the features row for 2026-05-22 changed since the dry run (MODERATE/0.5000 then, ${shownNow} now)`,
+      );
+      expect(backups()).toEqual([]);
+    },
+  );
+
+  describe('a plan that covers more than one date', () => {
+    it('is refused without --all, before reading anything: apply one date first', async () => {
+      const planned = await dry();
+      const stored = await dump();
+      statements.length = 0;
+
+      await expect(
+        runRepair(options({ apply: true, planFile: planned.planFile })),
+      ).rejects.toThrow(
+        /covers more than one date \(all\)\. Apply one date first.*add --all\. Nothing was written/,
+      );
+
+      expect(statements).toEqual([]);
+      expect(fetchedDates()).toHaveLength(5);
+      expect(await dump()).toEqual(stored);
+      expect(backups()).toEqual([]);
+    });
+
+    it('is applied with --all', async () => {
+      const planned = await dry();
+
+      const result = await runRepair(
+        options({ apply: true, planFile: planned.planFile, all: true }),
+      );
+
+      expect(result.applied?.written).toBe(Object.keys(REPAIRED).length);
+    });
+
+    it('names a --since to --until range as many dates, and one day of it as one', async () => {
+      const range = await dry({ since: '2026-05-01', until: '2026-05-04' });
+      const oneDay = await dry({ since: '2026-05-22', until: '2026-05-22' });
+
+      await expect(
+        runRepair(options({ apply: true, planFile: range.planFile })),
+      ).rejects.toThrow(
+        /covers more than one date \(2026-05-01\.\.2026-05-04\)/,
+      );
+      const applied = await runRepair(
+        options({ apply: true, planFile: oneDay.planFile }),
+      );
+
+      expect(applied.applied).toMatchObject({ planned: 3, written: 3 });
+    });
+
+    it('lets a one-date plan be applied without --all, and --all does no harm there', async () => {
+      const first = await applyDate('2026-05-22');
+      expect(first.applied?.written).toBe(3);
+
+      const planned = await dry({ date: '2026-05-04' });
+      const again = await runRepair(
+        options({ apply: true, planFile: planned.planFile, all: true }),
+      );
+      expect(again.applied?.written).toBe(2);
+    });
+
+    it('does not ask for --all to check a plan without applying it', async () => {
+      const planned = await dry();
+
+      const checked = await runRepair(options({ planFile: planned.planFile }));
+
+      expect(checked).toMatchObject({ apply: false, applied: null });
+    });
   });
 
   it('checks a plan without --apply: it writes nothing and says so', async () => {
@@ -1490,15 +1643,20 @@ describe('undo', () => {
   it('refuses a backup written for another database, counting or restoring', async () => {
     const applied = await applyDate('2026-05-22');
     const repaired = await dump();
-    process.env.DATABASE_URL = 'postgres://owner:pw@ep-other.neon.tech/neondb';
     updateSizes.length = 0;
 
-    for (const apply of [false, true]) {
-      await expect(
-        runUndo({ file: applied.backupFile ?? '', apply }),
-      ).rejects.toThrow(
-        /written for the database ep-plan\.neon\.tech, and DATABASE_URL names ep-other\.neon\.tech/,
-      );
+    for (const url of [
+      'postgres://owner:pw@ep-other.neon.tech/neondb',
+      'postgres://owner:pw@ep-plan.neon.tech/otherdb',
+    ]) {
+      process.env.DATABASE_URL = url;
+      for (const apply of [false, true]) {
+        await expect(
+          runUndo({ file: applied.backupFile ?? '', apply }),
+        ).rejects.toThrow(
+          /written for the database ep-plan\.neon\.tech\/neondb, and DATABASE_URL names ep-/,
+        );
+      }
     }
 
     expect(await dump()).toEqual(repaired);
@@ -1523,7 +1681,7 @@ describe('undo', () => {
       JSON.stringify({
         note: 'n',
         createdAt: 'now',
-        dbHost: 'ep-plan.neon.tech',
+        database: 'ep-plan.neon.tech/neondb',
         scope: 'all',
         rows: [],
         features: [
@@ -1540,7 +1698,7 @@ describe('undo', () => {
       JSON.stringify({
         note: 'n',
         createdAt: 'now',
-        dbHost: 'ep-plan.neon.tech',
+        database: 'ep-plan.neon.tech/neondb',
         scope: 'all',
         rows: [],
         features: [],
@@ -1552,7 +1710,7 @@ describe('undo', () => {
       JSON.stringify({
         note: 'n',
         createdAt: 'now',
-        dbHost: 'ep-plan.neon.tech',
+        database: 'ep-plan.neon.tech/neondb',
         scope: 'all',
         rows: [
           {

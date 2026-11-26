@@ -105,8 +105,16 @@ function plan(
   rows: readonly RangeRow[],
   candles = CANDLES,
   previousClose: number | null = PREVIOUS_CLOSE,
+  previousOwnRange: { high: number; low: number } | null = null,
 ): DatePlan {
-  return planDate({ date: DATE, rows, candles, feature: null, previousClose });
+  return planDate({
+    date: DATE,
+    rows,
+    candles,
+    feature: null,
+    previousClose,
+    previousOwnRange,
+  });
 }
 
 function resultOf(p: DatePlan, id: number): RowResult {
@@ -480,6 +488,50 @@ describe('same-session rows: lag, look-ahead, incomplete range', () => {
       expect(resultOf(plan([r]), 1212).kind).toBe(kind);
     });
 
+    describe('when the date’s complete range cannot be read', () => {
+      // The 9:55 ET bar (index 5) has ended by 9:00 CT and is in the complete
+      // range; with a bad price on it, a replayed row before 10:00 ET cannot be
+      // told from a look-ahead.
+      const badLast = CANDLES.map((c, i) =>
+        i === 5 ? { ...c, high: Number.NaN } : c,
+      );
+
+      it.each([
+        ['the complete range', '7203.00', '7175.00'],
+        ['a previous session’s range', '7170.52', '7130.33'],
+      ])(
+        'leaves a replayed row holding %s unjudged: it could be a look-ahead',
+        (_label, high, low) => {
+          const r = at840({
+            id: 1217,
+            is_backtest: true,
+            ...withRange(high, low),
+          });
+
+          expect(resultOf(plan([r], badLast), 1217)).toMatchObject({
+            kind: 'skip',
+            reason: 'no-as-of-state',
+          });
+        },
+      );
+
+      it('still calls a replayed row that holds its own as-of range ok', () => {
+        const r = at840({
+          id: 1218,
+          is_backtest: true,
+          ...withRange('7190.00', '7175.00'),
+        });
+
+        expect(resultOf(plan([r], badLast), 1218).kind).toBe('ok');
+      });
+
+      it('still judges a live row at that slot: it needs no complete range', () => {
+        const r = at840({ id: 1219, ...withRange('7170.52', '7130.33') });
+
+        expect(resultOf(plan([r], badLast), 1219).kind).toBe('repair');
+      });
+    });
+
     it('does not call a live row a look-ahead: it holds a range from the future of its slot, so it is stale', () => {
       const r = at840({ id: 1213, ...withRange('7203.00', '7175.00') });
 
@@ -570,14 +622,34 @@ describe('same-session rows: lag, look-ahead, incomplete range', () => {
       expect(resultOf(plan([r]), 1223).kind).toBe('incomplete-range');
     });
 
-    it('is a stale repair from 2026-11-23 on, after the live fix: such a row is no longer explained', () => {
+    it('is a lag at 9:00 CT from 2026-11-23 on, after the live fix: a page a bar behind, counted and never written', () => {
       const r = at900({ id: 1224, date: '2026-11-23' });
       const later = at900({ id: 1225, date: '2026-11-22' });
-
       const p = plan([r, later]);
 
-      expect(resultOf(p, 1224).kind).toBe('repair');
+      expect(resultOf(p, 1224).kind).toBe('lag');
       expect(resultOf(p, 1225).kind).toBe('incomplete-range');
+    });
+
+    it.each(['2026-11-23', '2026-11-24', '2027-01-04'])(
+      'meets the lag windows at 9:00 CT on %s, so no row in that window is called stale',
+      (date) => {
+        const r = at900({ id: 1229, date });
+
+        expect(resultOf(plan([r]), 1229)).toMatchObject({ kind: 'lag' });
+        expect(summarize([plan([r])])).toMatchObject({ lag: 1, writes: 0 });
+      },
+    );
+
+    it('is a stale repair after 9:00 CT from 2026-11-23 on: by then the live page holds the complete range', () => {
+      const r = row('9:05 AM CT', {
+        id: 1230,
+        date: '2026-11-23',
+        spx: '7195.00',
+        ...withRange('7200.00', '7175.00'),
+      });
+
+      expect(resultOf(plan([r]), 1230).kind).toBe('repair');
     });
 
     it('is not a replayed row’s kind: a backtest row from 10:00 ET on that is narrower is a stale repair', () => {
@@ -618,6 +690,109 @@ describe('same-session rows: lag, look-ahead, incomplete range', () => {
         after: { signal: 'MODERATE', consumed: '0.4416' },
       });
     });
+  });
+});
+
+// ── A range that is the previous date's ─────────────────────────────────────
+
+/**
+ * A stale row can land by chance inside the lag window or the rebase band of
+ * its own date. When it holds the previous trading date's own range, the most
+ * common one stored on that date, it was carried over and is stale: it is
+ * repaired, not counted as a lag, a rebase or an incomplete range.
+ */
+describe('a range the previous trading date held', () => {
+  const PREVIOUS = { high: 7186, low: 7175 };
+  const live = (entry: string, high: string, low: string, id: number) =>
+    row(entry, { id, ...withRange(high, low) });
+
+  it.each([
+    // [label, entry, high, low, kind without evidence, the previous range]
+    ['a lag', '8:40 AM CT', '7186.00', '7175.00', 'lag', PREVIOUS],
+    [
+      'a rebase',
+      '8:40 AM CT',
+      '7192.00',
+      '7175.00',
+      'rebase',
+      { high: 7192, low: 7175 },
+    ],
+    [
+      'an incomplete range',
+      '9:05 AM CT',
+      '7200.00',
+      '7175.00',
+      'incomplete-range',
+      { high: 7200, low: 7175 },
+    ],
+  ])(
+    'repairs a row that would be %s when it holds the previous date’s range',
+    (_label, entry, high, low, kindWithout, previous) => {
+      const r = live(entry, high, low, 1301);
+
+      expect(resultOf(plan([r]), 1301).kind).toBe(kindWithout);
+      expect(
+        resultOf(plan([r], CANDLES, PREVIOUS_CLOSE, previous), 1301).kind,
+      ).toBe('repair');
+    },
+  );
+
+  it('matches the previous range within 0.05, as every price here is', () => {
+    const r = live('8:40 AM CT', '7186.00', '7175.00', 1302);
+
+    const within = plan([r], CANDLES, PREVIOUS_CLOSE, {
+      high: 7186.05,
+      low: 7174.95,
+    });
+    const outside = plan([r], CANDLES, PREVIOUS_CLOSE, {
+      high: 7186.06,
+      low: 7175,
+    });
+
+    expect(resultOf(within, 1302).kind).toBe('repair');
+    expect(resultOf(outside, 1302).kind).toBe('lag');
+  });
+
+  it.each([
+    ['the same high', { high: 7186, low: 7100 }],
+    ['the same low', { high: 7300, low: 7175 }],
+  ])(
+    'is not carried over when the previous date held only %s: both sides must match',
+    (_label, previous) => {
+      const r = live('8:40 AM CT', '7186.00', '7175.00', 1306);
+
+      const p = plan([r], CANDLES, PREVIOUS_CLOSE, previous);
+
+      expect(resultOf(p, 1306).kind).toBe('lag');
+    },
+  );
+
+  it('leaves a row that holds its own as-of range ok, whatever the previous date held', () => {
+    const r = live('8:40 AM CT', '7190.00', '7175.00', 1303);
+
+    const p = plan([r], CANDLES, PREVIOUS_CLOSE, { high: 7190, low: 7175 });
+
+    expect(resultOf(p, 1303).kind).toBe('ok');
+  });
+
+  it('does not touch a look-ahead: it is a replay, not a carried-over page', () => {
+    const r = row('8:40 AM CT', {
+      id: 1304,
+      is_backtest: true,
+      ...withRange('7203.00', '7175.00'),
+    });
+
+    const p = plan([r], CANDLES, PREVIOUS_CLOSE, { high: 7203, low: 7175 });
+
+    expect(resultOf(p, 1304).kind).toBe('look-ahead');
+  });
+
+  it('changes nothing when the previous date has no range of its own to hold', () => {
+    const r = live('8:40 AM CT', '7186.00', '7175.00', 1305);
+
+    expect(resultOf(plan([r], CANDLES, PREVIOUS_CLOSE, null), 1305).kind).toBe(
+      'lag',
+    );
   });
 });
 
@@ -1516,8 +1691,23 @@ describe('parseArgs', () => {
     }
   });
 
-  it('no longer has --all: a plan covers what the dry run covered', () => {
-    expect(() => parseArgs(['--all'])).toThrow(/unknown/i);
+  it('takes --all only to confirm an apply of a plan: the owner’s one-date-first rule', () => {
+    expect(parseArgs(['--apply', '--plan', 'p.json', '--all'])).toMatchObject({
+      apply: true,
+      planFile: 'p.json',
+      all: true,
+    });
+    expect(parseArgs([]).all).toBe(false);
+    expect(parseArgs(['--apply', '--plan', 'p.json']).all).toBe(false);
+  });
+
+  it.each([
+    [['--all']],
+    [['--plan', 'p.json', '--all']],
+    [['--date', '2026-11-16', '--all']],
+    [['--undo-file', 'b.json', '--apply', '--all']],
+  ])('refuses --all anywhere but with --apply --plan: %j', (args) => {
+    expect(() => parseArgs(args)).toThrow(/--all/);
   });
 
   it('refuses --date together with --since or --until', () => {
