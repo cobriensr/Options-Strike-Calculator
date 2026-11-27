@@ -19,8 +19,9 @@ import { expect, type Locator, type Page } from '@playwright/test';
  * event data on a static list, since the event banner reads `/api/events`,
  * which the specs abort. 22:00 UTC is 5 PM CT, after the close, so the entry
  * time seeds from its fixed 10:00 AM CT default (`useTimeInputs`), not from
- * the clock. No spec starts on the hour it goes on to select, and no
- * market-hours poll runs.
+ * the clock. The session is after-hours, so `marketOpen` is false and no
+ * `marketOpen`-gated poll runs. The quotes poll (`session !== 'closed'`) is
+ * scheduled, but its `/api` requests are aborted.
  */
 export const FULL_SESSION_NOW = '2026-06-24T22:00:00Z';
 
