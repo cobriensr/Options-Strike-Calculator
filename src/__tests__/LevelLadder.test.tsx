@@ -292,12 +292,114 @@ describe('<LevelLadder> layout', () => {
     expect(screen.getByTestId('level-ladder-edge-below')).toHaveTextContent(
       'Below: Classic major negative · OI 7,400',
     );
+    // No odds on these lines, so nothing to call priced.
+    expect(screen.getByTestId('level-ladder-edge-above')).not.toHaveTextContent(
+      'priced',
+    );
+    expect(screen.getByTestId('level-ladder-edge-below')).not.toHaveTextContent(
+      'priced',
+    );
   });
 
   it('prints no edge line when nothing fell outside', () => {
     renderLadder();
     expect(screen.queryByTestId('level-ladder-edge-above')).toBeNull();
     expect(screen.queryByTestId('level-ladder-edge-below')).toBeNull();
+  });
+
+  it('calls the odds on an edge line priced, for a candidate beyond the window', () => {
+    // E 61.5 puts the 10Δ strikes 1.3σ out and 80 pts away: past the ±60 pt
+    // cap, so their odds are on the Above/Below lines, not on a row under the
+    // column header.
+    answer(ready(snapshot()), ready(expectedMove({ expectedMove: 61.5 })));
+    renderLadder({ allDeltas: [deltaRow(10, 7670, 7510)] });
+    expect(screen.queryByTestId('level-ladder-row-7670')).toBeNull();
+    expect(screen.queryByTestId('level-ladder-row-7510')).toBeNull();
+    expect(screen.getByTestId('level-ladder-edge-above').textContent).toBe(
+      'Above: Call 7,670 (CLEAR 1.33σ · touch 18% · finish beyond 9%) · priced odds',
+    );
+    expect(screen.getByTestId('level-ladder-edge-below').textContent).toBe(
+      'Below: Put 7,510 (CLEAR 1.27σ · touch 20% · finish beyond 10%) · priced odds',
+    );
+  });
+
+  it('says "priced" once on an edge line that also holds levels', () => {
+    answer(
+      ready(snapshot({ majorPosOi: 7700 })),
+      ready(expectedMove({ expectedMove: 61.5 })),
+    );
+    renderLadder({ allDeltas: [deltaRow(10, 7670, 7510)] });
+    const text = screen.getByTestId('level-ladder-edge-above').textContent;
+    expect(text).toContain('Classic major positive · OI 7,700');
+    expect(text).toContain('Call 7,670 (CLEAR');
+    expect(text?.match(/priced/g)).toHaveLength(1);
+  });
+
+  it('prints no "priced" for a breached strike on an edge line', () => {
+    // Spot is 88 pts past a call at 7,500: it has been touched, so the line
+    // gives how far past it spot is and no probability.
+    renderLadder({ allDeltas: [deltaRow(10, 7500, 7555)] });
+    const below = screen.getByTestId('level-ladder-edge-below');
+    expect(below).toHaveTextContent('Call 7,500 (BREACHED');
+    expect(below).not.toHaveTextContent('priced');
+    expect(below).not.toHaveTextContent('touch');
+  });
+});
+
+describe('<LevelLadder> off-grid strike levels', () => {
+  // The two state gamma levels are usually off the 5-pt grid (spec, "Levels"),
+  // so they are usually marker lines, not chips.
+  const OFF_GRID = { zMlgamma: 7592.4, zMsgamma: 7581.7 };
+
+  it('draws each as a marker line with its distance and band position', () => {
+    answer(ready(snapshot(OFF_GRID)), ready(expectedMove()));
+    renderLadder();
+    const long = screen.getByTestId('level-ladder-marker-state_long_gamma');
+    expect(long).toHaveTextContent('State long gamma · taker-long · 7,592.4');
+    expect(within(long).getByText('+4.0 pts · inside +1σ')).toBeInTheDocument();
+    const short = screen.getByTestId('level-ladder-marker-state_short_gamma');
+    expect(short).toHaveTextContent(
+      'State short gamma · taker-short · 7,581.7',
+    );
+    expect(
+      within(short).getByText('−6.7 pts · inside −1σ'),
+    ).toBeInTheDocument();
+  });
+
+  it('carries no chip with either label, and leaves the on-grid rows untagged', () => {
+    answer(ready(snapshot(OFF_GRID)), ready(expectedMove()));
+    renderLadder();
+    // A chip's text is the label alone; the marker's carries the price too.
+    expect(screen.queryByText('State long gamma · taker-long')).toBeNull();
+    expect(screen.queryByText('State short gamma · taker-short')).toBeNull();
+    expect(rowText(7595).textContent).toBe('7,595');
+    expect(rowText(7580).textContent).toBe('7,580');
+  });
+
+  it('adds one list item per off-grid level, each between its two rows', () => {
+    answer(ready(snapshot(OFF_GRID)), ready(expectedMove()));
+    renderLadder();
+    // 18 with both on the grid (the list test above), plus the two markers.
+    expect(
+      within(screen.getByRole('list')).getAllByRole('listitem'),
+    ).toHaveLength(20);
+    const long = screen.getByTestId('level-ladder-marker-state_long_gamma');
+    expect(long.previousElementSibling).toBe(rowText(7595));
+    expect(long.nextElementSibling).toBe(rowText(7590));
+    const short = screen.getByTestId('level-ladder-marker-state_short_gamma');
+    expect(short.previousElementSibling).toBe(rowText(7585));
+    expect(short.nextElementSibling).toBe(rowText(7580));
+  });
+
+  it('prints the distance alone when the expected move failed', () => {
+    answer(ready(snapshot(OFF_GRID)), failed('boom (HTTP 500)'));
+    renderLadder();
+    const long = screen.getByTestId('level-ladder-marker-state_long_gamma');
+    expect(within(long).getByText('+4.0 pts')).toBeInTheDocument();
+    expect(long).not.toHaveTextContent('inside');
+    const short = screen.getByTestId('level-ladder-marker-state_short_gamma');
+    expect(within(short).getByText('−6.7 pts')).toBeInTheDocument();
+    expect(short).not.toHaveTextContent('inside');
   });
 });
 
@@ -326,6 +428,19 @@ describe('<LevelLadder> list and column header', () => {
     expect(columns).toHaveTextContent('From spot · priced odds');
     expect(columns.closest('li')).toBeNull();
     expect(within(screen.getByRole('list')).queryByText('Strike')).toBeNull();
+  });
+
+  it('never asks a column for more width than its body has (320 px phones)', () => {
+    const { container } = renderLadder();
+    const capped = '[class*="min-w-[min(11rem,100%)]"]';
+    // Both header labels, and both columns of a tagged row.
+    expect(
+      screen.getByTestId('level-ladder-columns').querySelectorAll(capped),
+    ).toHaveLength(2);
+    expect(rowText(7620).querySelectorAll(capped)).toHaveLength(2);
+    expect(container.querySelectorAll('[class*="min-w-[11rem]"]')).toHaveLength(
+      0,
+    );
   });
 
   it('puts the column header between the result band and the list', () => {
@@ -428,6 +543,17 @@ describe('<LevelLadder> short strikes', () => {
       'CLEAR Both candidate strikes are clear.',
     );
   });
+
+  it('keeps a candidate with no odds in the short-strike style, and a level row in its own', () => {
+    // No expected move, so no odds: the candidate's distance is still the
+    // answer on its row, and a level's distance stays the quieter text.
+    answer(ready(snapshot()), ready());
+    renderLadder();
+    const candidate = within(rowText(7620)).getByText('+31.6 pts');
+    expect(candidate.parentElement).toHaveClass('text-primary');
+    const level = within(rowText(7605)).getByText('+16.6 pts');
+    expect(level.parentElement).toHaveClass('text-tertiary');
+  });
 });
 
 // ────────────────────────────────────────────────────────────
@@ -435,11 +561,10 @@ describe('<LevelLadder> short strikes', () => {
 // ────────────────────────────────────────────────────────────
 
 describe('<LevelLadder> states', () => {
-  it('waits for a spot when there is neither a quote nor a GEXBot spot', () => {
-    answer(
-      ready(snapshot({ spot: null })),
-      ready(expectedMove({ spot: null })),
-    );
+  it('waits for a spot when there is neither a quote nor an expected-move spot', () => {
+    // The spec's chain stops at the expected-move row: the levels row's own
+    // spot (7,588.1 here) is not a fallback.
+    answer(ready(snapshot()), ready(expectedMove({ spot: null })));
     renderLadder({ spxSpot: null, quotesFetchedAt: null });
     const box = screen.getByTestId('level-ladder-waiting');
     expect(box).toHaveAttribute('role', 'status');
@@ -469,13 +594,32 @@ describe('<LevelLadder> states', () => {
     expect(screen.queryByRole('list')).toBeNull();
   });
 
+  // Spec state 2 says "both views still loading"; the component reads it as
+  // "until both views have answered", because the model's result line would
+  // print "Expected move unavailable" over a view that is only slow.
   it.each([
     ['the levels', LOADING, ready(expectedMove())],
     ['the expected move', ready(snapshot()), LOADING],
   ])(
-    'renders the ladder when only %s is still loading',
+    'holds the loading box until both views have answered: %s still loading',
     (_which, levels, move) => {
       answer(levels, move);
+      const { container } = renderLadder();
+      expect(screen.getByTestId('level-ladder-loading')).toHaveTextContent(
+        'Level Ladder — loading…',
+      );
+      expect(screen.queryByRole('list')).toBeNull();
+      expect(container.textContent).not.toMatch(/unavailable|No GEXBot levels/);
+    },
+  );
+
+  it.each([
+    ['empty', ready()],
+    ['failed', failed('boom (HTTP 500)')],
+  ])(
+    'a view that has answered %s no longer holds the loading box',
+    (_how, answered) => {
+      answer(answered, ready(expectedMove()));
       renderLadder();
       expect(screen.queryByTestId('level-ladder-loading')).toBeNull();
       expect(screen.getByRole('list')).toBeInTheDocument();
@@ -602,8 +746,8 @@ describe('<LevelLadder> spot', () => {
     expect(header).not.toHaveTextContent('GEXBot spot');
   });
 
-  it('falls back to the GEXBot spot once the quote is 90 s old', () => {
-    renderLadder({ spxSpot: 7500, quotesFetchedAt: NOW - 120_000 });
+  it('falls back to the GEXBot spot once the quote is stale (91 s old)', () => {
+    renderLadder({ spxSpot: 7500, quotesFetchedAt: NOW - 91_000 });
     const header = screen.getByTestId('level-ladder-header');
     expect(header).toHaveTextContent('GEXBot spot 7,588.1');
     expect(header).not.toHaveTextContent('7,500');
@@ -621,21 +765,6 @@ describe('<LevelLadder> spot', () => {
 
   it('falls back to the GEXBot spot when there is no quote', () => {
     renderLadder({ spxSpot: null, quotesFetchedAt: null });
-    expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
-      'GEXBot spot 7,588.1',
-    );
-  });
-
-  it("falls back to the levels row's spot when the expected-move row has none", () => {
-    // After the close a reload leaves the expected-move view empty while the
-    // snapshots still carry the last session.
-    answer(ready(snapshot()), ready());
-    renderLadder({
-      spxSpot: null,
-      quotesFetchedAt: null,
-      marketOpen: false,
-      session: 'closed',
-    });
     expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
       'GEXBot spot 7,588.1',
     );

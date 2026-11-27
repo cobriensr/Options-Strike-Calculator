@@ -13,9 +13,17 @@
  * for the levels, and the SPX row of `expected-move` for σ and its per-strike
  * IVs, which price each short strike. Spot is the Schwab quote while it is
  * fresh (`useQuoteStaleness`, the hook behind the header's quote badge), else
- * GEXBot's own spot, named as such in the header. The only timer is the
- * 30 s clock re-read while the market is open, so levels that stop updating
- * age out without a new poll.
+ * the expected-move row's spot (GEXBot's own), named as such in the header.
+ * The only timer is the 30 s clock re-read while the market is open, so
+ * levels that stop updating age out without a new poll.
+ *
+ * States, in the spec's order: no spot (waiting), a view still on its first
+ * answer (loading), both views failed (error), otherwise the ladder, where a
+ * view that answered with an error or nothing degrades on its own. Spec state
+ * 2 says "both views still loading"; this reads it as "until both have
+ * answered", because the model's result line would otherwise print "Expected
+ * move unavailable" over a view that is only slow, and the component cannot
+ * suppress a model string.
  *
  * Short strikes are the calculator's 10Δ candidates (`allDeltas`). Open
  * positions are phase 4 (`NO_OPEN_STRIKES`).
@@ -40,6 +48,7 @@ import {
 import {
   STATUS_PILL_LABEL,
   type LadderChip,
+  type LadderEdge,
   type LadderMarkerKind,
   type LadderMarkerRow,
   type LadderStrikeInput,
@@ -75,6 +84,12 @@ const PILL_COLOR: Record<StrikeStatus, string> = {
   tested: theme.red,
   breached: theme.red,
 };
+
+/**
+ * A body column wraps under the other below this width, but never asks for
+ * more than its body has (a 320 px phone's body is narrower than 11rem).
+ */
+const COLUMN_MIN = 'min-w-[min(11rem,100%)]';
 
 const CHIP_BASE =
   'max-w-full rounded-full border px-2 py-0.5 font-mono text-[10px] leading-tight break-words';
@@ -152,7 +167,9 @@ const StrikeRowItem = memo(function StrikeRowItem({
   row: LadderStrikeRow;
 }) {
   const tagged = row.chips.length > 0;
-  const isShort = row.status != null;
+  // A candidate with no odds (no usable expected move) is still a short-strike
+  // row: its distance reads as the answer, not as a level's.
+  const isShort = row.chips.some((chip) => chip.kind === 'short');
   return (
     <li
       data-testid={`level-ladder-row-${row.strike}`}
@@ -171,13 +188,15 @@ const StrikeRowItem = memo(function StrikeRowItem({
       </span>
       {tagged && (
         <div className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-1">
-          <div className="flex min-w-[11rem] flex-1 flex-wrap items-start gap-1">
+          <div
+            className={`flex ${COLUMN_MIN} flex-1 flex-wrap items-start gap-1`}
+          >
             {row.chips.map((chip) => (
               <ChipView key={chipKey(chip)} chip={chip} />
             ))}
           </div>
           <div
-            className={`flex min-w-[11rem] flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] ${
+            className={`flex ${COLUMN_MIN} flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] ${
               isShort ? 'text-primary' : 'text-tertiary'
             }`}
           >
@@ -215,6 +234,34 @@ const MarkerRowItem = memo(function MarkerRowItem({
   );
 });
 
+/**
+ * What fell outside the window on one side, as the model prints it. A short
+ * strike out there keeps its odds in that line, away from the column header
+ * that calls them priced, so a line that prints a probability says so itself
+ * (a breached strike prints none, only how far past it spot is).
+ */
+function EdgeLine({
+  testId,
+  edge,
+  className,
+}: {
+  testId: string;
+  edge: LadderEdge;
+  className: string;
+}) {
+  if (edge.text == null) return null;
+  const printsOdds = edge.items.some((item) => item.odds?.finishBeyond != null);
+  return (
+    <div
+      data-testid={testId}
+      className={`text-tertiary text-[10px] break-words ${className}`}
+    >
+      {edge.text}
+      {printsOdds && ' · priced odds'}
+    </div>
+  );
+}
+
 // ────────────────────────────────────────────────────────────
 // The panel
 // ────────────────────────────────────────────────────────────
@@ -249,13 +296,12 @@ function LevelLadderInner({
   const levelsFailed = isViewFailed(levelsView);
   const moveFailed = isViewFailed(moveView);
 
-  // A stale or missing quote falls back to GEXBot's spot: the expected-move
-  // row's, else the levels row's (after a closed-market reload the first view
-  // is empty while the snapshots still carry the last session).
+  // A stale or missing quote falls back to GEXBot's spot, the expected-move
+  // row's (the spec's chain).
   const ladderSpot = pickLadderSpot({
     spxSpot,
     spxSpotStale: isStale,
-    gexbotSpot: moveRow?.spot ?? snapshot?.spot ?? null,
+    gexbotSpot: moveRow?.spot ?? null,
     marketOpen,
   });
   const spot = ladderSpot?.spot ?? null;
@@ -286,15 +332,17 @@ function LevelLadderInner({
     ],
   );
 
-  // The states, in the spec's order.
-  if (ladderSpot == null) {
+  // The states, in the spec's order. The model prints a spot text for exactly
+  // the spots `pickLadderSpot` accepts, so the second test only narrows.
+  if (ladderSpot == null || ladder.spotText == null) {
     return (
       <NoticeBox testId="level-ladder-waiting" tone="neutral">
         Level Ladder — waiting for SPX spot
       </NoticeBox>
     );
   }
-  if (levelsView.loading && moveView.loading) {
+  // State 2 (see the file header): held until both views have answered.
+  if (levelsView.loading || moveView.loading) {
     return (
       <NoticeBox testId="level-ladder-loading" tone="neutral">
         Level Ladder — loading…
@@ -315,7 +363,7 @@ function LevelLadderInner({
   const { result, levels, summary, above, below } = ladder;
   const headerParts = [
     'Level Ladder — SPX 0DTE',
-    `${ladderSpot.label} ${ladder.spotText ?? ''}`,
+    `${ladderSpot.label} ${ladder.spotText}`,
   ];
   if (levels.asOfText != null) headerParts.push(`levels ${levels.asOfText}`);
 
@@ -366,19 +414,18 @@ function LevelLadderInner({
       >
         <span className="w-14 shrink-0 text-right">Strike</span>
         <div className="flex min-w-0 flex-1 flex-wrap gap-x-3">
-          <span className="min-w-[11rem] flex-1">On this strike</span>
-          <span className="min-w-[11rem] flex-1">From spot · priced odds</span>
+          <span className={`${COLUMN_MIN} flex-1`}>On this strike</span>
+          <span className={`${COLUMN_MIN} flex-1`}>
+            From spot · priced odds
+          </span>
         </div>
       </div>
 
-      {above.text != null && (
-        <div
-          data-testid="level-ladder-edge-above"
-          className="text-tertiary px-3 pt-2 text-[10px] break-words"
-        >
-          {above.text}
-        </div>
-      )}
+      <EdgeLine
+        testId="level-ladder-edge-above"
+        edge={above}
+        className="px-3 pt-2"
+      />
       <ul aria-label="SPX strike ladder" className="px-3 py-2">
         {ladder.rows.map((row) =>
           row.kind === 'marker' ? (
@@ -391,14 +438,11 @@ function LevelLadderInner({
           ),
         )}
       </ul>
-      {below.text != null && (
-        <div
-          data-testid="level-ladder-edge-below"
-          className="text-tertiary px-3 pb-2 text-[10px] break-words"
-        >
-          {below.text}
-        </div>
-      )}
+      <EdgeLine
+        testId="level-ladder-edge-below"
+        edge={below}
+        className="px-3 pb-2"
+      />
 
       {(summary.call != null || summary.put != null) && (
         <div className="text-tertiary space-y-0.5 border-t border-white/5 px-3 py-2 text-[10px]">
