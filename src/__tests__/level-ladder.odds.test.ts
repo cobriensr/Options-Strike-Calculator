@@ -30,9 +30,12 @@ const atm = (expectedMove: number, daysLeft = 0.25): LadderVolatility => ({
   strikeIvs: null,
 });
 
-/** One ATM standard deviation in points for an IV, the move's own formula. */
+/**
+ * One ATM standard deviation in points for an IV, the move's own formula
+ * (S × IV × √(days ÷ 365)), multiplied in the order the odds use.
+ */
 const moveFor = (spot: number, iv: number, daysLeft: number) =>
-  spot * iv * Math.sqrt(daysLeft / 365);
+  spot * Math.sqrt(daysLeft / 365) * iv;
 
 /** Every strike from `from` to `to` at one IV on both sides. */
 function flatSmile(from: number, to: number, iv: number): LadderStrikeIv[] {
@@ -49,8 +52,10 @@ const SMILE_SPOT = 7004.43;
 const SMILE_DAYS = 0.2083;
 const SMILE_IVS: LadderStrikeIv[] = [
   { strike: 6900, callIv: 0.5, putIv: 0.522 },
+  { strike: 6905, callIv: 0.495, putIv: 0.518 },
   { strike: 6910, callIv: 0.49, putIv: 0.514 },
   { strike: 7095, callIv: 0.465, putIv: 0.47 },
+  { strike: 7100, callIv: 0.467, putIv: 0.471 },
   { strike: 7105, callIv: 0.469, putIv: 0.472 },
 ];
 const smile = (
@@ -163,47 +168,84 @@ describe('strikeOdds on the ATM fallback', () => {
   });
 });
 
-describe('strikeOdds from the spread price', () => {
+describe('strikeOdds from the priced chance (the skew-adjusted digital)', () => {
   it.each([
-    // [side, strike, σ on the ATM formula]
-    ['call', 7080, 1.0],
-    ['call', 7100, 1.28],
-    ['put', 6930, 1.0],
-    ['put', 6905, 1.28],
+    // [E in points, days left, σ on the ATM formula, side, status]: E 10 and
+    // 5 are the last half hour and the last minutes of a session, where a
+    // 10-wide spread's average read strikes riskier (1.2σ as 1.15σ at E 10).
+    [80, 0.25, 1.0, 'call', 'watch'],
+    [80, 0.25, 1.0, 'put', 'watch'],
+    [80, 0.25, 1.2, 'call', 'clear'],
+    [80, 0.25, 1.2, 'put', 'clear'],
+    [10, 30 / 1440, 1.0, 'call', 'watch'],
+    [10, 30 / 1440, 1.0, 'put', 'watch'],
+    [10, 30 / 1440, 1.2, 'call', 'clear'],
+    [10, 30 / 1440, 1.2, 'put', 'clear'],
+    [5, 8 / 1440, 1.0, 'call', 'watch'],
+    [5, 8 / 1440, 1.0, 'put', 'watch'],
+    [5, 8 / 1440, 1.2, 'call', 'clear'],
+    [5, 8 / 1440, 1.2, 'put', 'clear'],
   ] as const)(
-    "a flat smile gives the fallback's finish within 0.1 point (%s %d at %fσ)",
-    (side, strike, sigma) => {
-      const distance =
-        side === 'call' ? strike - SMILE_SPOT : SMILE_SPOT - strike;
-      const expectedMove = distance / sigma;
-      const iv = expectedMove / moveFor(SMILE_SPOT, 1, SMILE_DAYS);
-      const odds = strikeOdds(side, strike, SMILE_SPOT, {
-        expectedMove,
-        daysLeft: SMILE_DAYS,
-        strikeIvs: flatSmile(6850, 7150, iv),
+    'a flat smile gives the fallback exactly at E %d (%f days, %fσ, %s): %s',
+    (e, daysLeft, sigma, side, status) => {
+      // The strike on the grid, spot 0.01 pt beyond the σ mark so float
+      // noise can't sit on a threshold; every IV is the ATM IV, and the
+      // row's E is built from it at the ladder's spot.
+      const strike = side === 'call' ? 7100 : 6900;
+      const distance = sigma * e + 0.01;
+      const spot = side === 'call' ? strike - distance : strike + distance;
+      const iv = e / moveFor(spot, 1, daysLeft);
+      const vol: LadderVolatility = {
+        expectedMove: moveFor(spot, iv, daysLeft),
+        daysLeft,
+        strikeIvs: flatSmile(strike - 5, strike + 5, iv),
+      };
+      const priced = strikeOdds(side, strike, spot, vol)!;
+      const fallback = strikeOdds(side, strike, spot, {
+        ...vol,
+        strikeIvs: null,
       })!;
-      expect(odds.oddsSource).toBe('spread');
+      expect(priced.oddsSource).toBe('spread');
+      expect(fallback.oddsSource).toBe('atm');
       expect(
-        Math.abs(odds.finishBeyond! - finishBeyondProbability(sigma)),
-      ).toBeLessThan(0.001);
+        Math.abs(priced.finishBeyond! - fallback.finishBeyond!),
+      ).toBeLessThan(1e-9);
+      expect(priced.status).toBe(status);
+      expect(fallback.status).toBe(status);
     },
   );
 
-  it("a real smile: short put 6,905 prices about 9.8%, below its own IV's 12.6%", () => {
+  it("a real smile: short put 6,905 prices 9.80%, below its own IV's 12.57%", () => {
     const odds = strikeOdds('put', 6905, SMILE_SPOT, smile(SMILE_IVS))!;
     expect(odds.oddsSource).toBe('spread');
-    expect(Math.abs(odds.finishBeyond! * 100 - 9.8)).toBeLessThan(0.3);
+    expect(Math.abs(odds.finishBeyond! * 100 - 9.8)).toBeLessThan(0.05);
     // The strike's own put IV (0.518) in the ATM formula reads much riskier.
     const ownIv = finishBeyondProbability(
       (SMILE_SPOT - 6905) / moveFor(SMILE_SPOT, 0.518, SMILE_DAYS),
     );
-    expect(Math.abs(ownIv * 100 - 12.6)).toBeLessThan(0.3);
+    expect(Math.abs(ownIv * 100 - 12.57)).toBeLessThan(0.05);
   });
 
-  it('a real smile: short call 7,100 prices about 9.8%', () => {
+  it('a real smile: short call 7,100 prices 9.80%', () => {
     const odds = strikeOdds('call', 7100, SMILE_SPOT, smile(SMILE_IVS))!;
     expect(odds.oddsSource).toBe('spread');
-    expect(Math.abs(odds.finishBeyond! * 100 - 9.8)).toBeLessThan(0.3);
+    expect(Math.abs(odds.finishBeyond! * 100 - 9.8)).toBeLessThan(0.05);
+  });
+
+  it("the smile's slope moves the price: a put's falling IV lowers its chance", () => {
+    // The same strike and own IV with a flat smile reads the own-IV formula.
+    const flat = SMILE_IVS.map((r) =>
+      r.strike === 6900 || r.strike === 6910 ? { ...r, putIv: 0.518 } : r,
+    );
+    const sloped = strikeOdds('put', 6905, SMILE_SPOT, smile(SMILE_IVS))!;
+    const level = strikeOdds('put', 6905, SMILE_SPOT, smile(flat))!;
+    expect(level.finishBeyond).toBeCloseTo(
+      finishBeyondProbability(
+        (SMILE_SPOT - 6905) / moveFor(SMILE_SPOT, 0.518, SMILE_DAYS),
+      ),
+      12,
+    );
+    expect(sloped.finishBeyond!).toBeLessThan(level.finishBeyond!);
   });
 
   it("uses the IVs of the short leg's side only", () => {
@@ -257,15 +299,29 @@ describe('strikeOdds falls back to the ATM σ', () => {
     ['strikeIvs null', null],
     ['strikeIvs empty', []],
     [
+      "K's own IV missing on the needed side (the other side present)",
+      SMILE_IVS.map((r) =>
+        r.strike === 6905 ? { ...r, putIv: null, callIv: 0.495 } : r,
+      ),
+    ],
+    [
       'a neighbour with no IV on the needed side (the other side present)',
       SMILE_IVS.map((r) =>
         r.strike === 6900 ? { ...r, putIv: null, callIv: 0.5 } : r,
       ),
     ],
     [
-      // An IV of 0 on the far leg would price it at nothing and the spread
-      // at a plausible 59%: only the IV check catches it.
-      'a neighbour with an IV of 0',
+      "an IV of 0 at K's own strike",
+      SMILE_IVS.map((r) => (r.strike === 6905 ? { ...r, putIv: 0 } : r)),
+    ],
+    [
+      // A negative own IV flips the curve and prices about 85%, inside
+      // (0, 1): only the IV check catches it.
+      "a negative IV at K's own strike",
+      SMILE_IVS.map((r) => (r.strike === 6905 ? { ...r, putIv: -0.518 } : r)),
+    ],
+    [
+      'an IV of 0 on a neighbour',
       SMILE_IVS.map((r) => (r.strike === 6900 ? { ...r, putIv: 0 } : r)),
     ],
     [
@@ -276,9 +332,10 @@ describe('strikeOdds falls back to the ATM σ', () => {
     ],
     ['a neighbour strike not in the list', SMILE_IVS.slice(1)],
     [
-      'a spread result outside (0, 1) from crafted IVs',
+      'a result outside (0, 1) from crafted IVs',
       [
         { strike: 6900, callIv: null, putIv: 3.0 },
+        { strike: 6905, callIv: null, putIv: 0.518 },
         { strike: 6910, callIv: null, putIv: 0.05 },
       ],
     ],
@@ -286,6 +343,25 @@ describe('strikeOdds falls back to the ATM σ', () => {
     const odds = putAtm(strikeIvs);
     expect(odds.oddsSource).toBe('atm');
     expect(odds.finishBeyond).toBe(expected);
+  });
+
+  it('an IV of 0 on a neighbour late in the session, where only the IV check catches it', () => {
+    // Five minutes left: the slope from a 0 IV moves the price only to about
+    // 29%, inside (0, 1), so the result check alone would let it through.
+    const vol: LadderVolatility = {
+      expectedMove: moveFor(SMILE_SPOT, 0.5, 5 / 1440),
+      daysLeft: 5 / 1440,
+      strikeIvs: [
+        { strike: 6985, callIv: 0.5, putIv: 0 },
+        { strike: 6990, callIv: 0.5, putIv: 0.518 },
+        { strike: 6995, callIv: 0.5, putIv: 0.514 },
+      ],
+    };
+    const odds = strikeOdds('put', 6990, SMILE_SPOT, vol)!;
+    expect(odds.oddsSource).toBe('atm');
+    expect(odds.finishBeyond).toBe(
+      finishBeyondProbability((SMILE_SPOT - 6990) / vol.expectedMove),
+    );
   });
 });
 
@@ -357,6 +433,7 @@ describe('strikeStatus', () => {
       ...smile(null),
       strikeIvs: [
         { strike: 7000, callIv: 0.47, putIv: 0.47 },
+        { strike: 7005, callIv: 0.46, putIv: 0.46 },
         { strike: 7010, callIv: 0.45, putIv: 0.45 },
       ],
     })!;
@@ -434,6 +511,10 @@ describe('carryForwardMove', () => {
   ])('%s gives no E', (_, r) => {
     expect(carryForwardMove(r, asOfMs)).toBeNull();
   });
+
+  it('a NaN nowMs gives no E (no NaN band, no status)', () => {
+    expect(carryForwardMove(row(30, 23), Number.NaN)).toBeNull();
+  });
 });
 
 describe('printing', () => {
@@ -456,6 +537,10 @@ describe('printing', () => {
     [0.9136, '0.91σ'],
     [1.3739, '1.37σ'],
     [2.994, '2.99σ'],
+    // The precision comes from the value rounded to hundredths.
+    [2.996, '3.0σ'],
+    [2.9951, '3.0σ'],
+    [2.9949, '2.99σ'],
     [3, '3.0σ'],
     [3.04, '3.0σ'],
     [7.111, '7.1σ'],

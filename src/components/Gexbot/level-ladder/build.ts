@@ -198,6 +198,12 @@ function withArticle(percentText: string): string {
 // Levels
 // ────────────────────────────────────────────────────────────
 
+/**
+ * A row for the same-day expiry: `minDte` 0, or null (not reported). The
+ * levels and the expected move both need it.
+ */
+const isSameDay = (minDte: number | null) => minDte == null || minDte === 0;
+
 interface ShownLevel {
   def: LadderLevelDef;
   value: number;
@@ -229,7 +235,7 @@ function judgeLevels(
     return hidden('missing', marketOpen ? MISSING_LINE : null);
   }
   const asOfText = formatClockCT(capturedMs);
-  if (snapshot.minDte != null && snapshot.minDte !== 0) {
+  if (!isSameDay(snapshot.minDte)) {
     return hidden('not_same_day', 'nearest expiry is not same-day', asOfText);
   }
   const ageSeconds = (nowMs - capturedMs) / 1000;
@@ -246,9 +252,11 @@ function judgeLevels(
 
 /**
  * What the odds are priced from, while the expected move is usable: the
- * market open, the view not failed, a row with no `unavailable` reason whose
- * `asOf` is within the age limit, carried forward to now with `E` above 0.
- * The strike IVs ride along; without a usable move there are no odds at all.
+ * market open, the view not failed, a same-day row (`minDte` 0 or null, the
+ * levels' test: a later expiry's move is sized from that expiry's IVs and
+ * time) with no `unavailable` reason whose `asOf` is within the age limit,
+ * carried forward to now with `E` above 0. The strike IVs ride along;
+ * without a usable move there are no odds at all.
  */
 function usableVolatility(input: LevelLadderInput): LadderVolatility | null {
   const row = input.expectedMove;
@@ -256,7 +264,8 @@ function usableVolatility(input: LevelLadderInput): LadderVolatility | null {
     !input.marketOpen ||
     input.expectedMoveFailed ||
     row == null ||
-    row.unavailable != null
+    row.unavailable != null ||
+    !isSameDay(row.minDte)
   ) {
     return null;
   }
@@ -289,7 +298,7 @@ const isRated = (v: ShortView | undefined): v is RatedShort => v?.odds != null;
 
 /**
  * Most exposed first: the worse status, then the smaller σ (the spec's tie
- * rule; the spread price can rank two strikes apart from their distance),
+ * rule; the priced chance can rank two strikes apart from their distance),
  * or the smaller distance when there are no odds.
  */
 function byExposure(a: ShortView, b: ShortView): number {

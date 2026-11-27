@@ -4,10 +4,11 @@
  * Pure. For a short strike `K` and the ladder's spot `S`, with `distance`
  * `K − S` for a call and `S − K` for a put:
  *
- * - The priced chance of finishing beyond `K` is what a narrow vertical
- *   spread at `K` costs, divided by its width, each neighbour strike priced
- *   at its own IV on the short leg's side (owner, 2026-11-26). Fallback, the
- *   ATM σ: `N(−distance ÷ E)`, when the strike IVs can't price the spread.
+ * - The priced chance of finishing beyond `K` is what a vertical spread at
+ *   `K` costs per point of width as it narrows to nothing (the skew-adjusted
+ *   digital), from `K`'s own IV and the smile's slope on the short leg's
+ *   side (owner, 2026-11-26). Fallback, the ATM σ: `N(−distance ÷ E)`, when
+ *   the strike IVs can't price it.
  * - `sigmaAway` is the σ whose normal tail equals that chance,
  *   `−Φ⁻¹(finishBeyond)`, so the printed σ and odds always agree (on the
  *   fallback it is `distance ÷ E`).
@@ -41,8 +42,8 @@ import {
 
 const MS_PER_DAY = 86_400_000;
 
-/** Half the spread's width: one listed strike either side of `K`. */
-const HALF_WIDTH = DEFAULTS.STRIKE_INCREMENT;
+/** The smile's slope at `K` is read from one listed strike either side. */
+const SLOPE_STEP = DEFAULTS.STRIKE_INCREMENT;
 
 /** A finite number above 0: the guard for spot, levels, IVs and `E`. */
 export function isPositiveFinite(value: number | null): value is number {
@@ -132,22 +133,29 @@ export function inverseNormalCDF(p: number): number {
 }
 
 // ────────────────────────────────────────────────────────────
-// The spread price
+// The priced chance (the skew-adjusted digital)
 // ────────────────────────────────────────────────────────────
 
 /**
- * The priced chance of finishing beyond `strike` from a vertical spread
- * `2 × HALF_WIDTH` wide centred on it, each leg priced on a normal
- * (Bachelier) curve at its own strike's IV on the short leg's side:
- * `n(k) = S × IV(k) × √(days ÷ 365)` points, put
- * `P(k) = (k − S)·Φ(d) + n·φ(d)` with `d = (k − S) ÷ n`, call
- * `C(k) = (S − k)·Φ(x) + n·φ(x)` with `x = (S − k) ÷ n`. With every IV equal
- * this is the ATM formula, to within the finite difference.
+ * The market's priced chance of finishing beyond `strike`: a vertical
+ * spread at the strike per point of width, taken as the spread narrows to
+ * nothing. That is the strike derivative of normal-model (Bachelier) prices
+ * with each strike at its own IV on the short leg's side:
  *
- * Null when either neighbour has no usable IV on that side, or the result
- * is not finite or not strictly between 0 and 1.
+ * - `m = S × √(days ÷ 365)`, `n = m × IV(K)` points;
+ * - the smile's slope `IV′ = (IV(K + h) − IV(K − h)) ÷ 2h`, per point;
+ * - put `Φ(d) + φ(d) × m × IV′` with `d = (K − S) ÷ n`; call
+ *   `Φ(x) − φ(x) × m × IV′` with `x = (S − K) ÷ n`.
+ *
+ * The `Φ` term is the curve at `K`'s own IV, and the slope term takes part
+ * of it back (a put's IV usually falls toward spot). With a flat smile it is
+ * the ATM formula exactly, at every `E`: unlike a 10-wide spread's average
+ * over `K ± h`, which reads strikes riskier as `E` shrinks late in a session.
+ *
+ * Null when `K`, `K − h` or `K + h` has no usable IV on that side, or the
+ * result is not finite or not strictly between 0 and 1.
  */
-function spreadFinishBeyond(
+function pricedFinishBeyond(
   side: ShortSide,
   strike: number,
   spot: number,
@@ -158,25 +166,24 @@ function spreadFinishBeyond(
     const row = strikeIvs.find((r) => r.strike === k);
     return (side === 'put' ? row?.putIv : row?.callIv) ?? null;
   };
-  const low = strike - HALF_WIDTH;
-  const high = strike + HALF_WIDTH;
-  const lowIv = ivAt(low);
-  const highIv = ivAt(high);
-  if (!isPositiveFinite(lowIv) || !isPositiveFinite(highIv)) return null;
+  const ownIv = ivAt(strike);
+  const lowIv = ivAt(strike - SLOPE_STEP);
+  const highIv = ivAt(strike + SLOPE_STEP);
+  if (
+    !isPositiveFinite(ownIv) ||
+    !isPositiveFinite(lowIv) ||
+    !isPositiveFinite(highIv)
+  ) {
+    return null;
+  }
 
-  const scale = spot * Math.sqrt(daysLeft / 365);
-  // Put and call share one form: intrinsic k − S for a put, S − k for a call.
-  const price = (k: number, iv: number) => {
-    const n = scale * iv;
-    const intrinsic = side === 'put' ? k - spot : spot - k;
-    const z = intrinsic / n;
-    return intrinsic * normalCDF(z) + n * normalPDF(z);
-  };
-  const width = 2 * HALF_WIDTH;
-  const result =
-    side === 'put'
-      ? (price(high, highIv) - price(low, lowIv)) / width
-      : (price(low, lowIv) - price(high, highIv)) / width;
+  const m = spot * Math.sqrt(daysLeft / 365);
+  const n = m * ownIv;
+  const slope = (highIv - lowIv) / (2 * SLOPE_STEP);
+  // A put's chance rises with its strike, a call's falls: one form, signed.
+  const z = side === 'put' ? (strike - spot) / n : (spot - strike) / n;
+  const skew = normalPDF(z) * m * slope;
+  const result = normalCDF(z) + (side === 'put' ? skew : -skew);
   return Number.isFinite(result) && result > 0 && result < 1 ? result : null;
 }
 
@@ -186,8 +193,9 @@ function spreadFinishBeyond(
 
 /**
  * The odds for one short strike, or null with no usable volatility (none,
- * or `E` not finite and above 0). The spread price when the strike IVs can
- * price it, else the ATM σ. A breached strike has been touched, so it
+ * or `E` not finite and above 0). The priced chance when the strike IVs can
+ * price it (`oddsSource: 'spread'`), else the ATM σ (`'atm'`). A breached
+ * strike has been touched, so it
  * carries how far past it spot is instead of a touch and a finish beyond.
  */
 export function strikeOdds(
@@ -198,22 +206,22 @@ export function strikeOdds(
 ): StrikeOdds | null {
   if (vol == null || !isPositiveFinite(vol.expectedMove)) return null;
   const distance = side === 'call' ? strike - spot : spot - strike;
-  const spread =
+  const priced =
     vol.strikeIvs == null
       ? null
-      : spreadFinishBeyond(side, strike, spot, vol.daysLeft, vol.strikeIvs);
+      : pricedFinishBeyond(side, strike, spot, vol.daysLeft, vol.strikeIvs);
 
   let oddsSource: OddsSource;
   let finishBeyond: number;
   let sigmaAway: number;
-  if (spread == null) {
+  if (priced == null) {
     oddsSource = 'atm';
     sigmaAway = distance / vol.expectedMove;
     finishBeyond = finishBeyondProbability(sigmaAway);
   } else {
     oddsSource = 'spread';
-    finishBeyond = spread;
-    sigmaAway = -inverseNormalCDF(spread);
+    finishBeyond = priced;
+    sigmaAway = -inverseNormalCDF(priced);
   }
 
   const status = strikeStatus(sigmaAway, distance);
@@ -261,7 +269,8 @@ export function carryForwardMove(
   if (Number.isNaN(asOfMs)) return null;
   const elapsedDays = Math.max(0, nowMs - asOfMs) / MS_PER_DAY;
   const daysLeft = dteFraction - elapsedDays;
-  if (daysLeft <= 0) return null;
+  // A NaN (from a NaN nowMs) is refused too, not only ≤ 0.
+  if (Number.isNaN(daysLeft) || daysLeft <= 0) return null;
   return {
     expectedMove: expectedMove * Math.sqrt(daysLeft / dteFraction),
     daysLeft,
@@ -273,12 +282,16 @@ export function carryForwardMove(
 // ────────────────────────────────────────────────────────────
 
 /**
- * σ to two decimals below 3 and one from 3 up: "1.37σ", "7.1σ". Below 0
- * (a strike priced at 50% or more before spot reaches it) prints "0.00σ".
+ * σ to two decimals below 3 and one from 3 up: "1.37σ", "7.1σ". The
+ * precision is chosen from the value rounded to hundredths, so 2.996 prints
+ * "3.0σ", never "3.00σ". Below 0 (a strike priced at 50% or more before spot
+ * reaches it) prints "0.00σ".
  */
 export function formatSigma(sigmaAway: number): string {
   const sigma = Math.max(0, sigmaAway);
-  return `${sigma.toFixed(sigma < 3 ? 2 : 1)}σ`;
+  const hundredths = Math.round(sigma * 100) / 100;
+  const text = hundredths < 3 ? hundredths.toFixed(2) : sigma.toFixed(1);
+  return `${text}σ`;
 }
 
 /** Whole percent; below 1% is "under 1%", above 99% is "over 99%". */

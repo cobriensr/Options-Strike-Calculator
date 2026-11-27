@@ -93,8 +93,10 @@ const put = (strike: number): LadderStrikeInput => ({ side: 'put', strike });
  */
 const SAMPLE_IVS: LadderStrikeIv[] = [
   { strike: 7615, callIv: 0.13, putIv: 0.13 },
+  { strike: 7620, callIv: 0.129, putIv: 0.129 },
   { strike: 7625, callIv: 0.128, putIv: 0.128 },
   { strike: 7550, callIv: 0.16, putIv: 0.16 },
+  { strike: 7555, callIv: 0.158, putIv: 0.158 },
   { strike: 7560, callIv: 0.156, putIv: 0.156 },
 ];
 
@@ -566,16 +568,16 @@ describe('strike IVs', () => {
     expect(rowAt(l, 7620).odds?.oddsSource).toBe('spread');
     expect(rowAt(l, 7555).odds?.oddsSource).toBe('spread');
     expect(lines(l)[0]).toBe(
-      '7,620 [CANDIDATE · 10Δ CALL] [WATCH] 1.19σ · touch 24% · finish beyond 12%',
+      '7,620 [CANDIDATE · 10Δ CALL] [WATCH] 1.19σ · touch 23% · finish beyond 12%',
     );
     expect(lines(l).at(-1)).toBe(
-      '7,555 [CANDIDATE · 10Δ PUT] [WATCH] 1.14σ · touch 25% · finish beyond 13%',
+      '7,555 [CANDIDATE · 10Δ PUT] [WATCH] 1.15σ · touch 25% · finish beyond 13%',
     );
     // Both on watch: the smaller σ is named first.
     expect(l.result).toEqual({
       kind: 'status',
       pill: 'watch',
-      text: 'Put 7,555 is on watch: 1.14σ away, a 25% priced chance of a touch and 13% of finishing beyond. Call is on watch.',
+      text: 'Put 7,555 is on watch: 1.15σ away, a 25% priced chance of a touch and 13% of finishing beyond. Call is on watch.',
     });
   });
 
@@ -1155,6 +1157,38 @@ describe('degrading', () => {
     expect(l.band).toBeNull();
     expect(rowAt(l, 7620).odds).toBeNull();
     expect(l.result.text).toBe('Expected move unavailable. Distances only.');
+  });
+
+  it('an expected-move row with minDte 1 gives no usable expected move', () => {
+    // It sizes a later expiry's move from that expiry's IVs and time.
+    const l = build({
+      expectedMove: expectedMove({ minDte: 1 }),
+      strikeIvs: SAMPLE_IVS,
+    });
+    expect(l.band).toBeNull();
+    expect(rowAt(l, 7620)).toMatchObject({ status: null, odds: null });
+    expect(l.result).toEqual({
+      kind: 'no_expected_move',
+      pill: null,
+      text: 'Expected move unavailable. Distances only.',
+    });
+    // The levels are judged on their own row and still show.
+    expect(l.levels.state).toBe('shown');
+  });
+
+  it('an expected-move row with minDte null is usable', () => {
+    const l = build({ expectedMove: expectedMove({ minDte: null }) });
+    expect(l.band).toEqual(build().band);
+    expect(l.result).toEqual(build().result);
+  });
+
+  it('a NaN nowMs gives no band and no status, and still lays out the strikes', () => {
+    const l = build({ nowMs: Number.NaN });
+    expect(l.band).toBeNull();
+    expect(l.result.kind).toBe('no_expected_move');
+    expect(rowAt(l, 7620).odds).toBeNull();
+    expect(strikes(l).every(Number.isFinite)).toBe(true);
+    expect(strikes(l).length).toBeGreaterThan(0);
   });
 
   it('snapshots-latest failed gives unavailable and no chips, with band and short strikes kept', () => {

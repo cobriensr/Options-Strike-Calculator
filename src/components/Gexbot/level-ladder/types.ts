@@ -216,8 +216,10 @@ export interface LadderVolatility {
 }
 
 /**
- * Which price the odds came from: `spread`, a narrow vertical at the strike
- * from its neighbours' own IVs; `atm`, the ATM σ fallback.
+ * Which price the odds came from: `spread`, the market's priced chance (a
+ * vertical spread at the strike, narrowed to nothing) from the strike's own
+ * IV and the smile's slope; `atm`, the ATM σ fallback. The name is kept from
+ * the rule's first form, a 10-wide spread.
  */
 export type OddsSource = 'spread' | 'atm';
 
