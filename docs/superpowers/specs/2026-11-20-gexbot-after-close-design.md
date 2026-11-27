@@ -1,7 +1,73 @@
 # GEXBot panels after the close — design
 
-Status: approved by the owner 2026-11-26. Adversarial review rounds 1
-and 2 settled (the rule's limit); owner questions answered 2026-11-21.
+Status: built and live 2026-11-27 (see "As built"). Approved by the owner
+2026-11-26. Adversarial review rounds 1 and 2 settled (the rule's limit);
+owner questions answered 2026-11-21.
+
+## As built (2026-11-27)
+
+**Where it is.** The plan `docs/superpowers/plans/2026-11-26-gexbot-after-close.md`
+was built as 17 tasks. It landed on main in one push after the final review,
+as 34 commits ending at `60b422333`, rebased onto `d5f2a270a`.
+
+**What changed from this design.** The plan's "Where the code differs from
+the spec" table holds the drift settled before the build. These came up
+during it:
+
+- **Window end.** Every anchored window ends at `captured_at < anchor + 1 ms`,
+  not `<= anchor`. `captured_at` keeps microseconds and an anchor travels
+  as a millisecond ISO string, so `<=` dropped the anchor row.
+- **Shared bound.** The closed SPX session bound used by `/api/gex-landscape`
+  and `/api/periscope-map` lives in one module, `api/_lib/closed-spx-bound.ts`.
+- **Stall age.** A `no_slot` reply carries `lastMinuteAgeSec`, so the
+  landscape's in-session stall age stays on the server's clock now that
+  `asOf` is null there.
+- **One timestamp rule.** `src/utils/closed-session.ts` defines the ISO
+  date-time-with-offset rule. The client's `asOfFrom` and the analyze schema's
+  `gexLandscapeBiasClosedAsOf` check both use it, so the client can't send a
+  marker the server answers with 400.
+- **Cache.** `setClosedReadCache` gives `{0, 0}` from the close to close + 3
+  min, and also inside the session window. It covers a handler that read
+  "closed" a moment before its clock reached the session. `setLiveReadCache`
+  is unchanged, because `periscope-exposure` and `periscope-strikes` use it too.
+- **`useGexbotData`.** It hides an answer from an earlier session at render
+  once the market is open. Each answer records the session it landed in,
+  which also covers held errors and views with no `asOf`. The other two
+  hooks use the `asOf` check at render.
+- **Expected-move tile.** It reads "session closed" after the close whether
+  or not it has rows. It postdates this design's scope table.
+- **Retries.** Any failed live-route fetch while closed retries 5 × 30 s,
+  not only the final fetch. The final fetch also fires when a sleeping tab
+  wakes after its armed instant.
+- **Cleanup.** A missing or malformed newest-session bound fails that table
+  by name and deletes nothing.
+- **Periscope header.** The closed header reads `Slot Fri 3:00 PM CT · CLOSED`,
+  with no expiry. The live toggle drops its dot and green accent.
+
+**Live checks (read-only, production):**
+
+| Session | Rows per ticker | Anchors | Label |
+|---|---|---|---|
+| 2026-11-25 | 392 (16 tickers) | 21:00:50Z, every 21:01:49Z replay skipped | 3:00 PM CT |
+| 2026-11-27, first half day | 212 (09:30–13:00 ET) | 18:00:37Z, all 16 tickers; vendor stamp 18:00:00Z, replay at 18:01:36Z | 12:00 PM CT |
+
+- **Half day:** GEXBot freezes at the half-day close, which settles the
+  plan's open question.
+- **Query cost:** the anchored mover read takes 0.6 s cold, with an
+  index-only scan per ticker.
+- **Edge cache:** Vercel's minimum CDN cache life is 1 s (docs), so
+  `s-maxage=0` isn't cached.
+
+**Left as is:**
+
+- **Velocity SQL.** The velocity rule SQL exists twice, live and anchored. The
+  plan kept the live query unchanged, and a parity test guards the copies.
+- **A tab asleep from one session into the next** (no `marketOpen` flip)
+  shows the earlier session until its next poll. This predates the build
+  and is the same in all three hooks.
+- **The level ladder** on main reads `expected-move` and isn't covered here.
+- **The CLOSED label** looks different in each panel: plain text, a pill,
+  and a header suffix.
 
 ## Goal
 
