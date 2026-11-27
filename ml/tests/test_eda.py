@@ -18,6 +18,7 @@ from eda import (
     feature_importance,
     flow_analysis,
     key_findings,
+    options_volume_analysis,
     rule_validation,
     structure_analysis,
 )
@@ -891,3 +892,85 @@ class TestEdgeCases:
         out = capsys.readouterr().out
         # Should either show "Not enough data" or only positive GEX stats
         assert "RULE VALIDATION" in out
+
+
+# ── options_volume_analysis: end-of-day research ─────────────
+
+
+def _make_options_volume_df(
+    n: int = 20, *, end_of_day: bool = True, morning_safe: bool = False
+) -> pd.DataFrame:
+    """Outcome columns plus either options-volume group, or both."""
+    rng = np.random.default_rng(5)
+    dates = pd.date_range("2026-02-02", periods=n, freq="B")
+    df = pd.DataFrame(
+        {
+            "day_range_pts": rng.uniform(15, 80, n),
+            "settlement_direction": rng.choice(["UP", "DOWN"], n),
+        },
+        index=dates,
+    )
+    if end_of_day:
+        df["opt_vol_pcr"] = rng.uniform(0.6, 1.6, n)
+        df["opt_bullish_premium"] = rng.uniform(1e6, 5e6, n)
+        df["opt_bearish_premium"] = rng.uniform(1e6, 5e6, n)
+        df["opt_call_vol_vs_avg30"] = rng.uniform(0.5, 2.0, n)
+        df["opt_put_vol_vs_avg30"] = rng.uniform(0.5, 2.0, n)
+    if morning_safe:
+        df["opt_call_oi"] = rng.uniform(1e6, 5e6, n)
+        df["prev_day_opt_vol_pcr"] = rng.uniform(0.6, 1.6, n)
+    return df
+
+
+class TestOptionsVolumeAnalysis:
+    """The analysis compares a day's own totals with that day's outcome, which
+    is after-the-fact research: it reads the end-of-day group and says so."""
+
+    def test_section_and_every_subsection_say_end_of_day(self, capsys):
+        options_volume_analysis(_make_options_volume_df())
+
+        out = capsys.readouterr().out
+        header = next(line for line in out.splitlines() if "OPTIONS VOLUME" in line)
+        assert "END OF DAY" in header
+        subsections = [
+            line.strip()
+            for line in out.splitlines()
+            if line.strip().startswith("---") and line.strip().endswith("---")
+        ]
+        assert len(subsections) == 3
+        assert all("end of day" in line for line in subsections)
+
+    def test_prints_the_results_it_has_always_printed(self, capsys):
+        options_volume_analysis(_make_options_volume_df())
+
+        out = capsys.readouterr().out
+        assert "High PCR >1.0" in out
+        assert "Bullish-heavy days" in out
+        assert "High call volume (>1.5x avg" in out
+
+    def test_morning_safe_columns_alone_are_no_data_for_it(self, capsys):
+        """A frame with the morning-safe group and no same-day totals has
+        nothing for this analysis to compare with the outcome."""
+        df = _make_options_volume_df(end_of_day=False, morning_safe=True)
+
+        options_volume_analysis(df)
+
+        out = capsys.readouterr().out
+        assert "No end-of-day options volume features available yet" in out
+        assert "Only 0 days" not in out
+        assert "---" not in out
+
+    def test_a_frame_with_neither_group_says_so(self, capsys):
+        df = _make_options_volume_df(end_of_day=False)
+
+        options_volume_analysis(df)
+
+        out = capsys.readouterr().out
+        assert "No end-of-day options volume features available yet" in out
+
+    def test_too_few_days_says_so_with_the_end_of_day_wording(self, capsys):
+        options_volume_analysis(_make_options_volume_df(n=3))
+
+        out = capsys.readouterr().out
+        assert "Only 3 days with end-of-day options volume data" in out
+        assert "---" not in out

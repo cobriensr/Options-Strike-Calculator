@@ -252,3 +252,92 @@ class TestPlotStationarity:
 
         # window = min(10, 5 // 3) = 1, which is < 3, so it returns early
         assert not (tmp_path / "stationarity.png").exists()
+
+
+# ── End-of-day labels ─────────────────────────────────────────
+
+
+def _make_viz_df_with_eod_options(n: int = 20) -> pd.DataFrame:
+    """_make_viz_df plus the two same-day options-volume columns the plots show."""
+    df = _make_viz_df(n)
+    rng = np.random.default_rng(11)
+    df["opt_vol_pcr"] = rng.uniform(0.6, 1.6, n)
+    df["opt_premium_ratio"] = rng.uniform(0.3, 0.7, n)
+    return df
+
+
+@pytest.fixture()
+def saved(monkeypatch):
+    """What each plot's text was when `save` got it, by file name.
+
+    `save` closes the figure, so the text is read off the open one first. The
+    real `save` still runs, into the tmp PLOT_DIR.
+    """
+    import visualize
+
+    seen: dict[str, dict[str, list[str]]] = {}
+    original = visualize.save
+
+    def spy(fig, name):
+        seen[name] = {
+            "titles": [
+                " ".join(
+                    ax.get_title(loc=loc) for loc in ("left", "center", "right")
+                ).strip()
+                for ax in fig.axes
+            ],
+            "ylabels": [ax.get_ylabel() for ax in fig.axes],
+            "ticks": [
+                tick.get_text()
+                for ax in fig.axes
+                for tick in ax.get_xticklabels() + ax.get_yticklabels()
+            ],
+        }
+        original(fig, name)
+
+    monkeypatch.setattr(visualize, "save", spy)
+    return seen
+
+
+class TestEndOfDayLabels:
+    """opt_vol_pcr and opt_premium_ratio are the same day's totals, which are
+    known only after the close. The research plots may show them against that
+    day's outcome, but each says end of day."""
+
+    def test_correlation_heatmap_labels_the_two_columns_eod(self, saved):
+        from visualize import plot_correlation_heatmap
+
+        plot_correlation_heatmap(_make_viz_df_with_eod_options())
+
+        info = saved["correlations.png"]
+        assert "Opt PCR (EOD)" in info["ticks"]
+        assert "Prem Ratio (EOD)" in info["ticks"]
+        assert "Opt PCR" not in info["ticks"]
+        assert "Prem Ratio" not in info["ticks"]
+        assert "End-of-Day" in info["titles"][0]
+
+    def test_stationarity_panel_for_the_pcr_says_end_of_day(self, saved):
+        from visualize import plot_stationarity
+
+        plot_stationarity(_make_viz_df_with_eod_options())
+
+        info = saved["stationarity.png"]
+        panel = next(
+            i for i, label in enumerate(info["ylabels"]) if "Options PCR" in label
+        )
+        assert info["ylabels"][panel] == "Options PCR (end of day)"
+        assert "End-of-day" in info["titles"][panel]
+        assert "10:00 CT" in info["titles"][panel]
+
+    def test_stationarity_titles_only_the_end_of_day_panel(self, saved):
+        from visualize import plot_stationarity
+
+        plot_stationarity(_make_viz_df_with_eod_options())
+
+        info = saved["stationarity.png"]
+        titled = [
+            label
+            for label, title in zip(info["ylabels"], info["titles"], strict=True)
+            if title
+        ]
+        assert titled == ["Options PCR (end of day)"]

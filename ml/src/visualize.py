@@ -28,7 +28,13 @@ except ImportError:
 
 from statsmodels.stats.proportion import proportion_confint
 
-from utils import ML_ROOT, load_data, save_section_findings, validate_dataframe
+from utils import (
+    ML_ROOT,
+    OPTIONS_VOLUME_EOD_FEATURES,
+    load_data,
+    save_section_findings,
+    validate_dataframe,
+)
 
 PLOT_DIR = ML_ROOT / "plots"
 PLOT_DIR.mkdir(exist_ok=True)
@@ -163,8 +169,10 @@ def plot_correlation_heatmap(df: pd.DataFrame) -> None:
         "dp_total_premium": "DP Premium",
         "dp_support_resistance_ratio": "DP S/R Ratio",
         "dp_concentration": "DP Conc.",
-        "opt_vol_pcr": "Opt PCR",
-        "opt_premium_ratio": "Prem Ratio",
+        # The same day's totals, known only after the close: after-the-fact
+        # research, so the labels say so.
+        "opt_vol_pcr": "Opt PCR (EOD)",
+        "opt_premium_ratio": "Prem Ratio (EOD)",
         "iv_open": "IV Open",
         "iv_crush_rate": "IV Crush",
         "max_pain_dist": "Max Pain Dist",
@@ -192,7 +200,9 @@ def plot_correlation_heatmap(df: pd.DataFrame) -> None:
         cbar_kws={"shrink": 0.8},
     )
     ax.set_title(
-        "Feature Correlations (incl. Dark Pool, Options, IV)", fontsize=14, pad=15
+        "Feature Correlations (incl. Dark Pool, End-of-Day Options, IV)",
+        fontsize=14,
+        pad=15,
     )
     save(fig, "correlations.png")
 
@@ -1224,7 +1234,7 @@ def plot_stationarity(df: pd.DataFrame) -> None:
         "day_range_pts": ("Day Range (pts)", COLORS["blue"]),
         "flow_agreement_t1": ("Flow Agreement", COLORS["orange"]),
         "dp_total_premium": ("DP Premium", COLORS["purple"]),
-        "opt_vol_pcr": ("Options PCR", COLORS["cyan"]),
+        "opt_vol_pcr": ("Options PCR (end of day)", COLORS["cyan"]),
         "iv_open": ("IV Open", COLORS["pink"]),
     }
 
@@ -1279,6 +1289,13 @@ def plot_stationarity(df: pd.DataFrame) -> None:
         )
 
         ax.set_ylabel(label, fontsize=10)
+        if col in OPTIONS_VOLUME_EOD_FEATURES:
+            ax.set_title(
+                "End-of-day total: not known at 10:00 CT",
+                fontsize=9,
+                loc="left",
+                color="#aaa",
+            )
         ax.legend(fontsize=8, loc="upper right")
 
     # X-axis labels

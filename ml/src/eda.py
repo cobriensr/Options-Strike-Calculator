@@ -27,7 +27,7 @@ except ImportError:
 from utils import (
     DARK_POOL_FEATURES,
     IV_PCR_FEATURES,
-    OPTIONS_VOLUME_FEATURES,
+    OPTIONS_VOLUME_EOD_FEATURES,
     load_data,
     save_section_findings,
     section,
@@ -798,16 +798,24 @@ def dark_pool_analysis(df: pd.DataFrame) -> None:
                 )
 
 
-# ── Analysis 8: Options Volume & Premium ────────────────────
+# ── Analysis 8: Options Volume & Premium (end of day) ───────
 
 
 def options_volume_analysis(df: pd.DataFrame) -> None:
-    section("8. OPTIONS VOLUME & PREMIUM")
-    print("  Do options flow metrics predict structure or range?\n")
+    """Compare a day's own options-volume totals with that day's outcome.
 
-    opt_cols = [c for c in OPTIONS_VOLUME_FEATURES if c in df.columns]
+    After-the-fact research: the same-day totals (`opt_*`) are end-of-day
+    figures, not known at 10:00 CT, so no model reads them (see
+    OPTIONS_VOLUME_EOD_FEATURES). That is why the analysis gates on that group
+    and says "end of day" wherever it prints.
+    """
+    section("8. OPTIONS VOLUME & PREMIUM (END OF DAY, SAME-DAY TOTALS)")
+    print("  Do a day's end-of-day options flow totals relate to structure or range?")
+    print("  After-the-fact research: these totals are not known at 10:00 CT.\n")
+
+    opt_cols = [c for c in OPTIONS_VOLUME_EOD_FEATURES if c in df.columns]
     if not opt_cols:
-        print("  No options volume features available yet")
+        print("  No end-of-day options volume features available yet")
         return
 
     has_opt = (
@@ -816,11 +824,14 @@ def options_volume_analysis(df: pd.DataFrame) -> None:
         else df.head(0)
     )
     if len(has_opt) < 5:
-        print(f"  Only {len(has_opt)} days with options volume data -- need at least 5")
+        print(
+            f"  Only {len(has_opt)} days with end-of-day options volume data "
+            "-- need at least 5"
+        )
         return
 
     # PCR vs settlement direction
-    subsection("Put/Call Volume Ratio vs Settlement Direction")
+    subsection("Put/Call Volume Ratio (end of day) vs Settlement Direction")
     if "opt_vol_pcr" in has_opt.columns and "settlement_direction" in has_opt.columns:
         has_both = has_opt[["opt_vol_pcr", "settlement_direction"]].dropna()
         has_both["opt_vol_pcr"] = has_both["opt_vol_pcr"].astype(float)
@@ -837,7 +848,7 @@ def options_volume_analysis(df: pd.DataFrame) -> None:
                 print(f"  Low PCR <=1.0 (n={len(low_pcr)}):  {up_pct:.0%} settled UP")
 
     # Bullish vs bearish premium and outcomes
-    subsection("Bullish vs Bearish Premium vs Range")
+    subsection("Bullish vs Bearish Premium (end of day) vs Range")
     if (
         "opt_bullish_premium" in has_opt.columns
         and "opt_bearish_premium" in has_opt.columns
@@ -863,7 +874,7 @@ def options_volume_analysis(df: pd.DataFrame) -> None:
                 )
 
     # Volume vs 30-day average
-    subsection("Unusual Volume (vs 30-day avg)")
+    subsection("Unusual Volume (end of day, vs 30-day avg)")
     if "opt_call_vol_vs_avg30" in has_opt.columns:
         vol_ratio = (
             has_opt[["opt_call_vol_vs_avg30", "opt_put_vol_vs_avg30", "day_range_pts"]]
