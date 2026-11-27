@@ -401,15 +401,17 @@ Ids are the ladder's own, chosen to match the planned study's tags.
   takes most of the extra back. Measured over 370 minutes of 2026-11-25
   (08:35 to 14:45 CT, strikes 1.28 ATM σ out), the mean finish beyond, put
   and call: ATM σ 9.3% and 9.3%; the strike's own IV 11.2% and 10.6%; the
-  market's priced chance (measured with the 10-wide spread) 9.0% and 8.7%.
-  The strike's own IV read the put "not clear" in 132 of the 370 minutes,
-  the priced chance in 2. One day, the only one still in the raw captures.
+  market's priced chance (this rule) 9.0% and 8.7%. The strike's own IV
+  read the put "not clear" in 132 of the 370 minutes, the priced chance in
+  1 (re-measured with this rule on 2026-11-26; the 10-wide spread had given
+  the same means and 2 minutes). One day, the only one still in the raw
+  captures.
 - **Fallback, the ATM σ:** `finishBeyond = normalCDF(−distance ÷ E)`. Used
   when `strikeIvs` is null or empty; when `K`, `K − h` or `K + h` has no
   usable IV on the needed side (absent, or not above 0); or when the result
   is not finite or not strictly between 0 and 1. Each short strike records
-  which was used (`oddsSource: 'spread' | 'atm'`, the name kept from the
-  first form). The panel prints nothing about it.
+  which was used (`oddsSource: 'priced' | 'atm'`). The panel prints
+  nothing about it.
 - `sigmaAway = −Φ⁻¹(finishBeyond)`: the σ whose normal tail equals the
   priced chance, so the printed σ and the printed odds always agree. On the
   fallback it equals `distance ÷ E`. `Φ⁻¹` is new in `odds.ts` (the repo has
@@ -685,7 +687,7 @@ holds SPX spreads.
   gives 2.3% and 4.6%.
 - Priced chance, flat smile: every IV equal to the ATM IV gives the
   fallback's finish (to 1e-9) and the same status at `E` 80, 10 and 5 pts,
-  at 1.0σ and at 1.2σ, with `oddsSource: 'spread'`. These are the rows that
+  at 1.0σ and at 1.2σ, with `oddsSource: 'priced'`. These are the rows that
   caught the 10-wide spread's late-session drift.
 - Priced chance, a real smile (the 2026-11-25 16:00:09Z capture, 10:00 CT:
   spot 7,004.43, 5 h left, so `dteFraction` 0.2083): a short put at 6,905
@@ -734,8 +736,8 @@ holds SPX spreads.
 - Short strikes: candidates from `allDeltas`; `allDeltas` null; an error row
   at 10Δ; open legs hide candidates; two open short calls use the nearer one
   in the result.
-- Strike IVs: with `strikeIvs` a short strike's odds come from the spread
-  price (`oddsSource: 'spread'`); with `strikeIvs` null from the ATM σ; the
+- Strike IVs: with `strikeIvs` a short strike's odds come from the priced
+  chance (`oddsSource: 'priced'`); with `strikeIvs` null from the ATM σ; the
   band is the ATM move either way.
 - Result line: both clear; one side on watch; one side tested; breached; a
   tie on the worst status; one side only; no short strikes, with and without
