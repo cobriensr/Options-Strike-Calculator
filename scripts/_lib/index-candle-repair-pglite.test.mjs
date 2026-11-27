@@ -17,6 +17,7 @@
 
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -86,17 +87,24 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
+import { toIndexRows } from './candles-backfill.mjs';
 import {
   LIST_SYMBOLS,
   REPAIR_LISTS,
   checkMappedDay,
+  checkRefitDay,
   defaultBackupDir,
   deleteSelection,
   describeUndo,
+  findRefitManifest,
   mainCheckoutDir,
   parseRepairArgs,
   prepareDay,
+  prepareRefitDay,
+  processCheckDay,
+  processRefitDay,
   processRepairDay,
+  refitDay,
   repairDay,
   repairGuardRefusal,
   undoRepair,
@@ -320,7 +328,21 @@ describe('the lists', () => {
       'ndx-repair': ['NDX'],
       'ndx-fill': ['NDX'],
       gap: ['SPX', 'NDX'],
+      summer: ['SPX', 'NDX'],
     });
+  });
+
+  it('the summer list is the 33 trading days 07-22 to 09-04, disjoint from the others', () => {
+    expect(REPAIR_LISTS.summer).toEqual(weekdays('2026-07-22', '2026-09-04'));
+    expect(REPAIR_LISTS.summer).toHaveLength(33);
+    expect(REPAIR_LISTS.summer.at(0)).toBe('2026-07-22');
+    expect(REPAIR_LISTS.summer.at(-1)).toBe('2026-09-04');
+    expect(Object.isFrozen(REPAIR_LISTS.summer)).toBe(true);
+    for (const other of ['spx-repair', 'ndx-repair', 'ndx-fill', 'gap']) {
+      expect(
+        REPAIR_LISTS.summer.filter((d) => REPAIR_LISTS[other].includes(d)),
+      ).toEqual([]);
+    }
   });
 });
 
@@ -613,6 +635,73 @@ describe('checkMappedDay', () => {
     expect(ndx(rows(23000), null)).toMatchObject({
       ok: false,
       reason: expect.stringMatching(/\$NDX/),
+    });
+  });
+
+  describe('a fitted day (spec decision 9)', () => {
+    const fittedSpx = (rows, over = {}) =>
+      checkMappedDay({
+        symbol: 'SPX',
+        date: SPX_DATE,
+        rows,
+        fitted: true,
+        ...over,
+      });
+
+    it('keeps the count check', () => {
+      expect(fittedSpx(bars(SPX_DATE, { regular: 390 }))).toEqual({
+        ok: true,
+      });
+      expect(fittedSpx(bars(SPX_DATE, { regular: 389 }))).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/389 regular bars, expected 390/),
+      });
+      expect(fittedSpx([])).toMatchObject({ ok: false });
+      expect(
+        checkMappedDay({
+          symbol: 'NDX',
+          date: SPX_DATE,
+          rows: bars(SPX_DATE, { regular: 391 }),
+          fitted: true,
+        }),
+      ).toMatchObject({ ok: false });
+    });
+
+    it('applies neither close check, and needs no reference', () => {
+      const rows = bars(SPX_DATE, {
+        regular: 390,
+        closeOf: (i) => (i === 389 ? 6504.01 : 6400),
+      });
+      // 4.01 pt from the settlement: the plain check refuses it.
+      expect(spx(rows, 6500)).toMatchObject({ ok: false });
+      expect(fittedSpx(rows, { settlement: 6500 })).toEqual({ ok: true });
+      // No settlement at all, and no NDX close.
+      expect(fittedSpx(rows)).toEqual({ ok: true });
+      const far = bars(SPX_DATE, {
+        regular: 390,
+        closeOf: (i) => (i === 389 ? 23020 : 1),
+      });
+      expect(ndx(far, 23000)).toMatchObject({ ok: false });
+      expect(
+        checkMappedDay({
+          symbol: 'NDX',
+          date: SPX_DATE,
+          rows: far,
+          ndxClose: 23000,
+          fitted: true,
+        }),
+      ).toEqual({ ok: true });
+    });
+
+    it('still refuses a symbol it has no check for', () => {
+      expect(() =>
+        checkMappedDay({
+          symbol: 'ES',
+          date: SPX_DATE,
+          rows: [],
+          fitted: true,
+        }),
+      ).toThrow(/no day check for ES/);
     });
   });
 });
@@ -1624,6 +1713,1850 @@ describe('processRepairDay', () => {
   });
 });
 
+// ── The refit (spec decision 9) ────────────────────────────
+
+const TICKERS = {
+  SPX: { etf: 'SPY', index: '$SPX' },
+  NDX: { etf: 'QQQ', index: '$NDX' },
+};
+/** The last regular ETF close of refitBars(symbol). */
+const ETF_LAST = { SPX: 647, NDX: 560 };
+/**
+ * close: Schwab's index close over its ETF close. prior: the ratio the stored
+ * rows carry, on purpose not the close ratio. fitted: what the price file fits
+ * to, within the 0.15% of the close ratio the fit allows.
+ */
+const RATIOS = {
+  SPX: { close: 10.04, prior: 10.03, fitted: 10.045 },
+  NDX: { close: 41, prior: 40.95, fitted: 41.02 },
+};
+const GAP_DATE = '2026-09-21'; // insert-only for both symbols; EDT
+const SUMMER_DATE = '2026-08-20'; // EDT
+const BACKFILL_CREATED = '2026-11-06T22:19:20Z'; // inside the 11-06 window
+
+function spotsDirOf() {
+  return path.join(tmp, 'spots');
+}
+
+/** UW's answer for one refit day: 390 regular bars ending at ETF_LAST. */
+function refitBars(symbol, date, over = {}) {
+  return uwBars(date, { lastClose: ETF_LAST[symbol], ...over });
+}
+
+function mappedRows(symbol, date, ratio, bars = refitBars(symbol, date)) {
+  return toIndexRows(symbol, date, bars, ratio).rows;
+}
+
+/** A price file's minutes: each regular bar's ETF close times `ratio`. */
+function spotMinutes(bars, ratio) {
+  return Object.fromEntries(
+    bars
+      .filter((bar) => bar.market_time === 'r')
+      .map((bar) => [
+        String(Date.parse(bar.start_time) / 60_000),
+        Number(bar.close) * ratio,
+      ]),
+  );
+}
+
+function writeSpots(
+  symbol,
+  date,
+  minutes,
+  source = symbol === 'SPX' ? 'tape' : 'parity',
+) {
+  mkdirSync(spotsDirOf(), { recursive: true });
+  writeFileSync(
+    path.join(spotsDirOf(), `${symbol}-${date}-spots.json`),
+    JSON.stringify({ symbol, date, source, minutes }),
+  );
+}
+
+/** The refit's inputs: UW's answer and a price file fitted to `ratio`. */
+function stageRefit(
+  symbol,
+  date,
+  { ratio = RATIOS[symbol].fitted, bars = refitBars(symbol, date) } = {},
+) {
+  mocks.fetchUwCandles.mockResolvedValue({ kind: 'ok', rows: bars });
+  writeSpots(symbol, date, spotMinutes(bars, ratio));
+  return bars;
+}
+
+/**
+ * loadSchwabCloses' shape for both indexes: the close (ETF_LAST times the
+ * close ratio) and a daily range equal to the regular rows mapped at
+ * `rangeRatio`, moved by `shift`, or `ranges[symbol]` as given.
+ */
+function refitCloses(
+  date,
+  { rangeRatio, shift = 0, ndxClose, noRange = false, ranges = {} } = {},
+) {
+  const entries = [];
+  for (const symbol of ['SPX', 'NDX']) {
+    const { etf, index } = TICKERS[symbol];
+    const regular = mappedRows(
+      symbol,
+      date,
+      rangeRatio ?? RATIOS[symbol].fitted,
+    ).filter((row) => row.market_time === 'r');
+    const range = ranges[symbol] ?? {
+      high: Math.max(...regular.map((row) => row.high)) + shift,
+      low: Math.min(...regular.map((row) => row.low)) + shift,
+    };
+    const close =
+      symbol === 'NDX' && ndxClose != null
+        ? ndxClose
+        : ETF_LAST[symbol] * RATIOS[symbol].close;
+    entries.push([etf, { closes: new Map([[date, ETF_LAST[symbol]]]) }]);
+    entries.push([
+      index,
+      {
+        closes: new Map([[date, close]]),
+        ...(noRange ? {} : { extremes: new Map([[date, range]]) }),
+      },
+    ]);
+  }
+  return new Map(entries);
+}
+
+function refitArgs(over = {}) {
+  const { symbol = 'SPX', date = SPX_DATE } = over;
+  return {
+    symbol,
+    date,
+    list: 'spx-repair',
+    closes: refitCloses(date),
+    uwKey: 'uw-key',
+    waitForSlot: vi.fn(),
+    spotsDir: spotsDirOf(),
+    backupDir: backupDirOf(),
+    apply: true,
+    ...over,
+  };
+}
+
+/** The stored day a refit starts from: a real repairDay at the prior ratio. */
+function repairedDay({
+  symbol = 'SPX',
+  date = SPX_DATE,
+  list = 'spx-repair',
+} = {}) {
+  return repairDay(makeSql(), {
+    symbol,
+    date,
+    list,
+    rows: mappedRows(symbol, date, RATIOS[symbol].prior),
+    ratio: RATIOS[symbol].prior,
+    backupDir: backupDirOf(),
+    apply: true,
+  });
+}
+
+/** refitDay's arguments from what find and prepare returned. */
+function refitCall(args, found, prepared, over = {}) {
+  return {
+    symbol: args.symbol,
+    date: args.date,
+    list: args.list,
+    prepared,
+    found,
+    backupDir: args.backupDir,
+    apply: args.apply,
+    ...over,
+  };
+}
+
+/** find and prepare, as processRefitDay runs them, for a direct refitDay call. */
+async function readyRefit(over = {}) {
+  const args = refitArgs(over);
+  const found = await findRefitManifest(makeSql(), args);
+  const prepared = await prepareRefitDay(makeSql(), args);
+  expect(found.ok).toBe(true);
+  expect(prepared.ok).toBe(true);
+  return { args, found, prepared };
+}
+
+/** Each stored row's close over the ETF close of its minute. */
+function ratiosOf(rows, bars) {
+  const etf = new Map(
+    bars.map((bar) => [Date.parse(bar.start_time), Number(bar.close)]),
+  );
+  return rows.map(
+    (row) => Number(row.close) / etf.get(Date.parse(row.timestamp)),
+  );
+}
+
+const column = (rows, name) => rows.map((row) => row[name]);
+
+/** Insert mapped rows written at `created`, with no Schwab price. */
+async function seedMapped(rows, created) {
+  await pg.query(
+    `INSERT INTO index_candles_1m
+       (symbol, date, timestamp, open, high, low, close, volume, market_time,
+        created_at)
+     SELECT t.symbol, t.date, t.timestamp, t.open, t.high, t.low, t.close,
+            t.volume, t.market_time, $10::timestamptz
+     FROM unnest($1::text[], $2::date[], $3::timestamptz[], $4::numeric[],
+                 $5::numeric[], $6::numeric[], $7::numeric[], $8::bigint[],
+                 $9::text[])
+       AS t(symbol, date, timestamp, open, high, low, close, volume,
+            market_time)`,
+    [
+      column(rows, 'symbol'),
+      column(rows, 'date'),
+      column(rows, 'timestamp'),
+      column(rows, 'open'),
+      column(rows, 'high'),
+      column(rows, 'low'),
+      column(rows, 'close'),
+      column(rows, 'volume'),
+      column(rows, 'market_time'),
+      created,
+    ],
+  );
+}
+
+describe('findRefitManifest', () => {
+  const find = (over = {}) =>
+    findRefitManifest(makeSql(), {
+      symbol: 'SPX',
+      date: SPX_DATE,
+      backupDir: backupDirOf(),
+      ...over,
+    });
+
+  /** A copy of a manifest under another name, with `over` on top. */
+  function copyManifest(from, name, over = {}) {
+    const file = path.join(backupDirOf(), name);
+    writeFileSync(file, JSON.stringify({ ...readManifest(from), ...over }));
+    return file;
+  }
+
+  it('finds the one committed manifest whose inserted rows are all still there', async () => {
+    await seedPlaceholderDay();
+    const repaired = await repairedDay();
+
+    const found = await find();
+
+    expect(found).toMatchObject({ ok: true, manifestPath: repaired.manifest });
+    expect(found.manifest).toMatchObject({
+      symbol: 'SPX',
+      date: SPX_DATE,
+      committed: true,
+    });
+    expect(found.ids).toEqual(readManifest(repaired.manifest).insertedIds);
+    expect(found.ids).toHaveLength(396);
+  });
+
+  it('skips a date with no manifest, a missing folder or no folder', async () => {
+    await seedPlaceholderDay();
+    expect(await find()).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/^no manifest for SPX 2026-03-26 in /),
+    });
+    mkdirSync(backupDirOf());
+    expect(await find()).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/^no manifest for SPX 2026-03-26 in /),
+    });
+    expect(await find({ backupDir: undefined })).toEqual({
+      ok: false,
+      reason: 'no backup directory',
+    });
+    // Another date's manifest is not this date's.
+    await repairedDay();
+    expect(await find({ date: '2026-03-25' })).toMatchObject({ ok: false });
+  });
+
+  it('skips a date with two qualifying manifests, naming both', async () => {
+    await seedPlaceholderDay();
+    const repaired = await repairedDay();
+    const copy = copyManifest(
+      repaired.manifest,
+      'SPX-2026-03-26-20990101T000000000Z.manifest.json',
+    );
+
+    const found = await find();
+
+    expect(found.ok).toBe(false);
+    expect(found.reason).toMatch(/2 manifests qualify for SPX 2026-03-26/);
+    expect(found.reason).toContain(path.basename(repaired.manifest));
+    expect(found.reason).toContain(path.basename(copy));
+  });
+
+  it.each([
+    [
+      'gone',
+      (id) => pg.query('DELETE FROM index_candles_1m WHERE id = $1', [id]),
+    ],
+    [
+      'now another symbol',
+      (id) =>
+        pg.query("UPDATE index_candles_1m SET symbol = 'NDX' WHERE id = $1", [
+          id,
+        ]),
+    ],
+    [
+      'now another date',
+      (id) =>
+        pg.query(
+          "UPDATE index_candles_1m SET date = '2026-03-25' WHERE id = $1",
+          [id],
+        ),
+    ],
+  ])(
+    'skips a date whose manifest lists a row that is %s',
+    async (_label, change) => {
+      await seedPlaceholderDay();
+      const repaired = await repairedDay();
+      await change(readManifest(repaired.manifest).insertedIds[100]);
+
+      const found = await find();
+
+      expect(found.ok).toBe(false);
+      expect(found.reason).toMatch(
+        /lists 396 inserted rows, but only 395 are SPX 2026-03-26 rows/,
+      );
+    },
+  );
+
+  it('does not count an uncommitted, empty, foreign or lottery manifest', async () => {
+    await seedPlaceholderDay();
+    const repaired = await repairedDay();
+    const real = readManifest(repaired.manifest);
+    const decoys = {
+      1: { committed: false },
+      2: { insertedIds: [] },
+      3: { symbol: 'NDX' },
+      4: { date: '2026-03-25' },
+      5: { kind: 'lottery-spots' },
+      6: { kind: 'something-else' },
+      // A repeated id: 397 listed, 396 rows.
+      7: { insertedIds: [...real.insertedIds, real.insertedIds[0]] },
+    };
+    for (const [n, over] of Object.entries(decoys)) {
+      copyManifest(
+        repaired.manifest,
+        `SPX-2026-03-26-2099010100000000${n}Z.manifest.json`,
+        over,
+      );
+    }
+    writeFileSync(
+      path.join(
+        backupDirOf(),
+        'SPX-2026-03-26-20990101000000008Z.manifest.json',
+      ),
+      'not json',
+    );
+    // A real lottery manifest's own shape, under a name this date matches.
+    writeFileSync(
+      path.join(
+        backupDirOf(),
+        'SPX-2026-03-26-20990101000000009Z.manifest.json',
+      ),
+      JSON.stringify({
+        version: 1,
+        kind: 'lottery-spots',
+        backup: 'x.jsonl',
+        backedUpIds: [1],
+        committed: true,
+        insertedIds: [1],
+      }),
+    );
+
+    const found = await find();
+
+    expect(found).toMatchObject({ ok: true, manifestPath: repaired.manifest });
+  });
+
+  it('names why each candidate failed when none qualifies', async () => {
+    await seedPlaceholderDay();
+    const repaired = await repairedDay();
+    copyManifest(
+      repaired.manifest,
+      'SPX-2026-03-26-20990101T000000001Z.manifest.json',
+      {
+        committed: false,
+      },
+    );
+    await pg.query('DELETE FROM index_candles_1m WHERE symbol = $1', ['SPX']);
+
+    const found = await find();
+
+    // Only manifests are read, not the backups beside them, in name order.
+    expect(found).toEqual({
+      ok: false,
+      reason:
+        'no manifest for SPX 2026-03-26 qualifies: ' +
+        `${path.basename(repaired.manifest)} lists 396 inserted rows, but ` +
+        'only 0 are SPX 2026-03-26 rows; ' +
+        'SPX-2026-03-26-20990101T000000001Z.manifest.json is not committed',
+    });
+  });
+});
+
+describe('prepareRefitDay', () => {
+  const noQuery = () =>
+    vi.fn(() => {
+      throw new Error('a fitted day reads nothing from the database');
+    });
+
+  it('fits the day to the price file, maps it at the fitted ratio, and reads nothing from the database', async () => {
+    const bars = stageRefit('SPX', SPX_DATE);
+    const sql = noQuery();
+    const args = refitArgs();
+
+    const out = await prepareRefitDay(sql, args);
+
+    expect(out).toMatchObject({
+      ok: true,
+      source: 'tape',
+      matched: 390,
+      dropped: 0,
+    });
+    expect(out.ratio).toBeCloseTo(RATIOS.SPX.fitted, 12);
+    expect(out.closeRatio).toBeCloseTo(RATIOS.SPX.close, 12);
+    expect(out.scatter).toBeCloseTo(0, 6);
+    expect(out.dh).toBeCloseTo(0, 6);
+    expect(out.dl).toBeCloseTo(0, 6);
+    expect(out.rows).toHaveLength(396);
+    const last = out.rows.filter((r) => r.market_time === 'r').at(-1);
+    expect(last.close).toBeCloseTo(647 * RATIOS.SPX.fitted, 6);
+    expect(out.etfCloses.size).toBe(390);
+    const first = bars.find((bar) => bar.market_time === 'r');
+    expect(out.etfCloses.get(Date.parse(first.start_time) / 60_000)).toBe(
+      Number(first.close),
+    );
+    expect(mocks.fetchUwCandles).toHaveBeenCalledWith(
+      'uw-key',
+      'SPY',
+      SPX_DATE,
+      args.waitForSlot,
+    );
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('counts a malformed extended-hours bar as dropped and still passes the day', async () => {
+    const bars = refitBars('SPX', SPX_DATE);
+    bars[0] = { ...bars[0], close: 'n/a' };
+    stageRefit('SPX', SPX_DATE, { bars });
+
+    const out = await prepareRefitDay(noQuery(), refitArgs());
+
+    expect(out).toMatchObject({ ok: true, dropped: 1 });
+    expect(out.rows).toHaveLength(395);
+  });
+
+  it('skips a fit-gate failure with its reason', async () => {
+    // 1.6% above the close ratio: over the 0.15% allowed.
+    stageRefit('SPX', SPX_DATE, { ratio: RATIOS.SPX.close * 1.016 });
+
+    const out = await prepareRefitDay(noQuery(), refitArgs());
+
+    expect(out).toMatchObject({ ok: false, kind: 'other' });
+    expect(out.reason).toMatch(/from the close ratio .* over the 0.0015/);
+  });
+
+  it('skips a day the price file does not cover', async () => {
+    const bars = refitBars('SPX', SPX_DATE);
+    stageRefit('SPX', SPX_DATE);
+    // Under 99% of the 390 cash minutes in the file.
+    const minutes = spotMinutes(bars, RATIOS.SPX.fitted);
+    for (const key of Object.keys(minutes).slice(0, 10)) delete minutes[key];
+    writeSpots('SPX', SPX_DATE, minutes);
+
+    const out = await prepareRefitDay(noQuery(), refitArgs());
+
+    expect(out.ok).toBe(false);
+    expect(out.reason).toMatch(/matched minutes 380 is under the 387/);
+  });
+
+  it('skips a level-check failure with its reason', async () => {
+    stageRefit('SPX', SPX_DATE);
+    // Schwab's range 5 pt above the mapped day on both sides.
+    const closes = refitCloses(SPX_DATE, { shift: 5 });
+
+    const out = await prepareRefitDay(noQuery(), refitArgs({ closes }));
+
+    expect(out).toMatchObject({ ok: false, kind: 'other' });
+    expect(out.reason).toMatch(/misses Schwab's daily range on one side/);
+  });
+
+  it('skips a missing price file before it asks UW', async () => {
+    mocks.fetchUwCandles.mockResolvedValue({
+      kind: 'ok',
+      rows: refitBars('SPX', SPX_DATE),
+    });
+
+    const out = await prepareRefitDay(noQuery(), refitArgs());
+
+    expect(out).toMatchObject({ ok: false, kind: 'other' });
+    expect(out.reason).toMatch(/no price file SPX-2026-03-26-spots\.json/);
+    expect(mocks.fetchUwCandles).not.toHaveBeenCalled();
+  });
+
+  it('skips a price file for another symbol or another source', async () => {
+    const bars = stageRefit('SPX', SPX_DATE);
+    const minutes = spotMinutes(bars, RATIOS.SPX.fitted);
+    writeFileSync(
+      path.join(spotsDirOf(), `SPX-${SPX_DATE}-spots.json`),
+      JSON.stringify({
+        symbol: 'NDX',
+        date: SPX_DATE,
+        source: 'parity',
+        minutes,
+      }),
+    );
+    const other = await prepareRefitDay(noQuery(), refitArgs());
+    expect(other.ok).toBe(false);
+    expect(other.reason).toMatch(/is for symbol NDX, not SPX/);
+
+    rmSync(spotsDirOf(), { recursive: true });
+    writeSpots('SPX', SPX_DATE, minutes, 'parity');
+    const wrongSource = await prepareRefitDay(noQuery(), refitArgs());
+    expect(wrongSource.ok).toBe(false);
+    expect(wrongSource.reason).toMatch(/source parity is not tape/);
+  });
+
+  it('skips a UW error with its kind, an empty answer and the row cap', async () => {
+    writeSpots(
+      'SPX',
+      SPX_DATE,
+      spotMinutes(refitBars('SPX', SPX_DATE), RATIOS.SPX.fitted),
+    );
+    mocks.fetchUwCandles.mockResolvedValueOnce({
+      kind: 'error',
+      status: 'http_503',
+      detail: 'upstream down',
+    });
+    const uwError = await prepareRefitDay(noQuery(), refitArgs());
+    expect(uwError).toMatchObject({ ok: false, kind: 'uw_http_503' });
+    expect(uwError.reason).toBe(
+      `UW SPY bars for ${SPX_DATE}: http_503 upstream down`,
+    );
+
+    mocks.fetchUwCandles.mockResolvedValueOnce({ kind: 'empty' });
+    const empty = await prepareRefitDay(noQuery(), refitArgs());
+    expect(empty.reason).toMatch(/UW has no SPY bars/);
+
+    mocks.fetchUwCandles.mockResolvedValueOnce({
+      kind: 'ok',
+      rows: Array.from({ length: 2500 }, () => ({})),
+    });
+    const capped = await prepareRefitDay(noQuery(), refitArgs());
+    expect(capped.reason).toMatch(/2500.*cut short/);
+  });
+
+  it('skips a date with no Schwab close, or no Schwab range, before asking UW', async () => {
+    stageRefit('SPX', SPX_DATE);
+    const noClose = await prepareRefitDay(
+      noQuery(),
+      refitArgs({ closes: new Map([['$SPX', { closes: new Map() }]]) }),
+    );
+    expect(noClose.ok).toBe(false);
+    expect(noClose.reason).toMatch(/no ratio for SPX on 2026-03-26/);
+    expect(mocks.fetchUwCandles).not.toHaveBeenCalled();
+
+    const noRange = await prepareRefitDay(
+      noQuery(),
+      refitArgs({ closes: refitCloses(SPX_DATE, { noRange: true }) }),
+    );
+    expect(noRange.ok).toBe(false);
+    expect(noRange.reason).toMatch(/no extremes for SPX on 2026-03-26/);
+  });
+
+  it('does not refuse a fitted NDX day whose close is 20 pt from the Schwab $NDX close', async () => {
+    stageRefit('NDX', SPX_DATE);
+    // The last regular close maps to 560 x 41.02 = 22971.2.
+    const closes = refitCloses(SPX_DATE, { ndxClose: 22951.2 });
+
+    const out = await prepareRefitDay(
+      noQuery(),
+      refitArgs({ symbol: 'NDX', closes }),
+    );
+
+    expect(out).toMatchObject({ ok: true, source: 'parity', matched: 390 });
+    const last = out.rows.filter((r) => r.market_time === 'r').at(-1);
+    expect(Math.abs(last.close - 22951.2)).toBeGreaterThan(19.9);
+  });
+
+  it('does not refuse a fitted SPX day whose close is 4.01 pt from the settlement, and refits one with no outcomes row', async () => {
+    stageRefit('SPX', SPX_DATE);
+    // The last regular close is 647 x 10.045 = 6499.115.
+    await seedSettlement(SPX_DATE, '6495.10');
+    const far = await prepareRefitDay(noQuery(), refitArgs());
+    expect(far.ok).toBe(true);
+
+    await pg.query('DELETE FROM outcomes');
+    const none = await prepareRefitDay(noQuery(), refitArgs());
+    expect(none.ok).toBe(true);
+  });
+
+  it('still refuses a fitted day with 389 regular bars on a 390-minute day', async () => {
+    stageRefit('SPX', SPX_DATE, {
+      bars: refitBars('SPX', SPX_DATE, { regular: 389 }),
+    });
+
+    const out = await prepareRefitDay(noQuery(), refitArgs());
+
+    expect(out).toMatchObject({ ok: false, kind: 'other' });
+    expect(out.reason).toMatch(/389 regular bars, expected 390/);
+  });
+
+  it('refuses a symbol it has no repair for', async () => {
+    await expect(
+      prepareRefitDay(noQuery(), refitArgs({ symbol: 'ES' })),
+    ).rejects.toThrow(/no repair for symbol ES/);
+  });
+});
+
+describe('refitDay', () => {
+  it('replaces exactly the rows the manifest inserted, at the fitted ratio, and keeps a live row', async () => {
+    await seedPlaceholderDay();
+    // A live row the repair keeps: written after the placeholder cut.
+    const live = await seed({
+      at: '2026-03-26T13:40:00Z',
+      close: '6481.5',
+      created: '2026-11-25T14:00:00Z',
+    });
+    const repaired = await repairedDay();
+    const old = readManifest(repaired.manifest);
+    expect(old.insertedIds).toHaveLength(395); // 396 mapped, less the live minute
+    const before = await snapshot();
+    const bars = stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit();
+    const sql = makeSql();
+
+    const res = await refitDay(sql, refitCall(args, found, prepared));
+
+    expect(res).toMatchObject({
+      date: SPX_DATE,
+      symbol: 'SPX',
+      ratio: 10.045,
+      closeRatio: 10.04,
+      priorRatio: 10.03,
+      replaced: 395,
+      inserted: 395,
+      uncovered: 0,
+    });
+    expect(sql.transaction).toHaveBeenCalledTimes(1);
+    const [statements] = sql.transaction.mock.calls[0];
+    expect(statements).toHaveLength(2);
+    expect(statements[0].text).toMatch(/^\s*DELETE FROM index_candles_1m/);
+    expect(statements[1].text).toMatch(/INSERT INTO index_candles_1m/);
+    // The live row's minute is not sent: 395 rows, not 396.
+    expect(statements[1].params.map((p) => p.length)).toEqual(
+      Array.from({ length: 11 }, () => 395),
+    );
+
+    const after = await snapshot();
+    const oldIds = new Set(old.insertedIds.map(String));
+    expect(after.some((r) => oldIds.has(r.id))).toBe(false);
+    // The live row is exactly as it was, and its minute holds one row only.
+    expect(after.find((r) => r.id === String(live))).toEqual(
+      before.find((r) => r.id === String(live)),
+    );
+    expect(after).toHaveLength(396);
+    expect(new Set(after.map((r) => r.timestamp)).size).toBe(396);
+    const fresh = after.filter((r) => r.id !== String(live));
+    expect(fresh).toHaveLength(395);
+    for (const ratio of ratiosOf(fresh, bars)) {
+      expect(ratio).toBeCloseTo(RATIOS.SPX.fitted, 9);
+    }
+
+    // The backup holds the replaced rows exactly, every column as text.
+    const backup = readFileSync(readManifest(res.manifest).backup, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(backup).toEqual(before.filter((r) => oldIds.has(r.id)));
+
+    const manifest = readManifest(res.manifest);
+    expect(manifest).toMatchObject({
+      version: 1,
+      kind: 'refit',
+      refitOf: repaired.manifest,
+      symbol: 'SPX',
+      date: SPX_DATE,
+      list: 'spx-repair',
+      source: 'tape',
+      committed: true,
+    });
+    expect(manifest.ratio).toBeCloseTo(10.045, 12);
+    expect(manifest.closeRatio).toBeCloseTo(10.04, 12);
+    expect(manifest.priorRatio).toBeCloseTo(10.03, 12);
+    expect(manifest.backedUpIds).toEqual(old.insertedIds);
+    expect(manifest.insertedIds).toEqual(fresh.map((r) => Number(r.id)));
+    expect(manifest.marker).toMatch(/^\d{4}-\d{2}-\d{2} /);
+  });
+
+  it('a second look finds only the refit manifest', async () => {
+    await seedPlaceholderDay();
+    const repaired = await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const first = await processRefitDay(makeSql(), refitArgs());
+    const afterFirst = await snapshot();
+
+    const found = await findRefitManifest(makeSql(), refitArgs());
+
+    expect(found).toMatchObject({
+      ok: true,
+      manifestPath: first.manifest,
+      manifest: { kind: 'refit', refitOf: repaired.manifest },
+    });
+    expect(found.ids).toEqual(readManifest(first.manifest).insertedIds);
+    expect(await snapshot()).toEqual(afterFirst);
+  });
+
+  it('writes nothing in a dry run, and counts what an apply would change', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const before = await snapshot();
+    const files = filesIn(backupDirOf());
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit({ apply: false });
+    const sql = makeSql();
+
+    const res = await refitDay(sql, refitCall(args, found, prepared));
+
+    expect(res).toEqual({
+      date: SPX_DATE,
+      symbol: 'SPX',
+      ratio: 10.045,
+      closeRatio: 10.04,
+      priorRatio: 10.03,
+      replaced: 396,
+      inserted: 396,
+      uncovered: 0,
+    });
+    expect(sql.transaction).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+    expect(filesIn(backupDirOf())).toEqual(files);
+  });
+
+  it.each([
+    ['a pre-market', '13:27'],
+    ['a post-market', '20:00'],
+  ])(
+    'writes nothing when the new rows would leave %s minute empty',
+    async (_label, hhmm) => {
+      await seedPlaceholderDay();
+      await repairedDay();
+      const before = await snapshot();
+      const files = filesIn(backupDirOf());
+      // UW's answer lacks one extended-hours minute the repaired rows cover.
+      const missing = `${SPX_DATE}T${hhmm}:00.000Z`;
+      stageRefit('SPX', SPX_DATE, {
+        bars: refitBars('SPX', SPX_DATE).filter(
+          (bar) => bar.start_time !== missing,
+        ),
+      });
+
+      for (const apply of [false, true]) {
+        const { args, found, prepared } = await readyRefit({ apply });
+        const sql = makeSql();
+
+        const res = await refitDay(sql, refitCall(args, found, prepared));
+
+        expect(res.skipped).toMatch(/^would leave 1 minute empty/);
+        expect(res.skipped).toContain(`first ${missing}`);
+        expect(res).toMatchObject({ uncovered: 1, replaced: 0, inserted: 0 });
+        expect(res.manifest).toBeUndefined();
+        expect(sql.transaction).not.toHaveBeenCalled();
+      }
+      expect(await snapshot()).toEqual(before);
+      expect(filesIn(backupDirOf())).toEqual(files);
+    },
+  );
+
+  it('names every minute it would leave empty', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const missing = [`${SPX_DATE}T13:27:00.000Z`, `${SPX_DATE}T20:01:00.000Z`];
+    stageRefit('SPX', SPX_DATE, {
+      bars: refitBars('SPX', SPX_DATE).filter(
+        (bar) => !missing.includes(bar.start_time),
+      ),
+    });
+    const { args, found, prepared } = await readyRefit();
+
+    const res = await refitDay(makeSql(), refitCall(args, found, prepared));
+
+    expect(res.skipped).toMatch(/^would leave 2 minutes empty/);
+    expect(res.uncovered).toBe(2);
+  });
+
+  it('measures the prior ratio from the rows it replaces, not from the close ratio', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit({ apply: false });
+
+    const res = await refitDay(makeSql(), refitCall(args, found, prepared));
+
+    expect(res.priorRatio).toBe(10.03);
+    expect(res.closeRatio).toBe(10.04);
+    expect(res.ratio).toBe(10.045);
+  });
+
+  it('skips when no replaced regular minute has a UW bar to measure the prior ratio from', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit();
+    const sql = makeSql();
+
+    const res = await refitDay(
+      sql,
+      refitCall(args, found, { ...prepared, etfCloses: new Map() }),
+    );
+
+    expect(res.skipped).toMatch(/prior ratio cannot be measured/);
+    expect(sql.transaction).not.toHaveBeenCalled();
+  });
+
+  it('skips when a row the manifest lists has gone since it was read, and changes nothing', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const before = await snapshot();
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit();
+    const sql = makeSql();
+
+    const res = await refitDay(
+      sql,
+      refitCall(args, { ...found, ids: [...found.ids, 999_999] }, prepared),
+    );
+
+    expect(res.skipped).toBe(
+      'rows to replace: 396 of the 397 are still SPX 2026-03-26 rows',
+    );
+    expect(sql.transaction).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('touches nothing when the request does not belong to its list', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const before = await snapshot();
+    const files = filesIn(backupDirOf());
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit();
+    const stray = newRow('NDX', SPX_DATE, `${SPX_DATE}T13:30:00.000Z`, 6500);
+    const cases = [
+      [{ list: 'ndx-repair' }, /not in the ndx-repair list/],
+      [{ list: 'no-such-list' }, /unknown list/],
+      [{ date: '2026-04-20' }, /not in the spx-repair list/],
+      [{ prepared: { ...prepared, rows: [] } }, /no mapped rows/],
+      [{ prepared: { ...prepared, rows: [stray] } }, /not SPX 2026-03-26/],
+      [{ prepared: { ...prepared, ratio: Number.NaN } }, /bad ratio/],
+      [{ backupDir: undefined }, /no backup directory/],
+      [{ found: { ...found, ids: [] } }, /no rows to replace/],
+    ];
+    for (const [over, reason] of cases) {
+      const sql = makeSql();
+      const res = await refitDay(sql, refitCall(args, found, prepared, over));
+      expect(res.skipped).toMatch(reason);
+      expect(res).toMatchObject({ replaced: 0, inserted: 0 });
+      expect(sql.transaction).not.toHaveBeenCalled();
+    }
+    expect(await snapshot()).toEqual(before);
+    expect(filesIn(backupDirOf())).toEqual(files);
+  });
+
+  it('an unwritable backup changes nothing', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const before = await snapshot();
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit();
+    const blocker = path.join(tmp, 'not-a-directory');
+    writeFileSync(blocker, 'a file where the backup folder should be');
+    const sql = makeSql();
+
+    await expect(
+      refitDay(sql, refitCall(args, found, prepared, { backupDir: blocker })),
+    ).rejects.toThrow(/EEXIST|ENOTDIR|not a directory/i);
+
+    expect(sql.transaction).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+    expect(readFileSync(blocker, 'utf8')).toMatch(/a file where/);
+  });
+
+  it('a DB error mid-refit rolls back, and the manifest it left undoes nothing', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const before = await snapshot();
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit();
+    await pg.query(
+      'ALTER TABLE index_candles_1m ADD CONSTRAINT reject_volume CHECK (volume <> 777)',
+    );
+    const rows = [...prepared.rows];
+    rows[10] = { ...rows[10], volume: 777 };
+
+    await expect(
+      refitDay(makeSql(), refitCall(args, found, { ...prepared, rows })),
+    ).rejects.toThrow(/reject_volume/);
+
+    expect(await snapshot()).toEqual(before);
+    const manifestName = filesIn(backupDirOf())
+      .filter((f) => f.endsWith('.manifest.json'))
+      .at(-1);
+    const manifest = readManifest(path.join(backupDirOf(), manifestName));
+    expect(manifest).toMatchObject({
+      kind: 'refit',
+      committed: false,
+      insertedIds: null,
+    });
+    await pg.query(
+      'ALTER TABLE index_candles_1m DROP CONSTRAINT reject_volume',
+    );
+    await expect(
+      undoRepair(makeSql(), path.join(backupDirOf(), manifestName)),
+    ).resolves.toEqual({ restored: 0, removed: 0 });
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('after a commit whose manifest could not be rewritten, no manifest qualifies, so the date is not refit again', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit();
+    // Writes 1-2 were the repair's; this refit's are 3 (before) and 4 (after).
+    mocks.manifestWrites = 0;
+    mocks.failManifestWrite = 2;
+
+    const error = await refitDay(
+      makeSql(),
+      refitCall(args, found, prepared),
+    ).catch((e) => e);
+
+    expect(error.message).toMatch(
+      /^SPX 2026-03-26: committed \(396 deleted, 396 inserted\) but the manifest .+\.manifest\.json could not be rewritten/,
+    );
+    mocks.failManifestWrite = 0;
+    const next = await findRefitManifest(makeSql(), args);
+    expect(next.ok).toBe(false);
+    expect(next.reason).toContain('is not committed');
+  });
+
+  it('measures the prior ratio from the regular minutes only', async () => {
+    const date = SUMMER_DATE;
+    const base = Date.parse(`${date}T13:00:00.000Z`);
+    const at = (i) => new Date(base + i * 60_000).toISOString();
+    // Five pre-market rows at twice the ratio, two regular rows at the prior.
+    const marketTimes = ['pr', 'pr', 'pr', 'pr', 'pr', 'r', 'r'];
+    const rowsAt = (factor, ratio) =>
+      marketTimes.map((marketTime, i) =>
+        newRow(
+          'SPX',
+          date,
+          at(i),
+          650 * ratio * (marketTime === 'pr' ? factor : 1),
+          marketTime,
+        ),
+      );
+    await seedMapped(rowsAt(2, RATIOS.SPX.prior), BACKFILL_CREATED);
+    const found = await findRefitManifest(makeSql(), {
+      symbol: 'SPX',
+      date,
+      backupDir: backupDirOf(),
+    });
+
+    const res = await refitDay(makeSql(), {
+      symbol: 'SPX',
+      date,
+      list: 'summer',
+      prepared: {
+        ok: true,
+        rows: rowsAt(1, RATIOS.SPX.fitted),
+        ratio: RATIOS.SPX.fitted,
+        closeRatio: RATIOS.SPX.close,
+        source: 'tape',
+        etfCloses: new Map(marketTimes.map((_, i) => [base / 60_000 + i, 650])),
+      },
+      found,
+      backupDir: backupDirOf(),
+      apply: false,
+    });
+
+    expect(res).toMatchObject({ priorRatio: 10.03, replaced: 7, inserted: 7 });
+  });
+
+  it('inserts a 1,000-row day in batches of at most 500, and deletes by id in the same transaction', async () => {
+    const date = SUMMER_DATE;
+    const base = Date.parse(`${date}T13:00:00.000Z`);
+    const etfs = Array.from({ length: 1000 }, (_, i) => 650 + i / 100);
+    const rowsAt = (ratio) =>
+      etfs.map((etf, i) =>
+        newRow(
+          'SPX',
+          date,
+          new Date(base + i * 60_000).toISOString(),
+          etf * ratio,
+        ),
+      );
+    await seedMapped(rowsAt(RATIOS.SPX.prior), BACKFILL_CREATED);
+    const found = await findRefitManifest(makeSql(), {
+      symbol: 'SPX',
+      date,
+      backupDir: backupDirOf(),
+    });
+    expect(found.ids).toHaveLength(1000);
+    const prepared = {
+      ok: true,
+      rows: rowsAt(RATIOS.SPX.fitted),
+      ratio: RATIOS.SPX.fitted,
+      closeRatio: RATIOS.SPX.close,
+      source: 'tape',
+      etfCloses: new Map(etfs.map((etf, i) => [base / 60_000 + i, etf])),
+    };
+    const sql = makeSql();
+
+    const res = await refitDay(sql, {
+      symbol: 'SPX',
+      date,
+      list: 'summer',
+      prepared,
+      found,
+      backupDir: backupDirOf(),
+      apply: true,
+    });
+
+    expect(res).toMatchObject({ replaced: 1000, inserted: 1000 });
+    const [statements] = sql.transaction.mock.calls[0];
+    expect(statements).toHaveLength(3);
+    expect(statements[0].text).toMatch(/^\s*DELETE FROM index_candles_1m/);
+    for (const statement of statements.slice(1)) {
+      expect(statement.text).toMatch(/INSERT INTO index_candles_1m/);
+      const sizes = statement.params.map((p) => p.length);
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(500);
+      expect(Math.min(...sizes)).toBe(500);
+    }
+    expect((await snapshot()).length).toBe(1000);
+  });
+});
+
+describe('the summer refit', () => {
+  /** Stored: the backfill's rows, a live row, a late row and a priced row. */
+  async function seedSummerDay() {
+    const at = (hhmm) => `${SUMMER_DATE}T${hhmm}:00.000Z`;
+    const held = new Set([at('13:40'), at('13:41'), at('13:42')]);
+    await seedMapped(
+      mappedRows('SPX', SUMMER_DATE, RATIOS.SPX.prior).filter(
+        (row) => !held.has(row.timestamp),
+      ),
+      BACKFILL_CREATED,
+    );
+    // Written that morning, as 07-22's live rows are: not the backfill's.
+    const live = await seed({
+      date: SUMMER_DATE,
+      at: at('13:40'),
+      close: '6480',
+      created: `${SUMMER_DATE}T17:40:00Z`,
+    });
+    // Written at the window's end (exclusive).
+    const late = await seed({
+      date: SUMMER_DATE,
+      at: at('13:41'),
+      close: '6480',
+      created: '2026-11-06T22:20:00Z',
+    });
+    // In the window, but it carries a Schwab price.
+    const priced = await seed({
+      date: SUMMER_DATE,
+      at: at('13:42'),
+      close: '6480',
+      created: BACKFILL_CREATED,
+    });
+    await pg.query(
+      'UPDATE index_candles_1m SET spx_schwab_price = 6480 WHERE id = $1',
+      [priced],
+    );
+    return { live, late, priced };
+  }
+
+  const summerArgs = (over = {}) =>
+    refitArgs({ date: SUMMER_DATE, list: 'summer', ...over });
+
+  it('selects only the backfill rows, and records no earlier manifest', async () => {
+    const kept = await seedSummerDay();
+    const before = await snapshot();
+    const keptIds = Object.values(kept);
+    expect(before).toHaveLength(396);
+
+    const found = await findRefitManifest(makeSql(), summerArgs());
+    expect(found).toMatchObject({
+      ok: true,
+      manifestPath: null,
+      manifest: null,
+    });
+    expect(found.ids).toHaveLength(393);
+    for (const id of keptIds) expect(found.ids).not.toContain(Number(id));
+
+    const bars = stageRefit('SPX', SUMMER_DATE);
+    const out = await processRefitDay(makeSql(), summerArgs());
+
+    expect(out).toMatchObject({
+      fetched: 396,
+      stored: 393,
+      closeRatio: 10.04,
+      priorRatio: 10.03,
+      fittedRatio: 10.045,
+      replaced: 393,
+    });
+    const after = await snapshot();
+    expect(after).toHaveLength(396);
+    for (const id of keptIds) {
+      expect(after.find((r) => r.id === String(id))).toEqual(
+        before.find((r) => r.id === String(id)),
+      );
+    }
+    const fresh = after.filter((r) => !keptIds.map(String).includes(r.id));
+    for (const ratio of ratiosOf(fresh, bars)) {
+      expect(ratio).toBeCloseTo(RATIOS.SPX.fitted, 9);
+    }
+    const manifest = readManifest(out.manifest);
+    expect(manifest).toMatchObject({
+      kind: 'refit',
+      refitOf: null,
+      selectedBy: 'summer-backfill',
+      list: 'summer',
+      committed: true,
+    });
+    expect(manifest.priorRatio).toBeCloseTo(10.03, 12);
+    expect(manifest.backedUpIds).toEqual(found.ids);
+
+    // From now on the date has a refit manifest, and the manifest rule applies.
+    const next = await findRefitManifest(makeSql(), summerArgs());
+    expect(next).toMatchObject({
+      ok: true,
+      manifestPath: out.manifest,
+      manifest: { kind: 'refit' },
+    });
+    const again = await processRefitDay(makeSql(), summerArgs());
+    expect(again).toMatchObject({
+      alreadyRefit: true,
+      manifestPath: out.manifest,
+    });
+
+    // The rows were written at 10.03, not at today's 10.04: --check passes.
+    const check = await checkRefitDay(makeSql(), summerArgs());
+    expect(check).toMatchObject({ ok: true, scaledShare: 1 });
+  });
+
+  it('after an undo selects the backfill rows again, and the new refit checks out', async () => {
+    await seedSummerDay();
+    const before = await snapshot();
+    stageRefit('SPX', SUMMER_DATE);
+    const first = await processRefitDay(makeSql(), summerArgs());
+    await undoRepair(makeSql(), first.manifest);
+    expect(await snapshot()).toEqual(before);
+
+    // The first refit's rows are gone, so its manifest no longer qualifies.
+    const found = await findRefitManifest(makeSql(), summerArgs());
+    expect(found).toMatchObject({ ok: true, manifestPath: null });
+    expect(found.ids).toHaveLength(393);
+
+    const second = await processRefitDay(makeSql(), summerArgs());
+    expect(second).toMatchObject({ replaced: 393, stored: 393 });
+    expect(readManifest(second.manifest)).toMatchObject({
+      refitOf: null,
+      selectedBy: 'summer-backfill',
+    });
+    expect(await checkRefitDay(makeSql(), summerArgs())).toMatchObject({
+      ok: true,
+      scaledShare: 1,
+    });
+  });
+
+  it('skips when the backfill window selects nothing', async () => {
+    await seed({
+      date: SUMMER_DATE,
+      at: `${SUMMER_DATE}T13:40:00Z`,
+      created: '2026-11-06T22:20:00Z',
+    });
+
+    const found = await findRefitManifest(makeSql(), summerArgs());
+
+    expect(found.ok).toBe(false);
+    expect(found.reason).toMatch(/no 11-06 backfill rows for SPX 2026-08-20/);
+  });
+
+  it('reads the NDX price column for NDX', async () => {
+    const date = SUMMER_DATE;
+    await seedMapped(
+      mappedRows('NDX', date, RATIOS.NDX.prior),
+      BACKFILL_CREATED,
+    );
+    // An NDX row carrying an NDX price is not the backfill's; an SPX price on
+    // an NDX row does not matter.
+    const priced = await pg.query(
+      `UPDATE index_candles_1m SET ndx_schwab_price = 23000
+       WHERE symbol = 'NDX' AND timestamp = $1::timestamptz
+       RETURNING id`,
+      [`${date}T13:40:00Z`],
+    );
+    const other = await pg.query(
+      `UPDATE index_candles_1m SET spx_schwab_price = 6500
+       WHERE symbol = 'NDX' AND timestamp = $1::timestamptz
+       RETURNING id`,
+      [`${date}T13:41:00Z`],
+    );
+
+    const found = await findRefitManifest(makeSql(), {
+      symbol: 'NDX',
+      date,
+      backupDir: backupDirOf(),
+    });
+
+    expect(found.ok).toBe(true);
+    expect(found.ids).toHaveLength(395);
+    expect(found.ids).not.toContain(priced.rows[0].id);
+    expect(found.ids).toContain(other.rows[0].id);
+  });
+
+  it('is refit only: the plain repair refuses the list', async () => {
+    await seedSummerDay();
+    await seedSettlement(SUMMER_DATE, '6500.00');
+    const before = await snapshot();
+    const sql = makeSql();
+
+    const res = await repairDay(
+      sql,
+      repairArgs({
+        date: SUMMER_DATE,
+        list: 'summer',
+        rows: mappedRows('SPX', SUMMER_DATE, RATIOS.SPX.fitted),
+      }),
+    );
+
+    expect(res.skipped).toMatch(/summer list is for --refit only/);
+    expect(sql.transaction).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+    expect(filesIn(backupDirOf())).toEqual([]);
+
+    // The whole worker refuses it too, after a day that would pass.
+    mocks.fetchUwCandles.mockResolvedValue({
+      kind: 'ok',
+      rows: refitBars('SPX', SUMMER_DATE),
+    });
+    await expect(
+      processRepairDay(makeSql(), {
+        symbol: 'SPX',
+        date: SUMMER_DATE,
+        list: 'summer',
+        closes: schwabCloses(SUMMER_DATE),
+        uwKey: 'uw-key',
+        waitForSlot: vi.fn(),
+        backupDir: backupDirOf(),
+        apply: true,
+      }),
+    ).rejects.toThrow(/summer list is for --refit only/);
+    expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe('undoing a refit', () => {
+  it('restores the prior rows exactly, id and created_at included', async () => {
+    await seedPlaceholderDay();
+    const live = await seed({
+      at: '2026-03-26T13:40:00Z',
+      created: '2026-11-25T14:00:00Z',
+    });
+    await repairedDay();
+    const before = await snapshot();
+    stageRefit('SPX', SPX_DATE);
+    const refit = await processRefitDay(makeSql(), refitArgs());
+    expect(await snapshot()).not.toEqual(before);
+
+    const undone = await undoRepair(makeSql(), refit.manifest);
+
+    expect(undone).toEqual({ restored: 395, removed: 395 });
+    expect(await snapshot()).toEqual(before);
+    // The live row was never part of the refit.
+    expect(before.some((r) => r.id === String(live))).toBe(true);
+  });
+
+  it('then a refit again: the prior manifest qualifies, and the new refit checks out', async () => {
+    await seedPlaceholderDay();
+    const repaired = await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const first = await processRefitDay(makeSql(), refitArgs());
+    await undoRepair(makeSql(), first.manifest);
+
+    const found = await findRefitManifest(makeSql(), refitArgs());
+    expect(found).toMatchObject({
+      ok: true,
+      manifestPath: repaired.manifest,
+    });
+    expect(found.manifest.kind).toBeUndefined();
+
+    const second = await processRefitDay(makeSql(), refitArgs());
+    expect(second).toMatchObject({ replaced: 396, stored: 396 });
+    expect(readManifest(second.manifest).refitOf).toBe(repaired.manifest);
+    expect(await checkRefitDay(makeSql(), refitArgs())).toMatchObject({
+      ok: true,
+      scaledShare: 1,
+    });
+  });
+
+  it('describes a refit as a refit, from the files only', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const refit = await processRefitDay(makeSql(), refitArgs());
+
+    const text = (await describeUndo(refit.manifest)).join('\n');
+
+    expect(text).toMatch(/SPX 2026-03-26, refit of list spx-repair/);
+    expect(text).toMatch(/remove 396 inserted rows \(by id\)/);
+    expect(text).toMatch(/restore 396 backed-up rows/);
+  });
+});
+
+describe('checkRefitDay', () => {
+  const check = (over = {}) =>
+    checkRefitDay(makeSql(), {
+      symbol: 'SPX',
+      date: SPX_DATE,
+      closes: refitCloses(SPX_DATE),
+      backupDir: backupDirOf(),
+      ...over,
+    });
+
+  async function refitDayApplied() {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    return processRefitDay(makeSql(), refitArgs());
+  }
+
+  it('passes a refit day, and writes nothing', async () => {
+    await refitDayApplied();
+    const before = await snapshot();
+    const files = filesIn(backupDirOf());
+    const sql = makeSql();
+
+    const out = await checkRefitDay(sql, {
+      symbol: 'SPX',
+      date: SPX_DATE,
+      closes: refitCloses(SPX_DATE),
+      backupDir: backupDirOf(),
+    });
+
+    expect(out).toMatchObject({ ok: true, regular: 390, scaledShare: 1 });
+    expect(out.dh).toBeCloseTo(0, 9);
+    expect(out.dl).toBeCloseTo(0, 9);
+    expect(out.reason).toBeUndefined();
+    expect(sql.transaction).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+    expect(filesIn(backupDirOf())).toEqual(files);
+  });
+
+  it('passes an NDX day refit like the rest, from an insert-only date', async () => {
+    await repairedDay({ symbol: 'NDX', date: GAP_DATE, list: 'gap' });
+    stageRefit('NDX', GAP_DATE);
+    const args = refitArgs({ symbol: 'NDX', date: GAP_DATE, list: 'gap' });
+
+    const out = await processRefitDay(makeSql(), args);
+
+    expect(out).toMatchObject({
+      fetched: 396,
+      stored: 396,
+      priorRatio: 40.95,
+      fittedRatio: 41.02,
+      replaced: 396,
+    });
+    expect(
+      await checkRefitDay(makeSql(), {
+        symbol: 'NDX',
+        date: GAP_DATE,
+        closes: args.closes,
+        backupDir: backupDirOf(),
+      }),
+    ).toMatchObject({ ok: true, regular: 390, scaledShare: 1 });
+  });
+
+  it('fails a day whose rows were written at the close ratio: the scaled share is 0', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const { args, found, prepared } = await readyRefit();
+    // The manifest says fitted; the rows go in at the close ratio.
+    const atClose = {
+      ...prepared,
+      rows: mappedRows('SPX', SPX_DATE, RATIOS.SPX.close),
+    };
+    await refitDay(makeSql(), refitCall(args, found, atClose));
+
+    // The daily range matches what was written, so only the share objects.
+    const out = await check({
+      closes: refitCloses(SPX_DATE, { rangeRatio: RATIOS.SPX.close }),
+    });
+
+    expect(out).toMatchObject({ ok: false, scaledShare: 0, regular: 390 });
+    expect(out.reason).toMatch(/0 of 396 stored rows/);
+    expect(out.reason).not.toMatch(/Schwab's daily range/);
+  });
+
+  it("fails a day whose stored high and low miss Schwab's the same way", async () => {
+    await refitDayApplied();
+
+    // Schwab's range sits 5 pt above both stored extremes.
+    const out = await check({ closes: refitCloses(SPX_DATE, { shift: 5 }) });
+
+    expect(out.ok).toBe(false);
+    expect(out.dh).toBeCloseTo(-5, 9);
+    expect(out.dl).toBeCloseTo(-5, 9);
+    expect(out.scaledShare).toBe(1);
+    expect(out.reason).toMatch(/misses Schwab's daily range on one side/);
+    expect(out.reason).not.toMatch(/stored rows/);
+  });
+
+  it('reads the stored rows, not the manifest: a changed day fails the level check', async () => {
+    await refitDayApplied();
+    await pg.query(
+      `UPDATE index_candles_1m SET high = high + 5, low = low + 5
+       WHERE symbol = 'SPX' AND market_time = 'r'`,
+    );
+
+    const out = await check();
+
+    expect(out.ok).toBe(false);
+    expect(out.dh).toBeCloseTo(5, 6);
+    expect(out.dl).toBeCloseTo(5, 6);
+    expect(out.reason).toMatch(/misses Schwab's daily range on one side/);
+  });
+
+  it('reads only the regular rows for the level check', async () => {
+    await refitDayApplied();
+    await pg.query(
+      `UPDATE index_candles_1m SET high = high + 500, low = low - 500
+       WHERE symbol = 'SPX' AND market_time <> 'r'`,
+    );
+
+    const out = await check();
+
+    expect(out).toMatchObject({ ok: true, regular: 390 });
+    expect(out.dh).toBeCloseTo(0, 9);
+  });
+
+  it('fails a date with no refit manifest, whether it has a repair manifest or none', async () => {
+    await seedPlaceholderDay();
+    const repaired = await repairedDay();
+
+    const plain = await check();
+    expect(plain).toMatchObject({
+      ok: false,
+      dh: null,
+      dl: null,
+      scaledShare: null,
+    });
+    expect(plain.reason).toMatch(/SPX 2026-03-26 has no refit manifest/);
+
+    const none = await check({ date: '2026-03-25' });
+    expect(none.ok).toBe(false);
+    expect(none.reason).toMatch(/no manifest for SPX 2026-03-25/);
+    expect(repaired.manifest).toBeDefined();
+  });
+
+  it("fails a summer date that was not refit: its rows are the backfill's", async () => {
+    await seedMapped(
+      mappedRows('SPX', SUMMER_DATE, RATIOS.SPX.prior),
+      BACKFILL_CREATED,
+    );
+
+    const out = await check({
+      date: SUMMER_DATE,
+      closes: refitCloses(SUMMER_DATE),
+    });
+
+    expect(out.ok).toBe(false);
+    expect(out.reason).toMatch(/has no refit manifest/);
+    expect(out.reason).toMatch(/11-06 backfill/);
+  });
+
+  it('fails closed when the backup cannot be read, or Schwab has no range', async () => {
+    const refit = await refitDayApplied();
+
+    const noRange = await check({
+      closes: refitCloses(SPX_DATE, { noRange: true }),
+    });
+    expect(noRange.ok).toBe(false);
+    expect(noRange.reason).toMatch(/no extremes for SPX on 2026-03-26/);
+    expect(noRange.scaledShare).toBe(1);
+
+    rmSync(readManifest(refit.manifest).backup);
+    const noBackup = await check();
+    expect(noBackup.ok).toBe(false);
+    expect(noBackup.reason).toMatch(/cannot read the backup of /);
+  });
+
+  it('fails a refit manifest with no usable ratio or priorRatio', async () => {
+    const refit = await refitDayApplied();
+    const manifest = readManifest(refit.manifest);
+    for (const over of [
+      { priorRatio: 'ten' },
+      { priorRatio: 0 },
+      { ratio: null },
+      { ratio: -10.045 },
+    ]) {
+      writeFileSync(refit.manifest, JSON.stringify({ ...manifest, ...over }));
+
+      const out = await check();
+
+      expect(out.ok).toBe(false);
+      expect(out.reason).toMatch(/no usable ratio and priorRatio/);
+      expect(out.scaledShare).toBeNull();
+    }
+  });
+
+  it('fails when no stored row pairs with a backed-up row', async () => {
+    await refitDayApplied();
+    // Every stored minute moves a day on: same rows, no minute in common.
+    await pg.query(
+      `UPDATE index_candles_1m SET timestamp = timestamp + interval '1 day'
+       WHERE symbol = 'SPX'`,
+    );
+
+    const out = await check();
+
+    expect(out.ok).toBe(false);
+    expect(out.scaledShare).toBeNull();
+    expect(out.reason).toMatch(/no stored row pairs with a backed-up row/);
+  });
+
+  describe('the share and its tolerance', () => {
+    /** 100 summer rows, refit by hand; stored closes scaled by `scale(i)`. */
+    async function hundredRowRefit(scale) {
+      const base = Date.parse(`${SUMMER_DATE}T13:00:00.000Z`);
+      const etfs = Array.from({ length: 100 }, (_, i) => 650 + i / 100);
+      const rowsAt = (ratio) =>
+        etfs.map((etf, i) =>
+          newRow(
+            'SPX',
+            SUMMER_DATE,
+            new Date(base + i * 60_000).toISOString(),
+            etf * ratio,
+          ),
+        );
+      await seedMapped(rowsAt(RATIOS.SPX.prior), BACKFILL_CREATED);
+      const found = await findRefitManifest(makeSql(), summerArgs());
+      const prepared = {
+        ok: true,
+        rows: rowsAt(RATIOS.SPX.fitted).map((row, i) => ({
+          ...row,
+          close: row.close * scale(i),
+        })),
+        ratio: RATIOS.SPX.fitted,
+        closeRatio: RATIOS.SPX.close,
+        source: 'tape',
+        etfCloses: new Map(etfs.map((etf, i) => [base / 60_000 + i, etf])),
+      };
+      await refitDay(makeSql(), {
+        symbol: 'SPX',
+        date: SUMMER_DATE,
+        list: 'summer',
+        prepared,
+        found,
+        backupDir: backupDirOf(),
+        apply: true,
+      });
+      // The range holds what was written: only the share is under test.
+      const closes = refitCloses(SUMMER_DATE, {
+        ranges: {
+          SPX: {
+            high: Math.max(...prepared.rows.map((r) => r.high)),
+            low: Math.min(...prepared.rows.map((r) => r.low)),
+          },
+        },
+      });
+      return checkRefitDay(makeSql(), {
+        symbol: 'SPX',
+        date: SUMMER_DATE,
+        closes,
+        backupDir: backupDirOf(),
+      });
+    }
+    const summerArgs = (over = {}) =>
+      refitArgs({ date: SUMMER_DATE, list: 'summer', ...over });
+
+    it('passes at exactly 99% of the pairs', async () => {
+      const at99 = await hundredRowRefit((i) => (i === 0 ? 1.01 : 1));
+      expect(at99).toMatchObject({ ok: true, scaledShare: 0.99 });
+    });
+
+    it('fails at 98% of the pairs', async () => {
+      const at98 = await hundredRowRefit((i) => (i < 2 ? 1.01 : 1));
+      expect(at98.ok).toBe(false);
+      expect(at98.scaledShare).toBe(0.98);
+      expect(at98.reason).toMatch(/98 of 100 stored rows/);
+    });
+
+    it('allows 1e-6 of relative error on a pair', async () => {
+      const inside = await hundredRowRefit(() => 1 + 5e-7);
+      expect(inside).toMatchObject({ ok: true, scaledShare: 1 });
+    });
+
+    it('fails a scale 2e-6 off', async () => {
+      const outside = await hundredRowRefit(() => 1 + 2e-6);
+      expect(outside).toMatchObject({ ok: false, scaledShare: 0 });
+    });
+  });
+});
+
+describe('processRefitDay', () => {
+  it('refits a day end to end and returns the run-loop counts', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+
+    const out = await processRefitDay(makeSql(), refitArgs());
+
+    expect(Object.keys(out)).toEqual([
+      'fetched',
+      'stored',
+      'closeRatio',
+      'priorRatio',
+      'fittedRatio',
+      'matched',
+      'scatter',
+      'dh',
+      'dl',
+      'replaced',
+      'dropped',
+      'uncovered',
+      'manifest',
+    ]);
+    expect(out).toMatchObject({
+      fetched: 396,
+      stored: 396,
+      closeRatio: 10.04,
+      priorRatio: 10.03,
+      fittedRatio: 10.045,
+      matched: 390,
+      scatter: 0,
+      dh: 0,
+      dl: 0,
+      replaced: 396,
+      dropped: 0,
+      uncovered: 0,
+    });
+    expect(typeof out.manifest).toBe('string');
+  });
+
+  it('a dry run counts what would change, writes nothing, and prints one line', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const before = await snapshot();
+    const files = filesIn(backupDirOf());
+    stageRefit('SPX', SPX_DATE);
+    const sql = makeSql();
+
+    const out = await processRefitDay(sql, refitArgs({ apply: false }));
+
+    expect(out).toMatchObject({
+      fetched: 396,
+      stored: 0,
+      wouldReplace: 396,
+      wouldInsert: 396,
+    });
+    expect(out.manifest).toBeUndefined();
+    expect(sql.transaction).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+    expect(filesIn(backupDirOf())).toEqual(files);
+
+    const lines = formatRunSummary(
+      summarizeRun({
+        days: [{ date: SPX_DATE, ok: true, value: out }],
+        stoppedBy: null,
+        notRun: [],
+      }),
+    );
+    expect(lines).toContain(
+      `  ${SPX_DATE}  fetched 396  stored 0  closeRatio 10.04  priorRatio 10.03  fittedRatio 10.045  matched 390  scatter 0  dh 0  dl 0  wouldReplace 396  wouldInsert 396  dropped 0  uncovered 0`,
+    );
+  });
+
+  it('leaves an already refit date alone: no UW call, no write, not a failure', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const first = await processRefitDay(makeSql(), refitArgs());
+    const afterFirst = await snapshot();
+    const files = filesIn(backupDirOf());
+    mocks.fetchUwCandles.mockClear();
+    const sql = makeSql();
+
+    const again = await processRefitDay(sql, refitArgs());
+
+    expect(again).toEqual({
+      fetched: 0,
+      stored: 0,
+      alreadyRefit: true,
+      manifestPath: first.manifest,
+    });
+    expect(mocks.fetchUwCandles).not.toHaveBeenCalled();
+    expect(sql.transaction).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(afterFirst);
+    expect(filesIn(backupDirOf())).toEqual(files);
+    // The run loop counts it as a day done, with the manifest on its line.
+    const summary = summarizeRun({
+      days: [{ date: SPX_DATE, ok: true, value: again }],
+      stoppedBy: null,
+      notRun: [],
+    });
+    expect(summary).toMatchObject({ succeeded: 1, exitCode: 0 });
+    expect(summary.failedDays).toEqual([]);
+    const line = formatRunSummary(summary).find((l) =>
+      l.startsWith(`  ${SPX_DATE}`),
+    );
+    expect(line).toMatch(
+      /^ {2}2026-03-26 {2}fetched 0 {2}stored 0 {2}alreadyRefit true {2}manifestPath .+\.manifest\.json$/,
+    );
+  });
+
+  it('fails the day with a DayFailure when there is no manifest to refit', async () => {
+    stageRefit('SPX', SPX_DATE);
+    const failure = await processRefitDay(makeSql(), refitArgs()).catch(
+      (e) => e,
+    );
+
+    expect(failure).toBeInstanceOf(DayFailure);
+    expect(failure.kind).toBe('other');
+    expect(failure.message).toMatch(/no manifest for SPX 2026-03-26/);
+    expect(mocks.fetchUwCandles).not.toHaveBeenCalled();
+  });
+
+  it('fails the day with a DayFailure, and the UW kind, when the day cannot be prepared', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const before = await snapshot();
+    const files = filesIn(backupDirOf());
+
+    // No price file.
+    const noFile = await processRefitDay(makeSql(), refitArgs()).catch(
+      (e) => e,
+    );
+    expect(noFile).toBeInstanceOf(DayFailure);
+    expect(noFile.kind).toBe('other');
+    expect(noFile.message).toMatch(/no price file/);
+
+    // A UW error keeps its kind.
+    stageRefit('SPX', SPX_DATE);
+    mocks.fetchUwCandles.mockResolvedValue({
+      kind: 'error',
+      status: 'http_429',
+      detail: 'slow down',
+    });
+    await expect(processRefitDay(makeSql(), refitArgs())).rejects.toMatchObject(
+      { name: 'DayFailure', kind: 'uw_http_429' },
+    );
+
+    expect(await snapshot()).toEqual(before);
+    expect(filesIn(backupDirOf())).toEqual(files);
+  });
+
+  it('fails the day with a DayFailure when the refit itself skips it', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    const before = await snapshot();
+    stageRefit('SPX', SPX_DATE, {
+      bars: refitBars('SPX', SPX_DATE).filter(
+        (bar) => bar.start_time !== `${SPX_DATE}T13:27:00.000Z`,
+      ),
+    });
+    const sql = makeSql();
+
+    const failure = await processRefitDay(sql, refitArgs()).catch((e) => e);
+
+    expect(failure).toBeInstanceOf(DayFailure);
+    expect(failure.kind).toBe('other');
+    expect(failure.message).toMatch(/^would leave 1 minute empty/);
+    expect(sql.transaction).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('propagates a database failure instead of reporting a skipped day', async () => {
+    // A summer date reads the table to find its rows.
+    const sql = Object.assign(
+      () => ({ then: (_ok, fail) => fail(new Error('connection lost')) }),
+      { transaction: vi.fn() },
+    );
+    await expect(
+      processRefitDay(sql, refitArgs({ date: SUMMER_DATE, list: 'summer' })),
+    ).rejects.toThrow('connection lost');
+  });
+});
+
+describe('processCheckDay', () => {
+  const checkArgs = (over = {}) => ({
+    symbol: 'SPX',
+    date: SPX_DATE,
+    closes: refitCloses(SPX_DATE),
+    backupDir: backupDirOf(),
+    ...over,
+  });
+
+  it('returns the run-loop counts and the measures of a refit day', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    await processRefitDay(makeSql(), refitArgs());
+
+    const out = await processCheckDay(makeSql(), checkArgs());
+
+    expect(Object.keys(out)).toEqual([
+      'fetched',
+      'stored',
+      'dh',
+      'dl',
+      'scaledShare',
+    ]);
+    expect(out).toEqual({
+      fetched: 390,
+      stored: 0,
+      dh: 0,
+      dl: 0,
+      scaledShare: 1,
+    });
+    const lines = formatRunSummary(
+      summarizeRun({
+        days: [{ date: SPX_DATE, ok: true, value: out }],
+        stoppedBy: null,
+        notRun: [],
+      }),
+    );
+    expect(lines).toContain(
+      `  ${SPX_DATE}  fetched 390  stored 0  dh 0  dl 0  scaledShare 1`,
+    );
+  });
+
+  it('fails the day with a DayFailure when the check fails', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+
+    const noManifest = await processCheckDay(makeSql(), checkArgs()).catch(
+      (e) => e,
+    );
+    expect(noManifest).toBeInstanceOf(DayFailure);
+    expect(noManifest.kind).toBe('other');
+    expect(noManifest.message).toMatch(/has no refit manifest/);
+
+    stageRefit('SPX', SPX_DATE);
+    await processRefitDay(makeSql(), refitArgs());
+    await expect(
+      processCheckDay(
+        makeSql(),
+        checkArgs({ closes: refitCloses(SPX_DATE, { shift: 5 }) }),
+      ),
+    ).rejects.toThrow(/misses Schwab's daily range on one side/);
+  });
+});
+
 // ── The backup folder ──────────────────────────────────────
 
 describe('mainCheckoutDir', () => {
@@ -1748,6 +3681,137 @@ describe('parseRepairArgs', () => {
       mode: 'undo',
       apply: true,
     });
+  });
+
+  it('takes --refit with its price folder, for any list including summer, as a dry run by default', () => {
+    expect(
+      parseRepairArgs([
+        '--refit',
+        '--spots',
+        'docs/tmp/spots',
+        '--symbol',
+        'SPX',
+        '--list',
+        'summer',
+      ]),
+    ).toEqual({
+      mode: 'refit',
+      symbol: 'SPX',
+      list: 'summer',
+      dates: REPAIR_LISTS.summer,
+      apply: false,
+      spots: 'docs/tmp/spots',
+    });
+    expect(
+      parseRepairArgs([
+        '--symbol',
+        'NDX',
+        '--date',
+        '2026-08-20',
+        '--refit',
+        '--spots',
+        's',
+        '--apply',
+      ]),
+    ).toMatchObject({
+      mode: 'refit',
+      list: 'summer',
+      dates: ['2026-08-20'],
+      apply: true,
+    });
+    expect(
+      parseRepairArgs([
+        '--refit',
+        '--spots',
+        's',
+        '--symbol',
+        'SPX',
+        '--date',
+        '2026-03-26',
+      ]),
+    ).toMatchObject({ list: 'spx-repair', dates: ['2026-03-26'] });
+  });
+
+  it('takes --check on a list or a date, which writes nothing and has no --apply', () => {
+    expect(
+      parseRepairArgs(['--check', '--symbol', 'NDX', '--list', 'summer']),
+    ).toEqual({
+      mode: 'check',
+      symbol: 'NDX',
+      list: 'summer',
+      dates: REPAIR_LISTS.summer,
+    });
+    expect(
+      parseRepairArgs(['--check', '--symbol', 'SPX', '--date', '2026-09-21']),
+    ).toMatchObject({ mode: 'check', list: 'gap', dates: ['2026-09-21'] });
+  });
+
+  it.each([
+    [
+      ['--refit', '--symbol', 'SPX', '--list', 'gap'],
+      /--refit needs --spots <folder>/,
+    ],
+    [
+      ['--spots', 's', '--symbol', 'SPX', '--list', 'gap'],
+      /--spots needs --refit/,
+    ],
+    [
+      ['--check', '--spots', 's', '--symbol', 'SPX', '--list', 'gap'],
+      /--spots needs --refit/,
+    ],
+    [['--refit', '--spots'], /--spots needs the folder of the price files/],
+    [
+      ['--refit', '--spots', 's', '--undo', 'm.json'],
+      /--undo takes only --apply/,
+    ],
+    [['--check', '--undo', 'm.json'], /--undo takes only --apply/],
+    [
+      [
+        '--refit',
+        '--check',
+        '--spots',
+        's',
+        '--symbol',
+        'SPX',
+        '--list',
+        'gap',
+      ],
+      /only one of --refit or --check/,
+    ],
+    [
+      ['--check', '--apply', '--symbol', 'SPX', '--list', 'gap'],
+      /--check writes nothing, so it takes no --apply/,
+    ],
+    [['--lottery-spots', '--refit'], /--lottery-spots takes only --apply/],
+    [['--lottery-spots', '--check'], /--lottery-spots takes only --apply/],
+    [['--lottery-spots', '--spots', 's'], /--lottery-spots takes only --apply/],
+    [
+      ['--refit', '--spots', 's', '--symbol', 'NDX', '--list', 'spx-repair'],
+      /spx-repair is a list for SPX, not NDX/,
+    ],
+    [
+      ['--check', '--symbol', 'SPX', '--date', '2026-04-03'],
+      /2026-04-03 is not in any SPX list/,
+    ],
+    [['--refit', '--spots', 's', '--list', 'gap'], /--symbol is required/],
+    [
+      ['--symbol', 'SPX', '--list', 'summer'],
+      /the summer list is for --refit only/,
+    ],
+    [
+      ['--symbol', 'NDX', '--list', 'summer', '--apply'],
+      /the summer list is for --refit only/,
+    ],
+    [
+      ['--symbol', 'NDX', '--date', '2026-08-20'],
+      /2026-08-20 is in the summer list, which is for --refit only/,
+    ],
+    [
+      ['--symbol', 'SPX', '--date', '2026-07-22'],
+      /2026-07-22 is in the summer list, which is for --refit only/,
+    ],
+  ])('rejects %j', (argv, message) => {
+    expect(() => parseRepairArgs(argv)).toThrow(message);
   });
 
   it.each([
