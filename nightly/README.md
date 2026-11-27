@@ -636,7 +636,8 @@ cover every row of the day.
 **The day file.** Each worked day also leaves one file in the research store,
 `research/interval-ba/replay/{day}.parquet`: every alert the code's rule fires that day, for
 all three tickers, in the columns and types of `EXPORT_COLUMNS` in
-`src/interval_ba_replay.py`. It is what the studies in `scripts/` read. Design:
+`src/interval_ba_replay.py`. It is meant for the studies in `scripts/`, whose readers move
+to it in a later change. Design:
 `docs/superpowers/specs/2026-11-26-interval-ba-replay-days-design.md`.
 
 - **The code's rule, not live's.** The file holds what `replay_day` fires, whatever the
@@ -645,12 +646,13 @@ all three tickers, in the columns and types of `EXPORT_COLUMNS` in
 - **Its footer** carries the JSON `interval_ba`: `day`, `rows`, `rule` and `created_at`.
   `rule` is the replay constants plus `replay-version` (`REPLAY_VERSION`, bumped by hand
   with any change to what `replay_day` outputs, constants or not; a test pins it). Files
-  of two rules are not one study, so the readers refuse a mix.
+  of two rules are not one study, so the readers will refuse a mix.
 - **A day with no alerts** gets a file of zero rows, so "none fired" and "not written"
   stay apart. Every session fires at least 19 alerts, so a zero-row file is a replay or
-  tape-read fault, and the step's `tape fired no alerts` alert says so whether or not live
-  wrote rows. The step never rewrites a marked day; once the cause is fixed, rewrite the
-  day with the tool (the spec's `export --per-day`).
+  tape-read fault, and the step's `tape fired no alerts` alert says so whatever live wrote
+  or held. The step never rewrites a marked day. Once the cause is fixed, delete the
+  day's `interval_ba_tape_days` marker (the SQL under "Markers"): the next run re-heals the
+  day and rewrites its file.
 - **The order.** The step replays the day once, builds the file, puts it with
   `ResearchStore.put_file` (one `put_object`, its size checked afterwards) and only then
   runs `heal_day` on that same replay. `heal_day`'s commit writes the day's marker, so a
@@ -665,8 +667,9 @@ all three tickers, in the columns and types of `EXPORT_COLUMNS` in
 - **A re-landed day** is redone like any other (its marker is cleared first, above), so its
   file is rewritten from the new tape. The known gap is the marker limit above: a day
   re-landed on a night the step does not run keeps its marker and its old file, and the
-  step never re-heals it. The readers' stale check rewrites the file on the next study;
-  the Neon heal still needs the marker deleted by hand, as today.
+  step never re-heals it. To bring the day and its file up to date, delete its marker by
+  hand, as for the Neon heal. (A later change to the studies' readers will check for a
+  stale or missing file and rewrite it.)
 
 **When the inserts are held.** The day's inserts are held, and its marker says why
 (`inserts_held`), unless live's settings show it ran today's rule. Flags, spot and
@@ -1495,16 +1498,19 @@ in the extras (the SDK keeps only the first 10 extras): `tape_alerts`, `live_row
 `root_label_mismatch`. The first six are over the tickers live had on that day, and so
 is `inserted`.
 
-When more than one phrase applies, the first below is sent: the three hold reasons
-(see "Interval B/A tape"), then the four checks of live against the tape. Below, "the
+When more than one phrase applies, the first below is sent: `tape fired no alerts` (the
+replay itself fired nothing, which outranks a hold), then the three hold reasons (see
+"Interval B/A tape"), then the three checks of live against the tape. `tape fired no
+alerts` is judged on all the alerts the replay fired, not on `tape_alerts`, which counts
+only the tickers live had on and is 0 on every day its detector was off. Below, "the
 tool" is `scripts/interval_ba_tape.py` and `<day>` is the alert's `day` tag.
 
 | `<phrase>`                                | When (counts are over the tickers live had on)                                                                                                                                                                                                         | Meaning and what to do                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tape fired no alerts`                    | The replay fired no alert on any of the three tickers, whatever live wrote or held.                                                                                                                                                                    | The replay or the tape read broke: every session fires at least 19 alerts. It outranks the hold reasons, as the more urgent fault, and a held day's marker stays. Nothing was removed, because an empty replay removes nothing. Look at the day's tape in R2 and run the tool's `verify --from <day> --to <day>`, fix the cause, then delete the day's marker: the next run re-heals the day and rewrites its day file.                              |
 | `no live settings record`                 | No `interval_ba_live_settings` row covers a day from 2026-11-25 on. Earlier days with no row heal on the code's defaults.                                                                                                                              | The inserts were held: nothing says which rule live ran, so none of the tape's alerts were added. Flags, spot and removals ran. uw-stream writes a row at each start, so for a new session this means the table lost its rows or the writer never ran: check it. Then either restore the row and delete the day's marker, or, if live ran the code's defaults, run the tool's `heal --assume-default-settings` for the day (it replaces the marker). |
 | `live settings differ from the tape rule` | A covering row's ratio, premium floor, window, multi-leg share, codes or confluence window is not the replay module's.                                                                                                                                 | Held: live ran another rule, so the tape's alerts are not live's and none were added. The owner decides. If the new rule is the one to keep, change the replay module's constants and the drift test that pins them to uw-stream's, then delete the marker. If the deploy was a mistake, fix uw-stream and leave the day held.                                                                                                                       |
 | `live detector off`                       | `enabled` is false in any covering row.                                                                                                                                                                                                                | Held: live fired nothing while it was off, so the tape must not add alerts. Expected if you switched it off. Otherwise find why a start came up with it off (uw-stream's env and start log). The day stays held.                                                                                                                                                                                                                                     |
-| `tape fired no alerts`                    | `tape_alerts` is 0, with or without live rows.                                                                                                                                                                                                         | The replay or the tape read broke; the alerts did not go away. Every session fires at least 19 alerts, so none is a fault with or without live rows. Nothing was removed, because an empty replay removes nothing. Look at the day's tape in R2 and run the tool's `verify --from <day> --to <day>`, fix the cause, then delete the marker.                                                                                                          |
 | `live wrote no alerts`                    | `tape_alerts` is above 0 and `live_rows` is 0.                                                                                                                                                                                                         | uw-stream wrote none that session (an outage or a failed detector). The step added the tape's alerts as `source = 'replay'` rows (`inserted`). Nothing to repair; read uw-stream's logs for the session.                                                                                                                                                                                                                                             |
 | `live missed alerts`                      | `live_missed` is at least 5 and above 10% of `tape_alerts`.                                                                                                                                                                                            | Live skipped many alerts the tape fires, and the step added them as replay rows. A handful is normal: when the thresholds were set, live had missed 2 keys in 13 sessions since 2026-10-29, and 34 of 108 on 2026-05-20. Nothing to repair; look for an uw-stream disconnect or restart that session.                                                                                                                                                |
 | `live and tape rows disagree`             | `matched` is at least 20 and more than 5% of those keys differ in `ratio_pct`, `ask_premium`, `total_premium`, `trade_count`, `top_trade_premium` or `top_trade_size` (`value_mismatched`); or `live_only` is at least 5 and above 10% of `live_rows`. | Live and the replay disagree on the rule in a way the settings record does not show: a live code change that left no settings row, or a replay bug. The day's usual writes ran. Run the tool's `verify --from <day> --to <day>` to list the differing rows and decide which side is wrong. If live is right, fix the replay and its drift test, then delete the marker.                                                                              |

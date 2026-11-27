@@ -645,7 +645,9 @@ def test_no_work_days_is_ok_and_opens_no_reader(
     assert night.connect.call_count == 1
 
 
-@pytest.mark.parametrize("stage", ["connect", "clear", "markers", "open_reader", "landed_days"])
+@pytest.mark.parametrize(
+    "stage", ["connect", "clear", "markers", "open_reader", "research_store", "landed_days"]
+)
 def test_a_setup_failure_propagates_for_the_runner_to_report(
     night: Night,
     settings: Settings,
@@ -670,6 +672,8 @@ def test_a_setup_failure_propagates_for_the_runner_to_report(
         night.cursor.execute.side_effect = failing_execute
     elif stage == "open_reader":
         night.open_reader.side_effect = failure
+    elif stage == "research_store":
+        night.store_class.side_effect = failure
     else:
         night.reader.landed_days.side_effect = failure
 
@@ -680,6 +684,8 @@ def test_a_setup_failure_propagates_for_the_runner_to_report(
     # run_steps sends it once, scrubbed; a second capture here would be unscrubbed.
     capture_exception.assert_not_called()
     capture_message.assert_not_called()
+    night.replay.assert_not_called()  # no day was tried: no replay, no file, no heal
+    night.store.put_file.assert_not_called()
     night.heal.assert_not_called()
 
 
@@ -1092,6 +1098,33 @@ def test_a_replay_that_fires_nothing_alerts_even_when_live_wrote_nothing(
     assert WORK[4] in night.markers
 
 
+def test_a_held_day_whose_replay_fired_nothing_reports_the_tape_not_the_hold(
+    night: Night, settings: Settings, clock: Clock, capture_message: MagicMock
+) -> None:
+    # The replay that fired nothing is the more urgent fault, so it is the one phrase sent, ahead
+    # of the hold. The held day keeps its marker (the step never clears one it just wrote), and
+    # its zero-row file stands for what the replay fired.
+    night.landed([WORK[4]])
+    night.replays[WORK[4]] = Replay(day=WORK[4], alerts=(), root_label_mismatch=0)
+    night.plans[WORK[4]] = _plan(
+        WORK[4], inserts_held="live detector off", tape_alerts=0, live_rows=0, matched=0
+    )
+
+    result = interval_ba_step.run(_ctx(settings, clock))
+
+    (health,) = _health_calls(capture_message)
+    assert health.args == (HEALTH_TITLE.format(NO_ALERTS),)
+    assert health.kwargs["fingerprint"] == [
+        "interval-ba-live-health",
+        NO_ALERTS,
+        WORK[4].isoformat(),
+    ]
+    assert result.counts["health_alerts"] == 1
+    assert WORK[4] in night.markers
+    (put,) = night.puts_for(WORK[4])
+    assert put.table.num_rows == 0
+
+
 @pytest.mark.parametrize(
     ("day", "assumed"),
     [
@@ -1288,17 +1321,33 @@ def test_the_research_store_is_built_once_and_only_for_a_night_with_work(
 
 # --- the health alerts ----------------------------------------------------------------
 
+NO_ALERTS = "tape fired no alerts"
+# Alerts the fake replay fires on a day (one a ticker), and how many a phrase's case has: none for
+# the replay that fired nothing, three for every other.
+FIRED = 3
+
+
+def _fired_for(phrase: str | None) -> int:
+    return 0 if phrase == NO_ALERTS else FIRED
+
+
 # Each case meets its own phrase's condition and every later one's, so the first in the table
-# must win: (counts, phrase).
+# must win: (counts, phrase). `tape_alerts` is the plan's, over the tickers live had on; the
+# replay's own count is `_fired_for(phrase)`.
 PRECEDENCE = [
     *(
-        # Held (each reason is the phrase as heal_day gives it); the tape fired nothing and live
-        # had rows too.
+        # A replay that fired nothing outranks a hold: the more urgent fault.
+        ({"inserts_held": reason, "tape_alerts": 0, "matched": 0, "live_only": 40}, NO_ALERTS)
+        for reason in HELD_REASONS
+    ),
+    *(
+        # Held (each reason is the phrase as heal_day gives it). The replay fired alerts, but the
+        # plan's count is 0, as it is on every day live's detector was off; live had rows too.
         ({"inserts_held": reason, "tape_alerts": 0, "matched": 0, "live_only": 40}, reason)
         for reason in HELD_REASONS
     ),
     # The replay or the tape read broke; live_only (every live row) also disagrees.
-    ({"tape_alerts": 0, "matched": 0, "live_only": 40}, "tape fired no alerts"),
+    ({"tape_alerts": 0, "matched": 0, "live_only": 40}, NO_ALERTS),
     # Live was dark for the on tickers; it missed every tape alert too.
     ({"live_rows": 0, "matched": 0, "live_missed": 40}, "live wrote no alerts"),
     # 5 missed of 40 tape alerts, and 5 live-only of 40 live rows as well.
@@ -1322,6 +1371,8 @@ def test_one_health_message_per_day_by_precedence(
     night.landed([WORK[4]])
     plan = _plan(WORK[4], **counts)
     night.plans[WORK[4]] = plan
+    fired = _fired_for(phrase)
+    night.replays[WORK[4]] = replace(_replay_of(WORK[4]), alerts=_replay_of(WORK[4]).alerts[:fired])
 
     result = interval_ba_step.run(_ctx(settings, clock))
 
@@ -1344,8 +1395,8 @@ def test_one_health_message_per_day_by_precedence(
         ({}, None),  # healthy
         # No quiet day: every session fires at least 19 alerts, so a replay that fired nothing is
         # a fault whether or not live wrote rows.
-        ({"tape_alerts": 0, "live_rows": 0, "matched": 0}, "tape fired no alerts"),
-        ({"tape_alerts": 0, "live_rows": 3, "matched": 0, "live_only": 3}, "tape fired no alerts"),
+        ({"tape_alerts": 0, "live_rows": 0, "matched": 0}, NO_ALERTS),
+        ({"tape_alerts": 0, "live_rows": 3, "matched": 0, "live_only": 3}, NO_ALERTS),
         # live missed: at least 5, and more than 10% of the tape's alerts.
         ({"live_missed": 4, "tape_alerts": 4, "live_rows": 1, "matched": 0}, None),
         ({"live_missed": 5, "tape_alerts": 50, "live_rows": 45, "matched": 45}, None),
@@ -1366,7 +1417,7 @@ def test_one_health_message_per_day_by_precedence(
 def test_health_thresholds(
     capture_message: MagicMock, counts: dict[str, Any], phrase: str | None
 ) -> None:
-    sent = interval_ba_step._report_health(WORK[4], _plan(WORK[4], **counts))
+    sent = interval_ba_step._report_health(WORK[4], _plan(WORK[4], **counts), _fired_for(phrase))
 
     assert sent is (phrase is not None)
     if phrase is None:
@@ -1374,6 +1425,17 @@ def test_health_thresholds(
     else:
         assert capture_message.call_args.args == (HEALTH_TITLE.format(phrase),)
         assert capture_message.call_args.kwargs["fingerprint"][1] == phrase
+
+
+def test_a_day_whose_live_tickers_fired_nothing_is_not_a_tape_fault(
+    capture_message: MagicMock,
+) -> None:
+    # The plan's tape_alerts counts only the tickers live had on, so it is 0 when the replay
+    # fired on the others. That is not a replay that fired nothing: no alert on its own.
+    plan = _plan(WORK[4], tape_alerts=0, live_rows=0, matched=0)
+
+    assert interval_ba_step._report_health(WORK[4], plan, FIRED) is False
+    capture_message.assert_not_called()
 
 
 class _MemoryTransport(Transport):
@@ -1420,7 +1482,7 @@ def test_every_health_count_reaches_sentry(sdk_transport: _MemoryTransport) -> N
     plan = _plan(WORK[4], **counts)
     iso = WORK[4].isoformat()
 
-    assert interval_ba_step._report_health(WORK[4], plan) is True
+    assert interval_ba_step._report_health(WORK[4], plan, FIRED) is True
     sentry_sdk.get_client().flush(timeout=5)
 
     (event,) = [e for e in map(json.loads, sdk_transport.payloads) if "level" in e]

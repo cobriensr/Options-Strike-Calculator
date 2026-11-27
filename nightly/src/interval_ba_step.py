@@ -242,15 +242,16 @@ def _heal_one(
     iso = day.isoformat()
     started = monotonic()
     plan: DayPlan | None = None
+    fired = 0
     error: str | None = None
     try:
-        plan = _heal(ctx, reader, store, day, counts)
+        plan, fired = _heal(ctx, reader, store, day, counts)
     except Exception as exc:
         # The event is scrubbed in before_send; the log and the counts keep the class only.
         error = type(exc).__name__
         sentry_sdk.capture_exception(exc, tags={"step": _STEP, "day": iso})
     else:
-        counts["health_alerts"] += int(_report_health(day, plan))
+        counts["health_alerts"] += int(_report_health(day, plan, fired))
     finally:
         reader.release(day)
     if plan is None:
@@ -259,12 +260,15 @@ def _heal_one(
         counts["days_done"] += 1
         for name in _DAY_COUNT_NAMES:
             counts[name] += getattr(plan, name)
-    _log_day(iso, plan, error, monotonic() - started)
+    _log_day(iso, plan, fired, error, monotonic() - started)
 
 
 def _heal(
     ctx: StepContext, reader: TapeReader, store: ResearchStore, day: date, counts: dict[str, int]
-) -> DayPlan:
+) -> tuple[DayPlan, int]:
+    """Replay, write the day file and heal one landed day: heal_day's plan, and the number of
+    alerts the replay fired on all three tickers (the plan counts only the tickers live had on,
+    which is none on a day its detector was off)."""
     # The download comes first: no connection may idle through it.
     path = reader.fetch_day(day, deadline=_fetch_deadline(ctx))
     if path is None:
@@ -278,9 +282,10 @@ def _heal(
         with connect_db(ctx.settings) as conn:
             # Autocommit, so the read leaves the connection idle, as heal_day needs it.
             settings = _covering_settings(conn, day)
-            return heal_day(
+            plan = heal_day(
                 conn, con, str(path), day, settings, insert_missed=True, apply=True, replay=replay
             )
+    return plan, len(replay.alerts)
 
 
 def _covering_settings(conn: connection, day: date) -> list[LiveSettings]:
@@ -347,22 +352,26 @@ def _fetch_deadline(ctx: StepContext) -> float:
     return min(ctx.deadline, now + FETCH_DEADLINE_SECONDS)
 
 
-def _health_phrase(plan: DayPlan) -> str | None:
-    """What is wrong with live on the plan's day, the first that applies, or None.
+def _health_phrase(plan: DayPlan, fired: int) -> str | None:
+    """What is wrong on the plan's day, the first that applies, or None. `fired` is the alerts
+    the replay fired on all three tickers.
 
     The counts are over the tickers live had on (heal_day). The thresholds are spec 6.6's: live
     missed 2 keys in 13 sessions from 2026-10-29, and 34 of 108 on 2026-05-20.
 
-    A replay that fires nothing is always a fault, with or without live rows: every session fires
-    at least 19 alerts (the lowest, 2026-08-14), and replay_day raises only for a tape with no
-    0DTE rows, so a tape that reads but fires nothing (a premium column that casts to NULL after
-    a layout change) would otherwise pass as a quiet day.
+    A replay that fires nothing comes first, ahead of the hold reasons, and with or without live
+    rows: every session fires at least 19 alerts (the lowest, 2026-08-14), and replay_day raises
+    only for a tape with no 0DTE rows, so a tape that reads but fires nothing (a premium column
+    that casts to NULL after a layout change) would otherwise pass as a quiet day, or hide
+    behind a hold. It is judged on `fired`, not on the plan's `tape_alerts`: that counts only the
+    tickers live had on, so it is 0 on every day live's detector was off, and on a day one
+    ticker was left on and fired nothing.
     """
+    if fired == 0:
+        return "tape fired no alerts"  # the replay or the tape read broke
     if plan.inserts_held is not None:
         return plan.inserts_held
-    if plan.tape_alerts == 0:
-        return "tape fired no alerts"  # the replay or the tape read broke
-    if plan.live_rows == 0:
+    if plan.tape_alerts > 0 and plan.live_rows == 0:
         return "live wrote no alerts"
     # At least 5, and more than 10% of the tape's alerts.
     if plan.live_missed >= 5 and plan.live_missed * 10 > plan.tape_alerts:
@@ -376,8 +385,8 @@ def _health_phrase(plan: DayPlan) -> str | None:
     return None
 
 
-def _report_health(day: date, plan: DayPlan) -> bool:
-    """Send at most one Sentry message for `day`'s live health; whether one was sent.
+def _report_health(day: date, plan: DayPlan, fired: int) -> bool:
+    """Send at most one Sentry message for `day`'s health; whether one was sent.
 
     The fingerprint names the day, as report_outcome does for a re-land, so each day opens its
     own issue, which the nightly new-issue rule (events tagged service=nightly) mails. The day's
@@ -385,7 +394,7 @@ def _report_health(day: date, plan: DayPlan) -> bool:
     `extra` to its first 10 keys (MAX_DATABAG_BREADTH), which would drop 3 of the 13, and it does
     not trim a context.
     """
-    phrase = _health_phrase(plan)
+    phrase = _health_phrase(plan, fired)
     if phrase is None:
         return False
     iso = day.isoformat()
@@ -399,8 +408,8 @@ def _report_health(day: date, plan: DayPlan) -> bool:
     return True
 
 
-def _log_day(iso: str, plan: DayPlan | None, error: str | None, seconds: float) -> None:
-    phrase = None if plan is None else _health_phrase(plan)
+def _log_day(iso: str, plan: DayPlan | None, fired: int, error: str | None, seconds: float) -> None:
+    phrase = None if plan is None else _health_phrase(plan, fired)
     if error is not None:
         status = f"failed ({error})"
     elif phrase is not None:
