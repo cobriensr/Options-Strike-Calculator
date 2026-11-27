@@ -36,6 +36,24 @@ const settle = () =>
     await new Promise((r) => setTimeout(r, 20));
   });
 
+// Mon 2026-11-23 12:00 ET (17:00Z), mid-session. The four views that keep the
+// last session arm a final fetch for 16:03 ET, and a body from before today's
+// open is dropped by the clock, so a test on the real wall clock would change
+// with the hour and day it ran at. Every fake-timer test starts from a fixed
+// instant instead.
+const MIDSESSION = '2026-11-23T17:00:00Z';
+
+/** Fake timers on a fixed clock. */
+function fakeClock(now: string = MIDSESSION) {
+  vi.useFakeTimers({ now: new Date(now) });
+}
+
+// Advance the fake clock inside act so state updates render between ticks.
+const advance = (ms: number) =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+
 describe('useGexbotData', () => {
   beforeEach(() => {
     mockFetchJson.mockReset();
@@ -250,12 +268,6 @@ describe('useGexbotData', () => {
   // ── Polling tests need fake timers ────────────────────────
 
   describe('polling behavior (fake timers)', () => {
-    // Advance the fake clock inside act so state updates render between ticks.
-    const advance = (ms: number) =>
-      act(async () => {
-        await vi.advanceTimersByTimeAsync(ms);
-      });
-
     it('does not poll while marketOpen=false', async () => {
       mockFetchJson.mockResolvedValue({ data: { rows: [] } });
       renderHook(() => useGexbotData({ view: 'snapshots-latest' }, false));
@@ -265,13 +277,13 @@ describe('useGexbotData', () => {
       expect(mockFetchJson).toHaveBeenCalledTimes(1);
 
       // Now switch to fake timers + advance 2 minutes.
-      vi.useFakeTimers();
+      fakeClock();
       await vi.advanceTimersByTimeAsync(120_000);
       expect(mockFetchJson).toHaveBeenCalledTimes(1);
     });
 
     it('polls the snapshots view every 30 s while marketOpen', async () => {
-      vi.useFakeTimers();
+      fakeClock();
       mockFetchJson.mockResolvedValue({ data: { rows: [] } });
       renderHook(() => useGexbotData({ view: 'snapshots-latest' }, true));
       await vi.advanceTimersByTimeAsync(60_000);
@@ -280,7 +292,7 @@ describe('useGexbotData', () => {
     });
 
     it('never polls sibling-confirm: the read at a past fire time is final', async () => {
-      vi.useFakeTimers();
+      fakeClock();
       mockFetchJson.mockResolvedValue({ data: { rows: [] } });
       renderHook(() =>
         useGexbotData(
@@ -308,7 +320,7 @@ describe('useGexbotData', () => {
       const FAIL = { error: 'Internal error', status: 500 };
 
       it('retries on the 30 s tick, then stops once a read succeeds', async () => {
-        vi.useFakeTimers();
+        fakeClock();
         mockFetchJson.mockResolvedValueOnce(FAIL).mockResolvedValue(OK);
         const { result } = renderHook(() => useGexbotData(SIBLING, true));
         await advance(0);
@@ -326,7 +338,7 @@ describe('useGexbotData', () => {
       });
 
       it('keeps retrying while the read keeps failing', async () => {
-        vi.useFakeTimers();
+        fakeClock();
         mockFetchJson
           .mockResolvedValueOnce(FAIL)
           .mockResolvedValueOnce(FAIL)
@@ -352,7 +364,7 @@ describe('useGexbotData', () => {
       ])(
         'retries %s (status %i) with the market closed, then stops once a read succeeds',
         async (_name, status) => {
-          vi.useFakeTimers();
+          fakeClock();
           mockFetchJson
             .mockResolvedValueOnce({ error: 'Upstream down', status })
             .mockResolvedValue(OK);
@@ -379,7 +391,7 @@ describe('useGexbotData', () => {
       )(
         'does not retry a permanent failure (status %i, marketOpen %s)',
         async (status, marketOpen) => {
-          vi.useFakeTimers();
+          fakeClock();
           mockFetchJson.mockResolvedValue({ error: 'Rejected', status });
           const { result } = renderHook(() =>
             useGexbotData(SIBLING, marketOpen as boolean),
@@ -393,7 +405,7 @@ describe('useGexbotData', () => {
       );
 
       it('stops after 5 failed retries: the mount read plus 5 retries, then nothing', async () => {
-        vi.useFakeTimers();
+        fakeClock();
         mockFetchJson.mockResolvedValue({ error: 'Unavailable', status: 503 });
         const { result } = renderHook(() => useGexbotData(SIBLING, true));
         await advance(0);
@@ -412,7 +424,7 @@ describe('useGexbotData', () => {
         // request, so its answer reaches the hook twice. Only the newest call
         // may apply it, or the first failure counts as two and the row gets a
         // retry fewer.
-        vi.useFakeTimers();
+        fakeClock();
         mockFetchJson.mockResolvedValue({ error: 'Unavailable', status: 503 });
         const { result } = renderHook(() => useGexbotData(SIBLING, true), {
           wrapper: StrictMode,
@@ -429,7 +441,7 @@ describe('useGexbotData', () => {
       });
 
       it('counts a mix of transient failures and ends on a permanent one', async () => {
-        vi.useFakeTimers();
+        fakeClock();
         mockFetchJson
           .mockResolvedValueOnce({ error: 'Unavailable', status: 503 })
           .mockResolvedValueOnce({ error: 'Too many requests', status: 429 })
@@ -445,7 +457,7 @@ describe('useGexbotData', () => {
       });
 
       it('starts the count again when the fire time changes', async () => {
-        vi.useFakeTimers();
+        fakeClock();
         mockFetchJson.mockResolvedValue({ error: 'Unavailable', status: 503 });
         const { rerender } = renderHook(
           ({ at }: { at: string }) => useGexbotData({ ...SIBLING, at }, true),
@@ -485,7 +497,7 @@ describe('useGexbotData', () => {
       ])(
         'gives the URL a fresh count when the user comes back to it %s',
         async (_name, failedReads, goodReadFirst) => {
-          vi.useFakeTimers();
+          fakeClock();
           let resolvePending!: (v: unknown) => void;
           const pending = new Promise((r) => {
             resolvePending = r;
@@ -533,7 +545,7 @@ describe('useGexbotData', () => {
 
     describe('a failed read after a good one for the same URL', () => {
       it('keeps the last good rows and freshest time and sets the error', async () => {
-        vi.useFakeTimers();
+        fakeClock();
         const rows = [{ ticker: 'SPX', capturedAt: '2026-10-29T14:04:00Z' }];
         mockFetchJson
           .mockResolvedValueOnce({ data: { rows } })
@@ -555,16 +567,18 @@ describe('useGexbotData', () => {
     });
 
     describe('a failed read on any other view', () => {
+      // The four views that keep the last session retry a closed-hour failure
+      // (see "the last session, after the close"); expected-move does not.
       it('keeps the market-open gate: no retry after hours', async () => {
-        vi.useFakeTimers();
+        fakeClock();
         mockFetchJson.mockResolvedValue({ error: 'Unavailable', status: 503 });
-        renderHook(() => useGexbotData({ view: 'snapshots-latest' }, false));
+        renderHook(() => useGexbotData({ view: 'expected-move' }, false));
         await advance(120_000);
         expect(mockFetchJson).toHaveBeenCalledTimes(1);
       });
 
       it('keeps polling every 30 s while open, with no cap or status filter', async () => {
-        vi.useFakeTimers();
+        fakeClock();
         mockFetchJson.mockResolvedValue({ error: 'Forbidden', status: 403 });
         renderHook(() => useGexbotData({ view: 'snapshots-latest' }, true));
         await advance(0);
@@ -851,6 +865,474 @@ describe('useGexbotData', () => {
       expect(mockFetchJson).toHaveBeenCalledTimes(1);
       expect(result.current.loading).toBe(false);
       expect(result.current.rows).toEqual(rows);
+    });
+  });
+
+  // ── The last session, after the close ─────────────────────
+  //
+  // Tue 2026-11-24 closes at 16:00 ET (21:00Z, EST) and its one final fetch is
+  // due at 16:03 ET (21:03Z). The server answers a closed read with the last
+  // session's rows and their capture time as `asOf`; the hook keeps them, and
+  // drops them again once the market is open. A fake clock drives every case.
+
+  describe('the last session, after the close', () => {
+    const CLOSE_AT = '2026-11-24T20:59:00Z';
+    const CLOSE_ROW = { ticker: 'SPX', capturedAt: CLOSE_AT };
+    const CLOSED_BODY = { data: { rows: [CLOSE_ROW], asOf: CLOSE_AT } };
+    // A capture that landed after CLOSE_AT, as the final fetch finds it.
+    const LAST_ROW = { ticker: 'SPX', capturedAt: '2026-11-24T21:00:00Z' };
+    const LAST_BODY = { data: { rows: [LAST_ROW], asOf: LAST_ROW.capturedAt } };
+    const UNAVAILABLE = { error: 'Unavailable', status: 503 };
+    const IN_SCOPE_VIEWS = [
+      'snapshots-latest',
+      'velocity',
+      'convexity-trend',
+      'maxchange-winners',
+    ] as const;
+    /** Tue 16:01 ET: closed, with the final fetch two minutes off. */
+    const AFTER_CLOSE = '2026-11-24T21:01:00Z';
+    const FINAL_FETCH_IN_MS = 120_000;
+    /** Tue 16:10 ET: the final fetch is behind, the next one is tomorrow. */
+    const LATER = '2026-11-24T21:10:00Z';
+    /** Wed 09:30:05 ET: the market has just opened. */
+    const JUST_OPEN = '2026-11-25T14:30:05Z';
+
+    const useSnapshots = ({ marketOpen }: { marketOpen: boolean }) =>
+      useGexbotData({ view: 'snapshots-latest' }, marketOpen);
+
+    function mount(marketOpen: boolean, wrapper?: typeof StrictMode) {
+      return renderHook(useSnapshots, {
+        initialProps: { marketOpen },
+        wrapper,
+      });
+    }
+
+    describe('asOf', () => {
+      it('is the body asOf', async () => {
+        fakeClock();
+        mockFetchJson.mockResolvedValue({
+          data: { rows: [], asOf: '2026-11-23T16:00:00Z' },
+        });
+        const { result } = mount(true);
+        await advance(0);
+        expect(result.current.asOf).toBe('2026-11-23T16:00:00Z');
+      });
+
+      it('is null while the first read is out, and when the body has none', async () => {
+        fakeClock();
+        mockFetchJson.mockResolvedValue({ data: { rows: [] } });
+        const { result } = mount(true);
+        expect(result.current.asOf).toBeNull();
+        await advance(0);
+        expect(result.current.loading).toBe(false);
+        expect(result.current.asOf).toBeNull();
+      });
+
+      it.each([
+        ['a number', 1_764_000_000],
+        // Date.parse reads both of these as a date once they are strings.
+        ['a number that reads as a year', 2026],
+        ['an array holding a timestamp', [CLOSE_AT]],
+        ['an empty string', ''],
+        ['text that is not a date', 'yesterday'],
+        ['null', null],
+        ['an object', { at: CLOSE_AT }],
+      ])('reads %s as no asOf and still returns the rows', async (_n, asOf) => {
+        fakeClock(AFTER_CLOSE);
+        mockFetchJson.mockResolvedValue({ data: { rows: [CLOSE_ROW], asOf } });
+        const { result } = mount(false);
+        await advance(0);
+        expect(result.current.asOf).toBeNull();
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+      });
+    });
+
+    describe('a body from before today’s open, once the market is open', () => {
+      it.each(IN_SCOPE_VIEWS)(
+        'drops it for %s: no rows, no asOf, no error',
+        async (view) => {
+          fakeClock(JUST_OPEN);
+          mockFetchJson.mockResolvedValue(CLOSED_BODY);
+          const { result } = renderHook(() => useGexbotData({ view }, true));
+          await advance(0);
+          expect(mockFetchJson).toHaveBeenCalledTimes(1);
+          expect(result.current.rows).toEqual([]);
+          expect(result.current.asOf).toBeNull();
+          expect(result.current.freshestAt).toBeNull();
+          expect(result.current.error).toBeNull();
+          expect(result.current.loading).toBe(false);
+        },
+      );
+
+      it('keeps the same body while the market is closed', async () => {
+        fakeClock(JUST_OPEN);
+        mockFetchJson.mockResolvedValue(CLOSED_BODY);
+        const { result } = mount(false);
+        await advance(0);
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+        expect(result.current.asOf).toBe(CLOSE_AT);
+        expect(result.current.freshestAt).toBe(CLOSE_AT);
+      });
+
+      it('keeps a body captured at the open instant', async () => {
+        fakeClock(JUST_OPEN);
+        const row = { ticker: 'SPX', capturedAt: '2026-11-25T14:30:00Z' };
+        mockFetchJson.mockResolvedValue({
+          data: { rows: [row], asOf: row.capturedAt },
+        });
+        const { result } = mount(true);
+        await advance(0);
+        expect(result.current.rows).toEqual([row]);
+        expect(result.current.asOf).toBe(row.capturedAt);
+      });
+
+      it('leaves expected-move alone: its rows are not the last session', async () => {
+        fakeClock(JUST_OPEN);
+        mockFetchJson.mockResolvedValue(CLOSED_BODY);
+        const { result } = renderHook(() =>
+          useGexbotData({ view: 'expected-move' }, true),
+        );
+        await advance(0);
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+        expect(result.current.asOf).toBe(CLOSE_AT);
+      });
+
+      it('stays empty when the read at the open still answers with the last session, then takes the next live read', async () => {
+        fakeClock(JUST_OPEN);
+        const live = { ticker: 'SPX', capturedAt: '2026-11-25T14:30:00Z' };
+        mockFetchJson.mockResolvedValueOnce(CLOSED_BODY);
+        const { result, rerender } = mount(false);
+        await advance(0);
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+
+        // An edge cache still holds Tuesday's close when the market opens.
+        mockFetchJson.mockResolvedValueOnce(CLOSED_BODY);
+        rerender({ marketOpen: true });
+        await advance(0);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.rows).toEqual([]);
+        expect(result.current.asOf).toBeNull();
+        expect(result.current.loading).toBe(false);
+
+        mockFetchJson.mockResolvedValueOnce({
+          data: { rows: [live], asOf: live.capturedAt },
+        });
+        await advance(30_000);
+        expect(result.current.rows).toEqual([live]);
+        expect(result.current.asOf).toBe(live.capturedAt);
+      });
+    });
+
+    describe('the final fetch', () => {
+      it('fires once at 16:03 ET, not before, and shows what it finds', async () => {
+        fakeClock(AFTER_CLOSE);
+        mockFetchJson
+          .mockResolvedValueOnce(CLOSED_BODY)
+          .mockResolvedValue(LAST_BODY);
+        const { result } = mount(false);
+        await advance(FINAL_FETCH_IN_MS - 1);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+
+        await advance(1);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(mockFetchJson).toHaveBeenLastCalledWith(
+          '/api/gexbot?view=snapshots-latest',
+        );
+        expect(result.current.rows).toEqual([LAST_ROW]);
+        expect(result.current.asOf).toBe(LAST_ROW.capturedAt);
+        expect(result.current.freshestAt).toBe(LAST_ROW.capturedAt);
+      });
+
+      it('fires for a tab that stayed open through the close', async () => {
+        fakeClock('2026-11-24T20:59:50Z');
+        mockFetchJson
+          .mockResolvedValueOnce(CLOSED_BODY)
+          .mockResolvedValue(LAST_BODY);
+        const { result, rerender } = mount(true);
+        await advance(0);
+        rerender({ marketOpen: false });
+        // 190 s to 21:03:00.
+        await advance(189_999);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+        await advance(1);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.rows).toEqual([LAST_ROW]);
+      });
+
+      it('re-arms for the next trading day', async () => {
+        fakeClock(AFTER_CLOSE);
+        mockFetchJson.mockResolvedValue(CLOSED_BODY);
+        mount(false);
+        await advance(FINAL_FETCH_IN_MS);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+
+        // Wed 16:03 ET is 24 h on: same EST offset.
+        await advance(24 * 3_600_000 - 1);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        await advance(1);
+        expect(mockFetchJson).toHaveBeenCalledTimes(3);
+      });
+
+      it.each([
+        [
+          'sibling-confirm',
+          {
+            view: 'sibling-confirm' as const,
+            ticker: 'AAPL',
+            side: 'call' as const,
+            at: '2026-11-24T14:00:10.000Z',
+          },
+        ],
+        ['expected-move', { view: 'expected-move' as const }],
+      ])('makes no request at 16:03 ET for %s', async (_name, spec) => {
+        fakeClock(AFTER_CLOSE);
+        mockFetchJson.mockResolvedValue({ data: { rows: [] } });
+        renderHook(() => useGexbotData(spec, false));
+        await advance(0);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+        await advance(10 * 60_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      });
+
+      it('is one request when two panels of the same view fire it together', async () => {
+        fakeClock(AFTER_CLOSE);
+        const final = deferred();
+        mockFetchJson
+          .mockResolvedValueOnce(CLOSED_BODY)
+          .mockReturnValueOnce(final.promise);
+        const first = mount(false);
+        const second = mount(false);
+        await advance(0);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+
+        await advance(FINAL_FETCH_IN_MS);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+
+        final.resolve(LAST_BODY);
+        await advance(0);
+        expect(first.result.current.rows).toEqual([LAST_ROW]);
+        expect(second.result.current.rows).toEqual([LAST_ROW]);
+      });
+    });
+
+    describe('a failed fetch while the market is closed', () => {
+      it('keeps the held rows with no error when the final fetch fails, and retries 30 s later', async () => {
+        fakeClock(AFTER_CLOSE);
+        mockFetchJson
+          .mockResolvedValueOnce(CLOSED_BODY)
+          .mockResolvedValueOnce(UNAVAILABLE)
+          .mockResolvedValue(LAST_BODY);
+        const { result } = mount(false);
+        await advance(FINAL_FETCH_IN_MS);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.error).toBeNull();
+        expect(result.current.loading).toBe(false);
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+        expect(result.current.asOf).toBe(CLOSE_AT);
+        expect(result.current.freshestAt).toBe(CLOSE_AT);
+
+        await advance(29_999);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        await advance(1);
+        expect(mockFetchJson).toHaveBeenCalledTimes(3);
+        expect(result.current.rows).toEqual([LAST_ROW]);
+        expect(result.current.error).toBeNull();
+      });
+
+      it('keeps the held rows through every retry, then stops after the fifth', async () => {
+        fakeClock(AFTER_CLOSE);
+        mockFetchJson
+          .mockResolvedValueOnce(CLOSED_BODY)
+          .mockResolvedValue(UNAVAILABLE);
+        const { result } = mount(false);
+        await advance(FINAL_FETCH_IN_MS);
+        for (let retry = 1; retry <= 5; retry += 1) {
+          await advance(30_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(2 + retry);
+          expect(result.current.error).toBeNull();
+          expect(result.current.rows).toEqual([CLOSE_ROW]);
+        }
+        await advance(120_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(7);
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+        expect(result.current.error).toBeNull();
+      });
+
+      it('shows the error while it retries when nothing is held, then the rows once a retry succeeds', async () => {
+        fakeClock(LATER);
+        mockFetchJson
+          .mockResolvedValueOnce(UNAVAILABLE)
+          .mockResolvedValue(CLOSED_BODY);
+        const { result } = mount(false);
+        await advance(0);
+        expect(result.current.error).toBe('Unavailable (HTTP 503)');
+        expect(result.current.rows).toEqual([]);
+
+        await advance(29_999);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+        await advance(1);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.error).toBeNull();
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+        expect(result.current.asOf).toBe(CLOSE_AT);
+
+        // Recovered: nothing more until tomorrow's final fetch.
+        await advance(5 * 60_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+      });
+
+      it.each([
+        ['plain', undefined],
+        ['under StrictMode', StrictMode],
+      ])(
+        'makes the mount read plus 5 retries, 30 s apart, then stops (%s)',
+        async (_name, wrapper) => {
+          fakeClock(LATER);
+          mockFetchJson.mockResolvedValue(UNAVAILABLE);
+          const { result } = mount(false, wrapper);
+          await advance(0);
+          expect(mockFetchJson).toHaveBeenCalledTimes(1);
+          for (let retry = 1; retry <= 5; retry += 1) {
+            await advance(30_000);
+            expect(mockFetchJson).toHaveBeenCalledTimes(1 + retry);
+          }
+          await advance(5 * 60_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(6);
+          expect(result.current.error).toBe('Unavailable (HTTP 503)');
+        },
+      );
+
+      it.each([400, 401, 403, 404])(
+        'does not retry a refused request (status %i), and shows it',
+        async (status) => {
+          fakeClock(LATER);
+          mockFetchJson.mockResolvedValue({ error: 'Rejected', status });
+          const { result } = mount(false);
+          await advance(0);
+          for (let tick = 0; tick < 6; tick += 1) await advance(30_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(1);
+          expect(result.current.error).toBe(`Rejected (HTTP ${status})`);
+        },
+      );
+
+      it('keeps held rows when a refused final fetch fails, and does not retry it', async () => {
+        fakeClock(AFTER_CLOSE);
+        mockFetchJson
+          .mockResolvedValueOnce(CLOSED_BODY)
+          .mockResolvedValue({ error: 'Forbidden', status: 403 });
+        const { result } = mount(false);
+        await advance(FINAL_FETCH_IN_MS);
+        for (let tick = 0; tick < 6; tick += 1) await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.rows).toEqual([CLOSE_ROW]);
+        expect(result.current.error).toBeNull();
+      });
+
+      it.each([
+        ['snapshots-latest', null, 3],
+        ['expected-move', 'Unavailable (HTTP 503)', 2],
+      ] as const)(
+        'counts a poll that comes back failed after the close as closed: %s shows %s',
+        async (view, error, calls) => {
+          fakeClock('2026-11-24T20:59:40Z');
+          const poll = deferred();
+          mockFetchJson
+            .mockResolvedValueOnce(CLOSED_BODY)
+            .mockReturnValueOnce(poll.promise)
+            .mockResolvedValue(CLOSED_BODY);
+          const { result, rerender } = renderHook(
+            ({ marketOpen }: { marketOpen: boolean }) =>
+              useGexbotData({ view }, marketOpen),
+            { initialProps: { marketOpen: true } },
+          );
+          await advance(30_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(2);
+
+          // The close lands while the poll is out; it answers after.
+          rerender({ marketOpen: false });
+          poll.resolve(UNAVAILABLE);
+          await advance(0);
+          expect(result.current.rows).toEqual([CLOSE_ROW]);
+          expect(result.current.error).toBe(error);
+
+          // The four views retry 30 s later; expected-move has no retry.
+          await advance(30_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(calls);
+        },
+      );
+
+      it('keeps counting a retry that a newer read took over, as its own failure', async () => {
+        // 09:29:50 ET on the client clock, a few seconds before the open.
+        fakeClock('2026-11-25T14:29:50Z');
+        const retry = deferred();
+        mockFetchJson
+          .mockResolvedValueOnce(UNAVAILABLE)
+          .mockReturnValueOnce(retry.promise)
+          .mockResolvedValue(UNAVAILABLE);
+        const { rerender } = mount(false);
+        await advance(0);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+
+        // 09:30:20: the first retry goes out and is still out when the market
+        // opens and the open-edge read joins it as the newer read.
+        await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        rerender({ marketOpen: true });
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+
+        // It comes back failed at 09:30:30. The poll opened at 09:30:20 ticks
+        // at 09:30:50 (a third request), and the retry series, which the
+        // answer keeps alive, at 09:31:00 (a fourth).
+        await advance(10_000);
+        retry.resolve(UNAVAILABLE);
+        await advance(0);
+        await advance(20_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(3);
+        await advance(10_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(4);
+      });
+
+      it('stops retrying when the hook unmounts', async () => {
+        fakeClock(AFTER_CLOSE);
+        mockFetchJson.mockResolvedValue(UNAVAILABLE);
+        const { unmount } = mount(false);
+        await advance(0);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+        unmount();
+        // Neither the retry series nor the 16:03 final fetch survives.
+        await advance(10 * 60_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('a failed fetch while the market is open', () => {
+      it('starts no retry series: the 30 s poll is the only follow-up', async () => {
+        fakeClock();
+        mockFetchJson.mockResolvedValue(UNAVAILABLE);
+        const { result } = mount(true);
+        await advance(0);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+        expect(result.current.error).toBe('Unavailable (HTTP 503)');
+
+        await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+      });
+
+      it('keeps the held rows but shows the error', async () => {
+        fakeClock();
+        const row = { ticker: 'SPX', capturedAt: '2026-11-23T16:00:00Z' };
+        mockFetchJson
+          .mockResolvedValueOnce({
+            data: { rows: [row], asOf: row.capturedAt },
+          })
+          .mockResolvedValue(UNAVAILABLE);
+        const { result } = mount(true);
+        await advance(30_000);
+        expect(result.current.error).toBe('Unavailable (HTTP 503)');
+        expect(result.current.rows).toEqual([row]);
+        expect(result.current.asOf).toBe(row.capturedAt);
+      });
     });
   });
 });

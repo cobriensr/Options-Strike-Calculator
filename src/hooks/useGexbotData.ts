@@ -17,12 +17,31 @@
  * them (tiles read loading) and reads at once rather than at the first tick.
  * `sibling-confirm` ignores `marketOpen`: its error retry runs at any hour,
  * and it has no open edge.
+ *
+ * After the close the server answers `snapshots-latest`, `velocity`,
+ * `convexity-trend` and `maxchange-winners` with the last session's rows and
+ * their capture time, `asOf` (spec: gexbot-after-close-design). For those four
+ * views (`CLOSED_SESSION_VIEWS`) the hook:
+ *  - exposes `asOf`;
+ *  - drops a body whose `asOf` is before today's open once the market is open
+ *    (a tab carried over from the closed view, an edge-cached closed response,
+ *    a client clock ahead of the server's), so the tiles read "awaiting first
+ *    GEXBot tick" rather than showing it as live;
+ *  - keeps one final fetch armed for close + 3 min, re-armed daily
+ *    (`useFinalFetch`), because polling is off after the close;
+ *  - keeps held rows, with no error, when a read fails while the market is
+ *    closed, and retries a transient failure 5 times, 30 s apart. With nothing
+ *    held the error shows while the retries run.
+ * `expected-move` and `sibling-confirm` answer for something other than the
+ * session's last minute and are unchanged.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { POLL_INTERVALS } from '../constants';
+import { isCarriedOver, isTransientStatus } from '../utils/closed-session';
 import { fetchJson } from './useMarketData.fetchers';
+import { useFinalFetch, type FinalFetchOutcome } from './useFinalFetch';
 import { usePolling } from './usePolling';
 
 // ────────────────────────────────────────────────────────────
@@ -168,6 +187,13 @@ export interface UseGexbotDataResult<V extends GexbotView['view']> {
   error: string | null;
   /** ISO timestamp of the freshest captured_at in `rows`, or null. */
   freshestAt: string | null;
+  /**
+   * The capture time of the data, from the body's `asOf`: the latest capture
+   * among its rows, which after the close is the last session's. Null for a
+   * view whose body has none, an empty body, a body dropped as carried over
+   * from a closed session, or an `asOf` that is not a timestamp.
+   */
+  asOf: string | null;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -198,6 +224,28 @@ function freshestFrom(rows: unknown[]): string | null {
   }
   return best;
 }
+
+/**
+ * The body's `asOf` when it is a timestamp, else null. The body is cast, not
+ * parsed, so a wrong type or text that is not a date would otherwise reach the
+ * closed label, where it renders as nothing.
+ */
+function asOfFrom(raw: unknown): string | null {
+  return typeof raw === 'string' && Number.isFinite(Date.parse(raw))
+    ? raw
+    : null;
+}
+
+/**
+ * The views that keep the last session's rows after the close (see the file
+ * header). The others answer for something else and keep their old rules.
+ */
+const CLOSED_SESSION_VIEWS: ReadonlySet<GexbotView['view']> = new Set([
+  'snapshots-latest',
+  'velocity',
+  'convexity-trend',
+  'maxchange-winners',
+]);
 
 // ────────────────────────────────────────────────────────────
 // In-flight request dedupe
@@ -241,14 +289,6 @@ function fetchDeduped(url: string): Promise<GexbotFetchResult> {
  */
 const SIBLING_MAX_RETRIES = 5;
 
-/**
- * A failure that another try can clear: network, timeout or abort (status 0),
- * 408, 429 and 5xx. Any other 4xx is the request itself being refused.
- */
-function isTransientStatus(status: number): boolean {
-  return status === 0 || status === 408 || status === 429 || status >= 500;
-}
-
 // ────────────────────────────────────────────────────────────
 // Hook
 // ────────────────────────────────────────────────────────────
@@ -274,6 +314,7 @@ interface FetchState<V extends GexbotView['view']> {
   rows: ViewPayload[V];
   error: FetchFailure | null;
   freshestAt: string | null;
+  asOf: string | null;
 }
 
 export function useGexbotData<V extends GexbotView['view']>(
@@ -305,22 +346,43 @@ export function useGexbotData<V extends GexbotView['view']>(
       ? buildUrl({ view, ticker: ticker!, side: side!, at: at! })
       : buildUrl({ view } as GexbotView);
 
-  const fetchNow = useCallback(async () => {
+  // Whether this view keeps the last session after the close (file header).
+  const keepsLastSession = CLOSED_SESSION_VIEWS.has(view);
+  // marketOpen as of the latest render, for an answer that lands after the
+  // market flipped (usePolling's latest-value pattern).
+  const marketOpenNow = useRef(marketOpen);
+  marketOpenNow.current = marketOpen;
+
+  /**
+   * One read of the view. Resolves to what the request itself came to, whether
+   * or not a newer read has since taken over the state, and never rejects:
+   * `fetchJson` answers a failure as a value.
+   */
+  const fetchNow = useCallback(async (): Promise<FinalFetchOutcome> => {
     latestRead.current += 1;
     const thisRead = latestRead.current;
     const result = (await fetchDeduped(url)) as
-      | { data: { rows?: ViewPayload[V] } }
+      | { data: { rows?: ViewPayload[V]; asOf?: unknown } }
       | { error: string; status: number };
-    if (latestRead.current !== thisRead) return;
+    const superseded = latestRead.current !== thisRead;
     if ('error' in result) {
+      const outcome = isTransientStatus(result.status) ? 'transient' : 'failed';
+      if (superseded) return outcome;
       const message = `${result.error} (HTTP ${result.status})`;
+      // After the close polling is off, so an error would stay up all evening
+      // over rows that are still the session's last: hold them and say nothing.
+      const holdRows = keepsLastSession && !marketOpenNow.current;
       // Keep the last good rows for this URL; a different URL has none.
       setState((prev) => {
         const same = prev?.url === url ? prev : null;
+        if (holdRows && same != null && (same.rows as unknown[]).length > 0) {
+          return { ...same, error: null };
+        }
         return {
           url,
           rows: same?.rows ?? ([] as ViewPayload[V]),
           freshestAt: same?.freshestAt ?? null,
+          asOf: same?.asOf ?? null,
           error: {
             message,
             status: result.status,
@@ -328,24 +390,60 @@ export function useGexbotData<V extends GexbotView['view']>(
           },
         };
       });
-      return;
+      return outcome;
+    }
+    if (superseded) return 'ok';
+    const asOf = asOfFrom(result.data.asOf);
+    // An answer from before today's open, with the market open, is the last
+    // session's: a closed response cached at the edge, or a client clock ahead
+    // of the server's. It is no live row, and no error either.
+    if (
+      keepsLastSession &&
+      isCarriedOver(asOf, marketOpenNow.current, new Date())
+    ) {
+      setState({
+        url,
+        rows: [] as ViewPayload[V],
+        freshestAt: null,
+        asOf: null,
+        error: null,
+      });
+      return 'ok';
     }
     const list = result.data.rows ?? ([] as ViewPayload[V]);
     setState({
       url,
       rows: list,
       freshestAt: freshestFrom(list as unknown[]),
+      asOf,
       error: null,
     });
-  }, [url]);
+    return 'ok';
+  }, [url, keepsLastSession]);
+
+  // The one final read after the close, and the retries of a transient failure
+  // while closed (5 x 30 s); armed for as long as the view keeps the session.
+  // It runs `fetchNow`, and reports that read's outcome itself, so only the
+  // hook's own reads below go through `retryAfterFailure`.
+  const retryAfterFailure = useFinalFetch(fetchNow, keepsLastSession);
+
+  // The hook's own reads (mount, the open edge, a poll tick): a failure that
+  // lands while the market is closed starts the retries, since no tick follows.
+  // While open the 30 s poll is the retry. A read that comes back after the
+  // flip to closed counts as closed. For a view that does not keep the session
+  // `retryAfterFailure` does nothing.
+  const readNow = useCallback(async () => {
+    const outcome = await fetchNow();
+    if (outcome !== 'ok' && !marketOpenNow.current) retryAfterFailure(outcome);
+  }, [fetchNow, retryAfterFailure]);
 
   // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     // Leaving a URL drops its state, so coming back to it (even before the
     // other URL has answered) starts with no rows and a fresh retry count.
     setState((prev) => (prev?.url === url ? prev : null));
-    void fetchNow();
-  }, [fetchNow, url]);
+    void readNow();
+  }, [readNow, url]);
 
   // The market opens (false to true): what the hook holds is the last session's
   // rows, or a failure from a closed hour, and usePolling does not call fn on
@@ -362,8 +460,8 @@ export function useGexbotData<V extends GexbotView['view']>(
     wasMarketOpen.current = marketOpen;
     if (!opened || view === 'sibling-confirm') return;
     setState(null);
-    void fetchNow();
-  }, [marketOpen, view, fetchNow]);
+    void readNow();
+  }, [marketOpen, view, readNow]);
 
   // State from a previous URL answers a different question (another fire
   // time): show it as not loaded yet, not as this URL's rows.
@@ -386,7 +484,7 @@ export function useGexbotData<V extends GexbotView['view']>(
     current.error.retries < SIBLING_MAX_RETRIES;
   usePolling(
     () => {
-      void fetchNow();
+      void readNow();
     },
     POLL_INTERVALS.OTM_FLOW, // 30_000 — matches the spec's requested cadence
     [view === 'sibling-confirm' ? siblingRetryDue : marketOpen],
@@ -397,5 +495,6 @@ export function useGexbotData<V extends GexbotView['view']>(
     loading: current === null,
     error: current?.error?.message ?? null,
     freshestAt: current?.freshestAt ?? null,
+    asOf: current?.asOf ?? null,
   };
 }
