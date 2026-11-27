@@ -49,7 +49,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getAccessMode } from '../utils/auth';
-import { isCarriedOver, isTransientStatus } from '../utils/closed-session';
+import {
+  asOfFrom,
+  isCarriedOver,
+  isTransientStatus,
+} from '../utils/closed-session';
 import { getErrorMessage } from '../utils/error';
 import { useFinalFetch, type FinalFetchOutcome } from './useFinalFetch';
 import { usePolling } from './usePolling';
@@ -343,18 +347,12 @@ class GexLandscapeHttpError extends Error {
   }
 }
 
-/** `raw` when it is a timestamp, else null. */
-function asOfFrom(raw: unknown): string | null {
-  return typeof raw === 'string' && Number.isFinite(Date.parse(raw))
-    ? raw
-    : null;
-}
-
 /**
  * The parsed body with the fields the hook reads checked. The body is an
  * unchecked cast, so a wrong type would otherwise reach the carried-over check
- * and the stall age: an `asOf` that is no timestamp reads as none, a missing
- * minute list as an empty one, an age that is no finite number as absent.
+ * and the stall age: an `asOf` that is no ISO timestamp reads as none
+ * (`asOfFrom`, shared with `useGexbotData`), a missing minute list as an empty
+ * one, an age that is no finite number as absent.
  */
 function checkBody(raw: GexLandscapeResponse): GexLandscapeResponse {
   const age = raw.lastMinuteAgeSec;

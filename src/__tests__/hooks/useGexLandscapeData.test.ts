@@ -1296,6 +1296,10 @@ describe('useGexLandscapeData — a closed body', () => {
   // no asOf, and the strikes still render.
   it.each([
     ['a number', 1_764_000_000],
+    // Date.parse reads both of these as a date.
+    ['a number that reads as a year', 2026],
+    ['a string that reads as a year', '2026'],
+    ['a string that reads as a month', '5'],
     ['an empty string', ''],
     ['text that is not a date', 'yesterday'],
     ['an object', { at: FRI_CLOSE_AT }],

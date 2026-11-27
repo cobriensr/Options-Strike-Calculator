@@ -68,6 +68,25 @@ export function isCarriedOver(
   return Date.parse(newestCapture) < openMs;
 }
 
+/** An ISO 8601 date-time starts like this: a date, then `T`. */
+const ISO_DATE_TIME_PREFIX = /^\d{4}-\d{2}-\d{2}T/;
+
+/**
+ * `raw` when it is an ISO 8601 date-time string that parses, else null. The
+ * GEXBot hooks run an unchecked response body's `asOf` through it before the
+ * closed label and `isCarriedOver` read it. A bare `Date.parse` is too loose
+ * for that: it reads "2026" as a year and "5" as a month, so the string must
+ * also have the shape of a date-time. Anything but a string (a number, an array
+ * holding a timestamp) is rejected before it is parsed.
+ */
+export function asOfFrom(raw: unknown): string | null {
+  return typeof raw === 'string' &&
+    ISO_DATE_TIME_PREFIX.test(raw) &&
+    Number.isFinite(Date.parse(raw))
+    ? raw
+    : null;
+}
+
 /** The ET calendar date after `etDate`. Steps from UTC noon, clear of DST. */
 function nextEtDate(etDate: string): string {
   return new Date(Date.parse(`${etDate}T12:00:00Z`) + DAY_MS)

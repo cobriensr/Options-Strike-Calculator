@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  asOfFrom,
   formatClosedLabel,
   isCarriedOver,
   isTransientStatus,
@@ -227,6 +228,39 @@ describe('formatClosedLabel', () => {
     expect(formatClosedLabel('garbage', new Date('2026-11-21T15:00:00Z'))).toBe(
       '',
     );
+  });
+});
+
+// The sanitizer both GEXBot hooks run an unchecked body's `asOf` through before
+// it reaches the closed label and the carried-over check.
+describe('asOfFrom', () => {
+  it.each([
+    ['a UTC timestamp with milliseconds', '2026-11-20T21:00:50.036Z'],
+    ['a UTC timestamp without milliseconds', '2026-11-20T21:00:50Z'],
+    ['a timestamp with an offset', '2026-11-20T16:00:50-05:00'],
+  ])('returns %s unchanged', (_label, raw) => {
+    expect(asOfFrom(raw)).toBe(raw);
+  });
+
+  // `Date.parse` alone accepts several of these ("2026" and "5" read as a year
+  // and a month), which would otherwise pass as a capture time.
+  it.each([
+    ['a number', 1_764_000_000],
+    ['a number that reads as a year', 2026],
+    ['a string that reads as a year', '2026'],
+    ['a string that reads as a month', '5'],
+    ['a date with no time', '2026-11-20'],
+    ['a date and time with a space', '2026-11-20 21:00:50'],
+    ['an empty string', ''],
+    ['text that is not a date', 'yesterday'],
+    ['a date-time shape that does not parse', '2026-11-20Tgarbage'],
+    ['a date-time shape out of range', '2026-13-45T25:61:61Z'],
+    ['null', null],
+    ['undefined', undefined],
+    ['an object', { at: '2026-11-20T21:00:50.036Z' }],
+    ['an array holding a timestamp', ['2026-11-20T21:00:50.036Z']],
+  ])('returns null for %s', (_label, raw) => {
+    expect(asOfFrom(raw)).toBeNull();
   });
 });
 
