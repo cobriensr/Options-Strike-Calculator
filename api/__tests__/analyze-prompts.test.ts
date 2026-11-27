@@ -625,3 +625,118 @@ describe('analyze system prompt — Rule 9 short-strike delta floor', () => {
     expect(Number(example![1])).toBeGreaterThanOrEqual(FLOOR_ENTRY_DELTA);
   });
 });
+
+// The re-checks of 2026-11-27 (docs/tmp/prompt-check-*-2026-11-27.md) measured
+// five statements of the prompt again, and each failed or rested on data the
+// live analysis does not have:
+//
+// - "IV Spike Alert": ~127 vs ~87 pts was one day against 28 (2026-04-02), the
+//   IV monitor has had no writer since 2026-04-30, and the direction clause has
+//   no backing.
+// - "Options volume PCR: contrarian signal": never measured, and the live
+//   context has no options-volume PCR.
+// - "PCR trend (T1->T2) ... 64% UP ... 31% UP": true on 27 days, 57% vs 52% UP
+//   on 175 (p = 0.65), and the live analysis never receives the trend.
+// - The dark-pool line and the <ml_calibration> block: restated from the
+//   146-day and 52-day data, in wording the owner approved.
+//
+// The system text is cached, so each old claim is asserted gone and each
+// replacement is pinned word for word.
+
+const DARK_POOL_LINE =
+  "- Dark pool distance to top cluster and total premium: not yet testable at entry time. The stored full-day versions rise with the same day's range (146 days through 2026-11-25), but they include prints after entry, so that is not evidence they predict anything. The idea that a dark pool floor near price helps in deeply negative GEX has no support in the full-day data. Use dark pool levels as context only.";
+
+const CALIBRATION_LINES = [
+  'Self-calibration context (end-of-day review labels, 52 days, 2026-01-02 to 2026-04-20; no labels since):',
+  '- The review graded 94% of days correct (49/52). Three losses are too few to calibrate on.',
+  '- Stated confidence has not been shown to separate outcomes: HIGH 31/32 (97%) vs MODERATE 17/19 (89%), Fisher p = 0.55, Wilson 95% intervals overlap. Do not size on confidence alone.',
+  '- There is no stored repeat-yesterday correctness baseline and no real sizing backtest; do not cite one.',
+];
+
+describe('analyze system prompt — the IV Spike Alert is gone', () => {
+  it('has no IV Spike Alert paragraph and none of its figures', () => {
+    expect(PROMPT).not.toContain('IV Spike Alert');
+    expect(PROMPT).not.toContain('127 pts');
+    expect(PROMPT).not.toContain('~87 pts');
+    expect(PROMPT).not.toContain('iv_spike_count');
+    expect(PROMPT).not.toContain('informed flow buying protection');
+  });
+
+  it('keeps the term-structure rules before it and the skew rules after it, adjacent', () => {
+    expect(PROMPT).toContain(
+      'If the term structure is flat (0DTE ≈ 30D): no additional signal. Use flow and gamma for structure selection.\nIV Skew Metrics (when provided from chain data):',
+    );
+  });
+});
+
+describe('analyze system prompt — the signal hierarchy keeps no unmeasured PCR claim', () => {
+  const hierarchy = section('ml_signal_hierarchy');
+
+  it('has the hierarchy block', () => {
+    expect(hierarchy).not.toBeNull();
+  });
+
+  it('has no options-volume PCR line and no PCR-trend line', () => {
+    expect(PROMPT).not.toContain('Options volume PCR');
+    expect(PROMPT).not.toContain('contrarian signal that requires');
+    expect(PROMPT).not.toContain('PCR trend (T1');
+    expect(PROMPT).not.toContain('64% UP settlement');
+    expect(PROMPT).not.toContain('31% UP');
+    expect(hierarchy).not.toMatch(/\bPCR\b/);
+  });
+
+  it('keeps the max pain line, the one it sat beside, and the closing rule', () => {
+    expect(hierarchy).toContain(
+      '- Max pain: only predictive in the final 2 hours when combined with gamma wall alignment.',
+    );
+    expect(hierarchy).toContain(
+      'When Tier 1 signals conflict with Tier 2, trust Tier 1.',
+    );
+  });
+
+  it('states the dark-pool line as not yet testable at entry time, word for word', () => {
+    expect(hierarchy).toContain(`${DARK_POOL_LINE}\n- Max pain:`);
+    expect(PROMPT).not.toContain('early EDA (39 days)');
+    expect(PROMPT).not.toContain('developing hypothesis');
+  });
+});
+
+describe('analyze system prompt — the calibration block states what the 52 labeled days support', () => {
+  it('is the four owner-approved lines and nothing else', () => {
+    expect(section('ml_calibration')).toBe(
+      `<ml_calibration>\n${CALIBRATION_LINES.join('\n')}\n`,
+    );
+  });
+
+  it('keeps none of the figures the re-check could not reproduce', () => {
+    expect(PROMPT).not.toContain('75% accuracy');
+    expect(PROMPT).not.toContain('HIGH confidence calls are 96% accurate');
+    expect(PROMPT).not.toContain('$2,600');
+    expect(PROMPT).not.toContain('walk-forward ML validation');
+  });
+
+  it('no longer points at an "ML Calibration Update" section the context does not carry', () => {
+    expect(PROMPT).not.toContain('ML Calibration Update');
+    expect(PROMPT).not.toContain('ML Calibration update');
+    expect(PROMPT).not.toContain('use updated percentages');
+  });
+
+  // Case-sensitive on purpose: the tag is the lowercase <ml_calibration>, and
+  // "Self-calibration context" opens the block, so neither can match this.
+  it('does not list "ML Calibration" among the structured API sources', () => {
+    expect(PROMPT).not.toContain('ML Calibration');
+    expect(PROMPT).toContain('Market Internals, GEX Landscape Bias)');
+  });
+
+  it('points the SpotGamma sizing overlay at <sizing_tiers>, not at an ML calibration system', () => {
+    // Rule 8 is flow weighting, not sizing, so the old "tiers from Rule 8 and
+    // the ML calibration system" named two things that do not hold the tiers.
+    expect(SPOTGAMMA_MECHANICS_CONTEXT).not.toMatch(/ML calibration/i);
+    expect(SPOTGAMMA_MECHANICS_CONTEXT).toContain(
+      'Apply this as a modifier to the confidence-based sizing tiers in\n<sizing_tiers>:',
+    );
+    // The tag it names exists, as a pair, in the system prompt.
+    expect(PROMPT).toContain('<sizing_tiers>\n');
+    expect(PROMPT).toContain('</sizing_tiers>');
+  });
+});

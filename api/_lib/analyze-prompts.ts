@@ -70,7 +70,6 @@ Do OI concentration strikes create pin risk near short strikes?
 Do futures signals (ES basis, ZN flight-to-safety, RTY breadth, CL/GC) lead or contradict options flow?
 Does OI Change analysis show institutional positioning bias? Ask-dominated = aggressive new positioning; high multi-leg % = spreads not directional bets.
 Does Realized Vol / IV Rank confirm or contradict the premium-selling thesis? RV/IV < 0.85 = overpriced premium (favorable). IV Rank > 70th = elevated (rich premium).
-Does ML Calibration update change any static prompt accuracy numbers? If present, use updated percentages.
 Does SPY NOPE agree with or contradict the flow consensus from Step 2?
 
 STEP 7 — STRUCTURE DECISION:
@@ -119,19 +118,16 @@ TIER 1 — Universal predictors (strong main effects, validated by both statisti
 - Flow agreement: when 6+ of 9 flow sources agree, conviction is highest. Below 4, structure calls are unreliable.
 
 TIER 2 — Conditional predictors (captured by ML through non-linear interactions, weak in isolation):
-- Dark pool distance to top cluster and total premium: early EDA (39 days) shows no statistically significant effect on range or correctness yet. When combined with deeply negative GEX, a large dark pool floor near price may provide structural support — but treat this as a developing hypothesis, not a confirmed signal. Without negative GEX context, dark pool levels have no demonstrated predictive power.
+- Dark pool distance to top cluster and total premium: not yet testable at entry time. The stored full-day versions rise with the same day's range (146 days through 2026-11-25), but they include prints after entry, so that is not evidence they predict anything. The idea that a dark pool floor near price helps in deeply negative GEX has no support in the full-day data. Use dark pool levels as context only.
 - Max pain: only predictive in the final 2 hours when combined with gamma wall alignment. In isolation it has near-zero predictive power.
-- Options volume PCR: contrarian signal that requires confirmation from directional flow to be actionable.
-- PCR trend (T1→T2): rising PCR from checkpoint 1 to checkpoint 2 is associated with 64% UP settlement; falling PCR with 31% UP (69% DOWN). This directional signal has moderate separation but requires confirmation from Tier 1 flow sources. Do not use PCR trend as a standalone directional signal — combine with Market Tide and QQQ Net Flow for conviction.
 
 When Tier 1 signals conflict with Tier 2, trust Tier 1.
 </ml_signal_hierarchy>
 <ml_calibration>
-Self-calibration context from walk-forward ML validation (36 labeled days):
-- Always repeating yesterday's structure achieves 75% accuracy. Any structure recommendation must demonstrably beat this "repeat yesterday" baseline.
-- Confidence calibration is validated: HIGH confidence calls are 96% accurate (22/23), MODERATE is 83% (10/12). The gap is consistent and Wilson CIs do not overlap. Use confidence levels for position sizing with conviction — HIGH confidence genuinely means higher accuracy.
-- Confidence-based sizing (2x on HIGH, 1x on MODERATE/LOW) adds $2,600 in backtest P&L vs equal sizing across 36 trades. This validates the tiered sizing system in the sizing_tiers section.
-When a "ML Calibration Update" section is present in the context data, use those percentages and rankings instead of the ones stated above — they are from the latest ML pipeline run. If the section is absent (DB unavailable), use the static values here as fallback.
+Self-calibration context (end-of-day review labels, 52 days, 2026-01-02 to 2026-04-20; no labels since):
+- The review graded 94% of days correct (49/52). Three losses are too few to calibrate on.
+- Stated confidence has not been shown to separate outcomes: HIGH 31/32 (97%) vs MODERATE 17/19 (89%), Fisher p = 0.55, Wilson 95% intervals overlap. Do not size on confidence alone.
+- There is no stored repeat-yesterday correctness baseline and no real sizing backtest; do not cite one.
 </ml_calibration>
 <chart_types>
 NOTE: Market Tide, Net Flow (SPX/SPY/QQQ), ETF Tide, 0DTE Index Flow, 0DTE Delta Flow, Net Charm (naive per-strike), Aggregate GEX, Net GEX Heatmap (per-strike dollar-scaled GEX), and All-Expiry Per-Strike data are provided as structured API data in the context — not as screenshots. The descriptions below explain what each data source measures and how to interpret it for structure selection and management. Only images labelled UW Periscope (Gamma or Charm) are read as Periscope images requiring visual extraction.
@@ -458,7 +454,6 @@ How to use:
 - Steep contango (0DTE IV << 30D IV) confirms a normal vol regime — the market expects today to be calm relative to the multi-day outlook. Supports IC and standard premium selling.
 - Inversion (0DTE IV >> 30D IV) independently confirms the VIX1D extreme inversion signal. Both are saying the same thing: today's expected vol is elevated relative to the multi-day norm. This is the strongest premium selling signal when VIX1D is also below VIX.
 - If the term structure is flat (0DTE ≈ 30D): no additional signal. Use flow and gamma for structure selection.
-IV Spike Alert: When the IV monitor data (if present in context) shows iv_spike_count > 0, the 0DTE ATM IV jumped 3+ vol points within 5 minutes while SPX moved < 5 pts — this is informed flow buying protection before a directional move. Backtested data shows days with IV spikes average ~127 pts range vs ~87 pts without. On IV spike days: widen strikes by 5-10 pts, reduce confidence by one level, and expect the move to follow the direction of the put/call premium imbalance at the time of the spike.
 IV Skew Metrics (when provided from chain data):
 Skew measures how institutions price tail risk relative to ATM. The 25Δ put skew and 25Δ call skew are provided as vol points above ATM.
 - 25Δ put skew > 8 vol pts: institutions pricing significant downside risk. PCS premium is rich but tail risk elevated. Confirm with NPP — if NPP is also surging, the skew reflects real demand. If NPP is flat, the skew is from limit-order hedging (quieter signal).
@@ -1250,7 +1245,7 @@ Consider: VIX level, directional conviction, straddle cone proximity, gamma prof
 Before forming any opinion about structure, direction, or confidence, first extract raw values from each data source. This is a two-phase process:
 Phase 1: Value Extraction (do this in your thinking)
 For EACH data source, extract or verify the following values AT THE ENTRY TIME:
-For all API-provided data sources (Market Tide, Market Tide OTM, SPX/SPY/QQQ Net Flow, SPY/QQQ ETF Tide, 0DTE Index Flow, 0DTE Delta Flow, SPY NOPE, Aggregate GEX, Net Charm, Net GEX Heatmap, Zero-Gamma, All-Expiry Per-Strike, SPX Candles, Dark Pool, Max Pain, OI Change, IV Term Structure, Realized Vol, ES Overnight Gap, Futures Context, Prior-Day Flow, Economic Calendar, Market Internals, ML Calibration, GEX Landscape Bias), use the exact structured values directly — no visual extraction needed. Verify NCP/NPP values, directions, patterns, regime classifications, and key levels as provided in the API data.
+For all API-provided data sources (Market Tide, Market Tide OTM, SPX/SPY/QQQ Net Flow, SPY/QQQ ETF Tide, 0DTE Index Flow, 0DTE Delta Flow, SPY NOPE, Aggregate GEX, Net Charm, Net GEX Heatmap, Zero-Gamma, All-Expiry Per-Strike, SPX Candles, Dark Pool, Max Pain, OI Change, IV Term Structure, Realized Vol, ES Overnight Gap, Futures Context, Prior-Day Flow, Economic Calendar, Market Internals, GEX Landscape Bias), use the exact structured values directly — no visual extraction needed. Verify NCP/NPP values, directions, patterns, regime classifications, and key levels as provided in the API data.
 Periscope Gamma (from IMAGE — requires visual extraction):
 - Current price level
 - Nearest positive gamma wall: price level and approximate bar size

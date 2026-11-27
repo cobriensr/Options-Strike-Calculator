@@ -542,8 +542,8 @@ from that level for future sessions.
 
 **Sizing overlay from structural backing:**
 
-Apply this as a modifier to the confidence-based sizing tiers from
-Rule 8 and the ML calibration system:
+Apply this as a modifier to the confidence-based sizing tiers in
+<sizing_tiers>:
 
 Non-0DTE POSITIVE + 0DTE positive at the wall protecting your short
 strike: UPGRADE signal for sizing. Both structural books defend this
