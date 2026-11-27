@@ -954,6 +954,75 @@ describe('gexbot-queries', () => {
       expect(row!.unavailable).toBe('no_dte');
     });
 
+    // The level ladder prices each short strike from its own IVs, so the row
+    // carries the whole decoded chain, not just the ATM read.
+    describe('strikeIvs', () => {
+      it('sends every strike as decoded, a missing IV staying null on its side', async () => {
+        mockSql.mockResolvedValueOnce([
+          capture({
+            mini_contracts: [
+              [6320, 0.12, 0, 1, [], 0, null],
+              [6325, 0.1, 0.12, 1, [], 0, null],
+              // No call IV, and no Greek: the row is still a strike.
+              [6330, null, 0.1, null, [], 0, null],
+            ],
+          }),
+        ]);
+        const [row] = await getExpectedMove();
+        expect(row!.strikeIvs).toEqual([
+          { strike: 6320, callIv: 0.12, putIv: null },
+          { strike: 6325, callIv: 0.1, putIv: 0.12 },
+          { strike: 6330, callIv: null, putIv: 0.1 },
+        ]);
+        expect(row!.unavailable).toBeNull();
+      });
+
+      it('sends [] for a capture with no mini_contracts, and the move is unavailable', async () => {
+        mockSql.mockResolvedValueOnce([capture({ mini_contracts: undefined })]);
+        const [row] = await getExpectedMove();
+        expect(row!.strikeIvs).toEqual([]);
+        expect(row!.unavailable).toBe('no_atm_iv');
+        expect(row!.expectedMove).toBeNull();
+      });
+
+      it.each([
+        ['no spot', { spot: undefined }, 'no_spot'],
+        ['no min_dte', { min_dte: undefined }, 'no_dte'],
+        [
+          'a stamp at the close',
+          { timestamp: Date.parse('2025-07-23T20:00:00Z') / 1000 },
+          'expired',
+        ],
+      ])(
+        'still sends them when the move is unavailable for %s',
+        async (_label, overrides, reason) => {
+          mockSql.mockResolvedValueOnce([
+            {
+              ...capture(overrides),
+              captured_at: new Date('2025-07-23T20:03:00Z'),
+            },
+          ]);
+          const [row] = await getExpectedMove();
+          expect(row!.unavailable).toBe(reason);
+          expect(row!.expectedMove).toBeNull();
+          expect(row!.strikeIvs).toEqual([
+            { strike: 6320, callIv: 0.12, putIv: 0.12 },
+            { strike: 6325, callIv: 0.1, putIv: 0.12 },
+            { strike: 6330, callIv: 0.1, putIv: 0.1 },
+          ]);
+        },
+      );
+
+      it('sends [] for a payload that is not an object', async () => {
+        mockSql.mockResolvedValueOnce([
+          { captured_at: CAPTURED, raw_response: null },
+        ]);
+        const [row] = await getExpectedMove();
+        expect(row!.unavailable).toBe('no_spot');
+        expect(row!.strikeIvs).toEqual([]);
+      });
+    });
+
     it('propagates a DB failure', async () => {
       mockSql.mockRejectedValueOnce(new Error('connection lost'));
       await expect(getExpectedMove()).rejects.toThrow('connection lost');

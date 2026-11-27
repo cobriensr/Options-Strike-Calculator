@@ -29,6 +29,7 @@ import {
   PANEL_TO_CATEGORY,
   STALENESS_CUTOFF_MS,
   TICKER,
+  type DecodedStrikeIv,
   type GexbotStatePayload,
 } from './periscope-gexbot.js';
 
@@ -776,6 +777,13 @@ export interface ExpectedMoveRow extends ExpectedMove {
   capturedAt: string;
   /** The moment the move is computed for: the vendor's snapshot timestamp. */
   asOf: string;
+  /**
+   * Every strike in the capture the move is computed from, as decoded: the
+   * call and put IV (fractions), `null` on a side the vendor sent no quote
+   * for. `[]` when the capture has no `mini_contracts`. Carried even when the
+   * move itself is `unavailable`.
+   */
+  strikeIvs: DecodedStrikeIv[];
 }
 
 /** The vendor's snapshot `timestamp` (Unix seconds) as a Date, if usable. */
@@ -808,6 +816,14 @@ function vendorTime(timestamp: unknown): Date | null {
  * from (no spot, no `min_dte`, no ATM IV, a stamp at or after the session
  * close) comes back with `expectedMove: null` and the reason in
  * `unavailable`, so the tile can say why instead of looking empty.
+ *
+ * The row also carries the decoded chain, `strikeIvs`: every strike in the
+ * capture the move was computed from (about 99 strikes, ±250 pts of spot,
+ * ~4.5 KB a poll on 2026-11-25), a missing IV kept as `null`. It is decoded
+ * once and sent as is. The level ladder prices each short strike from its
+ * own IVs, and the strikes it can list reach past the ±1σ band. It rides
+ * along when the move is `unavailable` too. It is GEXBot data, so it leaves
+ * only through the guarded `/api/gexbot` endpoint.
  *
  * The vendor's last stamp of a session is 15:59:59 ET, never 16:00, so this
  * read stays live (`unavailable: null`, about one second left) for the final
@@ -843,6 +859,7 @@ export async function getExpectedMove(): Promise<ExpectedMoveRow[]> {
   const vendorAt = vendorTime(payload.timestamp);
   if (vendorAt != null && isPreOpenStamp(vendorAt, capturedAt)) return [];
   const asOf = vendorAt ?? capturedAt;
+  const strikeIvs = decodeStrikeIvs(payload);
 
   return [
     {
@@ -852,9 +869,10 @@ export async function getExpectedMove(): Promise<ExpectedMoveRow[]> {
       ...computeExpectedMove({
         spot: toNum(payload.spot),
         minDte: toNum(payload.min_dte),
-        strikes: decodeStrikeIvs(payload),
+        strikes: strikeIvs,
         asOf,
       }),
+      strikeIvs,
     },
   ];
 }
