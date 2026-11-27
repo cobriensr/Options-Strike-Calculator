@@ -36,7 +36,11 @@ KEY_FEATURE_COLUMNS = [
     "realized_vol_5d",
     "dp_total_premium",
     "dp_support_resistance_ratio",
+    # Data-health checks of the options-volume feed, not model inputs: the
+    # same day's PCR (an end-of-day total) and the previous day's, which is
+    # what the morning models read.
     "opt_vol_pcr",
+    "prev_day_opt_vol_pcr",
     "iv_open",
     "max_pain_dist",
 ]
@@ -322,6 +326,7 @@ def check_stationarity(warnings: list[str], _failures: list[str]) -> None:
         "flow_agreement_t1",
         "dp_total_premium",
         "opt_vol_pcr",
+        "prev_day_opt_vol_pcr",
         "iv_open",
     ]
 

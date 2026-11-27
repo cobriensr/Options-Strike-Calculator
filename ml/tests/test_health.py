@@ -9,6 +9,7 @@ Run:
 """
 
 import json
+import re
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -65,6 +66,7 @@ def _make_features_df(
             "opt_vol_pcr": rng.uniform(0.5, 1.5, n),
             "iv_open": rng.uniform(10, 40, n),
             "max_pain_dist": rng.uniform(-20, 20, n),
+            "prev_day_opt_vol_pcr": rng.uniform(0.5, 1.5, n),
         },
         index=dates,
     )
@@ -746,6 +748,55 @@ class TestCheckColumnCoverage:
         vix_warnings = [w for w in warnings if "'vix'" in w]
         assert len(vix_warnings) == 0
 
+    @patch("health.load_data")
+    def test_both_pcr_columns_are_asked_for_and_reported(self, mock_load, capsys):
+        """The same-day PCR (a data-health check) and the previous day's."""
+        mock_load.return_value = _make_features_df(n=10)
+
+        check_column_coverage([], [])
+
+        sql = mock_load.call_args.args[0]
+        assert re.search(r"\bopt_vol_pcr\b", sql)
+        assert re.search(r"\bprev_day_opt_vol_pcr\b", sql)
+        out = capsys.readouterr().out
+        assert re.search(r"^\s*opt_vol_pcr\s", out, re.MULTILINE)
+        assert re.search(r"^\s*prev_day_opt_vol_pcr\s", out, re.MULTILINE)
+
+    @patch("health.load_data")
+    def test_high_null_rate_in_prev_day_pcr_produces_warning(self, mock_load, capsys):
+        df = _make_features_df(n=10)
+        df.iloc[:5, df.columns.get_loc("prev_day_opt_vol_pcr")] = np.nan
+        mock_load.return_value = df
+
+        warnings: list[str] = []
+        check_column_coverage(warnings, [])
+
+        assert warnings == ["'prev_day_opt_vol_pcr' is 50% null in last 10 days"]
+
+    @patch("health.load_data")
+    def test_missing_prev_day_pcr_column_produces_warning(self, mock_load, capsys):
+        df = _make_features_df(n=10).drop(columns=["prev_day_opt_vol_pcr"])
+        mock_load.return_value = df
+
+        warnings: list[str] = []
+        check_column_coverage(warnings, [])
+
+        assert warnings == [
+            "Column 'prev_day_opt_vol_pcr' missing from training_features"
+        ]
+
+    @patch("health.load_data")
+    def test_same_day_pcr_is_still_monitored(self, mock_load, capsys):
+        df = _make_features_df(n=10).drop(columns=["opt_vol_pcr"])
+        df.iloc[:5, df.columns.get_loc("prev_day_opt_vol_pcr")] = np.nan
+        mock_load.return_value = df
+
+        warnings: list[str] = []
+        check_column_coverage(warnings, [])
+
+        assert "Column 'opt_vol_pcr' missing from training_features" in warnings
+        assert len(warnings) == 2
+
 
 # ── check_stationarity ────────────────────────────────────────
 
@@ -855,6 +906,53 @@ class TestCheckStationarity:
 
         captured = capsys.readouterr()
         assert "<< REGIME SHIFT" in captured.out
+
+    def _make_pcr_df(self, n: int = 100) -> pd.DataFrame:
+        """The stationary frame plus the two PCR columns, both stable."""
+        df = self._make_stationary_df(n)
+        rng = np.random.default_rng(8)
+        df["opt_vol_pcr"] = rng.normal(1.0, 0.1, n)
+        df["prev_day_opt_vol_pcr"] = rng.normal(1.0, 0.1, n)
+        return df
+
+    @patch("health.load_data")
+    def test_both_pcr_columns_are_asked_for(self, mock_load, capsys):
+        mock_load.return_value = self._make_pcr_df()
+
+        check_stationarity([], [])
+
+        sql = mock_load.call_args.args[0]
+        assert re.search(r"\bopt_vol_pcr\b", sql)
+        assert re.search(r"\bprev_day_opt_vol_pcr\b", sql)
+
+    @patch("health.load_data")
+    def test_stable_pcr_columns_produce_no_warning(self, mock_load, capsys):
+        mock_load.return_value = self._make_pcr_df()
+
+        warnings: list[str] = []
+        check_stationarity(warnings, [])
+
+        assert [w for w in warnings if "regime shift" in w] == []
+
+    @pytest.mark.parametrize("column", ["opt_vol_pcr", "prev_day_opt_vol_pcr"])
+    @patch("health.load_data")
+    def test_a_regime_shift_in_either_pcr_is_flagged_by_name(
+        self, mock_load, column, capsys
+    ):
+        df = self._make_pcr_df()
+        df.iloc[-10:, df.columns.get_loc(column)] = (
+            df[column].mean() + 10 * df[column].std()
+        )
+        mock_load.return_value = df
+
+        warnings: list[str] = []
+        check_stationarity(warnings, [])
+
+        flagged = [w for w in warnings if "regime shift" in w]
+        assert len(flagged) == 1
+        assert f"'{column}' regime shift" in flagged[0]
+        assert "above" in flagged[0]
+        assert f"{column}" in capsys.readouterr().out
 
     @patch("health.load_data")
     def test_sparse_recent_data_skipped(self, mock_load, capsys):
