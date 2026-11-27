@@ -676,3 +676,115 @@ What the build changed from the tasks above. Everything else stands as written.
 - **Task 10, the image import checks.** `interval_ba_step` and `interval_ba_replay` joined the built-image import in `.github/workflows/ci.yml` and `IMAGE_IMPORT_CHECK` in `nightly/tests/test_image_layout.py` in Task 10, not later: `lazy_step` defers the import, so a bad one would otherwise show only at 07:15.
 - **Task 10, the health counts.** They go in the `interval_ba_day` Sentry context, not extras: the SDK keeps only the first 10 extras, and the day has 13 counts.
 - **Task 11, the reserve at the enrich cap.** The step takes the reserve to 8,400 s and the tape window to 6,000 s, as planned. The plan and the spec give only that case. At the enrich budget's 1,800 s cap they are 9,300 s and 5,100 s, so a 30-day catch-up no longer fits one night at the median pace (about 25 days). `nightly/README.md` has the arithmetic.
+
+## Added 2026-11-26
+
+### Task 14: The analyze scripts read the full-year replay export
+
+The owner added this task on 11-26 ("yeah lets do that"). The brief is in the SDD workspace (`task-14-brief.md`).
+- The two analyze scripts gain `--source table|export`, with `export` as the default, and read the export through the outcome script's reader.
+- The outcome script's `--source` default becomes `export`.
+- `--export-end` defaults to the newest snapshot.
+
+Task 15 replaces that last default with the day files.
+
+### Task 15: Replay day files, written nightly
+
+**Spec:** `docs/superpowers/specs/2026-11-26-interval-ba-replay-days-design.md` (owner-approved 11-26, revised after its review).
+
+**Commits: four, each at most 5 files, in order.**
+- **15a-1, the replay module.**
+  - `nightly/src/interval_ba_replay.py`:
+    - it gains `EXPORT_COLUMNS`, `EXPORT_NULLABLE`, `REPLAY_DAYS_PREFIX`, `REPLAY_VERSION`, `rule()`, `day_key()` and `export_table()`;
+    - `Replay` gains `day`;
+    - `heal_day` gains `replay`.
+  - `nightly/tests/test_interval_ba_replay.py`, where the import pin now allows pyarrow.
+  - `nightly/tests/test_interval_ba_heal.py`.
+  - `scripts/interval_ba_tape.py`: the snapshot export uses the module's builder, and `_EXPORT_COLUMNS`, `_EXPORT_NULLABLE`, `_rule` and `_export_table` go.
+  - `scripts/test_enrich_interval_ba_outcomes.py`: the schema pin now points at the module.
+- **15a-2, the step.**
+  - `nightly/src/interval_ba_step.py`: replay, then write and verify the day file, then `heal_day(replay=…)`; plus the `replay_days_written` count.
+  - `nightly/tests/test_interval_ba_step.py`.
+  - `nightly/README.md`: the research outputs row (kind **output**), and the `interval-ba-tape` section (the write order, a failed day, the re-land lag).
+- **15b-1, the tool.**
+  - `scripts/interval_ba_tape.py`:
+    - `export --per-day`, built on a function `write_replay_days(days, *, allow_market_hours: bool)` that the readers' repair also calls;
+    - the export overwrites, skips the snapshot overwrite check, and checks the windows before each put;
+    - every per-day write refuses unless `nightly/src/interval_ba_replay.py` is clean and its blob equals `origin/main`'s.
+  - `.github/workflows/ci.yml`: `nightly/src/calendar_nyse.py` joins the `ml` job's paths filter, and joins `TOOL_FILES`.
+  - `scripts/interval_ba_tape_runs.py`: `trading_days` from `nightly/src/calendar_nyse.py`, loaded by path.
+  - The rebuild no-argument default fix, which is queued in the ledger: with no `--from`/`--to`, `rebuild` works the rebuild ranges, not a span that holds live days.
+  - Their tests.
+- **15b-2, the readers.**
+  - `scripts/enrich_interval_ba_outcomes.py`, `scripts/analyze_interval_ba_cuts.py` and `scripts/analyze_confluence_vs_solo.py`:
+    - the day files by default;
+    - `-days-` outcome names;
+    - the one-rule check;
+    - the missing-or-stale-day check that repairs before it refuses (owner 11-26), over the days the run needs. For analyze, that is the CSV's own day range.
+  - Their tests and `scripts/README.md`. Split again if that is over 5 files.
+
+**Interfaces:**
+- **New in `interval_ba_replay`:**
+  - `EXPORT_COLUMNS` and `EXPORT_NULLABLE`, moved verbatim from the tool's `_EXPORT_COLUMNS` / `_EXPORT_NULLABLE`;
+  - `REPLAY_DAYS_PREFIX = "research/interval-ba/replay/"` and `day_key(day: date) -> str`;
+  - `REPLAY_VERSION = "1"`;
+  - `rule() -> dict[str, str]`, which is the tool's `_rule()` plus `"replay-version": REPLAY_VERSION`;
+  - `export_table(alerts: Sequence[TapeAlert], meta: dict[str, Any]) -> pa.Table`, moved from `_export_table`.
+- **Changed signatures:**
+  - `Replay(day: date, alerts, root_label_mismatch)`;
+  - `heal_day(..., replay: Replay | None = None)`, which raises `ValueError` when `replay.day != day`.
+- **Consumes:** `ResearchStore.put_file(key, path) -> int`, which is verified.
+- **The tool's import rule:** the tool still imports nothing of nightly but `interval_ba_replay` and `calendar_nyse`, both loaded by path. Both modules stay limited to the standard library plus duckdb, psycopg2 and pyarrow.
+
+- [ ] **Step 1 (15a-1): Write the failing tests.**
+  - `test_export_table_matches_the_snapshot_schema`: columns, types, the nullable set, and the `interval_ba` metadata round-trip.
+  - `test_rule_carries_the_replay_version`.
+  - `test_day_key_is_the_session_date`.
+  - `test_heal_day_uses_a_given_replay_and_does_not_replay_again`, with `replay_day` patched to raise.
+  - `test_heal_day_refuses_a_replay_of_another_day`.
+  - `test_the_import_pin_allows_pyarrow_and_nothing_of_nightly`.
+  - `test_replay_version_pins_the_replay_output`: pins `(REPLAY_VERSION, the sha256 of a fixture tape's replay output)`. A change to the output without a bump fails it.
+  - `test_the_snapshot_export_table_is_unchanged`: compare the `pa.Table` (schema, metadata, values), not bytes, because pyarrow's version is in the footer.
+- [ ] **Step 2: Implement 15a-1.** Run the nightly and scripts suites and `npm run review`, then commit: `refactor(nightly): Move the Interval B/A export schema into the replay module, with a replay version`.
+- [ ] **Step 3 (15a-2): Write the failing tests.**
+  - `test_the_step_writes_the_day_file_before_the_heal_commits`: `put_file` raising leaves no `interval_ba_tape_days` marker and fails the day.
+  - `test_a_quiet_day_writes_a_zero_row_file`.
+  - `test_replay_days_written_is_counted`.
+  - `test_a_relanded_day_rewrites_its_file`.
+  - `test_the_day_file_is_the_code_rule_not_live_settings`: a held day still gets its file.
+- [ ] **Step 4: Implement 15a-2,** then commit: `feat(nightly): Write each session's Interval B/A replay to a day file in R2`.
+- [ ] **Step 5 (15b-1): Write the failing tests.**
+  - `test_export_per_day_writes_one_file_per_day_and_overwrites`.
+  - `test_export_per_day_rechecks_the_windows_before_each_put`.
+  - `test_export_per_day_ignores_an_existing_snapshot_key`.
+  - `test_trading_days_follow_the_nightly_calendar_past_2026`.
+  - `test_rebuild_with_no_range_works_the_rebuild_days`.
+  - `test_a_per_day_write_refuses_unless_the_replay_module_is_origin_mains`.
+- [ ] **Step 6: Implement 15b-1,** then commit: `feat(scripts): Backfill Interval B/A replay day files with export --per-day, and take the tool's calendar from nightly`.
+- [ ] **Step 7 (15b-2): Write the failing tests.**
+  - `test_readers_default_to_the_day_files`.
+  - `test_readers_refuse_mixed_rules_and_name_the_days`.
+  - `test_no_day_file_exits_with_the_prefix`.
+  - `test_export_end_still_reads_the_snapshot`.
+  - `test_day_file_outcomes_are_named_days_and_analyze_takes_its_own_source`.
+  - `test_a_missing_day_with_a_tape_is_rebuilt_written_and_read`. The repair writes the day file and prints that the nightly should have written it.
+  - `test_a_missing_day_without_a_tape_refuses_and_names_it`.
+  - `test_a_day_uw_marked_unavailable_is_not_a_gap`.
+  - `test_the_repair_refuses_in_the_nightly_window_and_names_the_retry_time`.
+  - `test_more_than_ten_missing_days_refuses_with_the_backfill_command`.
+  - `test_a_local_rule_unlike_the_files_refuses_the_repair`.
+  - `test_a_day_file_older_than_its_tape_is_repaired`.
+  - `test_analyze_reads_only_the_days_its_csv_covers`.
+  - `test_dry_run_never_writes_and_lists_the_days_to_repair`.
+- [ ] **Step 8: Implement 15b-2,** then commit: `feat(scripts): Read the Interval B/A replay day files by default`.
+
+**Push:** 15a-1 and 15a-2 ship in the same push as Tasks 10–11, after 15:00 CT and outside 07:15–12:30 UTC. Tasks 10–11 wait for them. 15b touches no nightly watch path, so it can ship in that push or later.
+
+### Ops C (controller): the day-file backfill
+
+Run after the push, from a checkout at `origin/main` (the deployed-code guard refuses otherwise), and outside 07:15–12:30 UTC:
+1. **One day, checked by hand.** Run `export --per-day --from 2026-11-25 --to 2026-11-25`. Its rows must equal the snapshot's rows for 11-25 in count, keys and every column, except that the metadata `rule` now carries `replay-version`.
+2. **The rest.** Run `export --per-day --from 2026-01-02 --to <E>`, about 25 min.
+   - `<E>` is 11-24 if the push's first nightly run has not happened yet.
+   - Otherwise it is the last session before that run.
+3. **Read the day files once with the default reader.** Expect one rule, and 227 days plus any nightly days. 01-02..11-25 must hold 18,478 alerts.
