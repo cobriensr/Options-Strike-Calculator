@@ -169,9 +169,40 @@ describe('<ExpectedMoveTile>', () => {
       );
     });
 
-    it('still reads awaiting when there is no row at all', () => {
+    // A load after the close (reload, PWA update, a new device) gets an empty
+    // body, since the view keeps its 5-minute window. A tab held through the
+    // close reads "session closed"; a fresh load must read the same.
+    it('reads "session closed" when there is no row at all', () => {
       mockRows([]);
       render(<ExpectedMoveTile marketOpen={false} />);
+      expect(screen.getByTestId('expected-move-value')).toHaveTextContent(
+        'SPX ±1σ · —',
+      );
+      expect(screen.getByTestId('expected-move-range')).toHaveTextContent(
+        'session closed',
+      );
+      expect(
+        screen.queryByTestId('expected-move-tile-empty'),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/awaiting first/)).not.toBeInTheDocument();
+    });
+
+    it('reads the same on a fresh load as on a tab held through the close', () => {
+      mockRows([makeRow()]);
+      const held = render(<ExpectedMoveTile marketOpen={false} />);
+      const heldText = screen.getByTestId('expected-move-tile').textContent;
+      held.unmount();
+
+      mockRows([]);
+      render(<ExpectedMoveTile marketOpen={false} />);
+      expect(screen.getByTestId('expected-move-tile').textContent).toBe(
+        heldText,
+      );
+    });
+
+    it('still reads awaiting when the market is open and there is no row', () => {
+      mockRows([]);
+      render(<ExpectedMoveTile marketOpen />);
       expect(screen.getByTestId('expected-move-tile-empty')).toHaveTextContent(
         'awaiting first GEXBot tick',
       );

@@ -7,7 +7,8 @@
  * narrows through the session. It is a size, not a direction: the tile is
  * always neutral. When the capture cannot produce a move the tile names the
  * reason instead of showing a number. Once `marketOpen` is false the tile
- * reads "session closed" whatever the last row says.
+ * reads "session closed" whatever the rows say, an empty body included, so a
+ * tab held through the close and a load after it agree.
  *
  * Spec: docs/superpowers/specs/gexbot-expected-move-net-vanna-2026-11-20.md
  */
@@ -120,7 +121,10 @@ function ExpectedMoveTileInner({ marketOpen }: ExpectedMoveTileProps) {
   }
 
   const row = rows[0];
-  if (!row) {
+  // After the close the view still answers, but its 5-minute window is empty
+  // for any load that comes after the last tick (a reload, a PWA update, the
+  // weekend, a new device). "Awaiting" is only true while the market is open.
+  if (!row && marketOpen) {
     return (
       <div
         role="status"
@@ -134,7 +138,7 @@ function ExpectedMoveTileInner({ marketOpen }: ExpectedMoveTileProps) {
   }
 
   const tone = toneClasses('unknown');
-  const shown = marketOpen ? describeRow(row) : SESSION_CLOSED;
+  const shown = marketOpen && row ? describeRow(row) : SESSION_CLOSED;
 
   return (
     <div
