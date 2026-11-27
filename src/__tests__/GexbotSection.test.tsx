@@ -1,6 +1,8 @@
 import '@testing-library/jest-dom';
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+
+import type { GexbotView, SnapshotsLatestRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -15,6 +17,7 @@ vi.mock('../hooks/useGexbotData', async () => {
 
 import { GexbotSection } from '../components/Gexbot';
 import { dealerClaims } from './helpers/dealer-claims';
+import { makeWinner } from './helpers/makeWinner';
 
 describe('<GexbotSection>', () => {
   beforeEach(() => {
@@ -86,5 +89,168 @@ describe('<GexbotSection>', () => {
   it('renders the trial-context footnote', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
     expect(screen.getByText(/GEXBot Orderflow-tier data/i)).toBeInTheDocument();
+  });
+});
+
+describe('<GexbotSection> after the close', () => {
+  /** Fri 2026-11-20 15:00:49 CT: the last capture of the session. */
+  const FRIDAY_CLOSE = '2026-11-20T21:00:49.000Z';
+  const SATURDAY = new Date('2026-11-21T15:00:00Z');
+
+  function snapshotRow(ticker: string, spot: number): SnapshotsLatestRow {
+    return {
+      ticker,
+      capturedAt: FRIDAY_CLOSE,
+      spot,
+      zeroGamma: null,
+      zMlgamma: null,
+      zMsgamma: null,
+      zcvr: null,
+      zgr: null,
+      zvanna: null,
+      zcharm: null,
+      oMlgamma: null,
+      oMsgamma: null,
+      ocvr: null,
+      ogr: null,
+      ovanna: null,
+      ocharm: null,
+      oneDexoflow: null,
+      oneGexoflow: null,
+      oneCvroflow: null,
+      zeroMcall: null,
+      zeroMput: null,
+      majorPosVol: null,
+      majorPosOi: null,
+      majorNegVol: null,
+      majorNegOi: null,
+      minDte: 0,
+    };
+  }
+
+  /** Answers each view with its own body; any view not named reads empty. */
+  function answerViews(
+    bodies: Partial<
+      Record<GexbotView['view'], { rows?: unknown[]; asOf?: string | null }>
+    >,
+  ) {
+    mockUseGexbotData.mockImplementation((spec: GexbotView) => ({
+      rows: [],
+      loading: false,
+      error: null,
+      freshestAt: null,
+      asOf: null,
+      ...bodies[spec.view],
+    }));
+  }
+
+  beforeEach(() => {
+    mockUseGexbotData.mockReset();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(SATURDAY);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('labels the section CLOSED with the capture time', () => {
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+    });
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    expect(screen.getByTestId('gexbot-closed-label')).toHaveTextContent(
+      'CLOSED · as of Fri 3:00 PM CT',
+    );
+    expect(mockUseGexbotData).toHaveBeenCalledWith(
+      { view: 'snapshots-latest' },
+      false,
+    );
+  });
+
+  it('adds the date once the capture is more than 6 days old', () => {
+    vi.setSystemTime(new Date('2026-11-30T15:00:00Z'));
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+    });
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    expect(screen.getByTestId('gexbot-closed-label')).toHaveTextContent(
+      'CLOSED · as of Fri Nov 20 3:00 PM CT',
+    );
+  });
+
+  it('shows no label while the market is open', () => {
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+    });
+    render(<GexbotSection marketOpen spxSpot={6600} />);
+    expect(screen.queryByTestId('gexbot-closed-label')).toBeNull();
+  });
+
+  it('shows no label after the close when the table has no capture time', () => {
+    answerViews({});
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    expect(screen.queryByTestId('gexbot-closed-label')).toBeNull();
+  });
+
+  it('hands the ladder the SPX spot of the snapshots, not another ticker', () => {
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPY', 660), snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+      'maxchange-winners': {
+        rows: [makeWinner('SPX', 'gex_zero/maxchange', 6600, 2_100)],
+        asOf: FRIDAY_CLOSE,
+      },
+    });
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    expect(
+      screen.getByTestId('strike-mover-ladder-spot-divider'),
+    ).toHaveTextContent('SPX spot 6600');
+    expect(
+      screen.getByTestId('strike-mover-ladder-row-6600'),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the ladder's rows off another session than the header's", () => {
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+      'maxchange-winners': {
+        rows: [makeWinner('SPX', 'gex_zero/maxchange', 6600, 2_100)],
+        asOf: '2026-11-19T21:00:00.000Z',
+      },
+    });
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    expect(screen.getByTestId('gexbot-closed-label')).toBeInTheDocument();
+    expect(screen.getByTestId('strike-mover-ladder-empty')).toHaveTextContent(
+      "No Classic GEX winners in the session's last 5 min (0DTE)",
+    );
+    expect(
+      screen.queryByTestId('strike-mover-ladder-row-6600'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the closed line of the Charm Clock under the label', () => {
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+    });
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    expect(screen.getByTestId('charm-clock-closed')).toBeInTheDocument();
   });
 });

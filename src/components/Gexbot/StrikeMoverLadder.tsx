@@ -13,6 +13,10 @@
  * snapshots-latest is intentionally NOT used here because its minute
  * cadence can lag the divider position by ~60 s during fast moves.
  *
+ * After the close the section hands in the snapshot's SPX spot as a fallback
+ * for a missing quote, and the capture time its header labels. The rows show
+ * only when this table's own capture is on that ET date.
+ *
  * Spec: docs/superpowers/specs/strike-mover-ladder-2026-05-19.md is
  * SUPERSEDED by P6 of docs/superpowers/specs/gexbot-refresh-2026-10-28.md.
  * The 05-19 spec describes the retired five-tab colour-matrix design.
@@ -21,6 +25,7 @@
 import { memo, useMemo, useState } from 'react';
 
 import { useGexbotData } from '../../hooks/useGexbotData';
+import { getETDateStr } from '../../utils/timezone';
 import {
   buildLadderRows,
   sortAndCapRows,
@@ -38,6 +43,18 @@ interface StrikeMoverLadderProps {
   marketOpen: boolean;
   /** SPX last price from Schwab via useMarketData in App.tsx. Null when unauth or pre-fetch. */
   spxSpot: number | null;
+  /**
+   * After the close: the capture time the section's header labels (its
+   * snapshots read). The ladder's own table can end on another session, so its
+   * rows show only when its capture falls on the same ET date. Null while that
+   * read is loading, failed or empty. Unused while the market is open.
+   */
+  sessionAsOf: string | null;
+  /**
+   * After the close: the SPX spot from the GEXBot snapshot, for when there is
+   * no Schwab quote. Unused while the market is open.
+   */
+  fallbackSpot: number | null;
 }
 
 /** Tooltip + accessible name for the N✓ badge on a ladder row. */
@@ -63,18 +80,41 @@ function formatSpot(spot: number): string {
   return `${sign}${Number.parseFloat(abs.toFixed(2)).toString()}`;
 }
 
+/** True when both capture times fall on one ET calendar date. */
+function sameEtDate(a: string | null, b: string | null): boolean {
+  return (
+    a != null &&
+    b != null &&
+    getETDateStr(new Date(a)) === getETDateStr(new Date(b))
+  );
+}
+
 function StrikeMoverLadderInner({
   marketOpen,
   spxSpot,
+  sessionAsOf,
+  fallbackSpot,
 }: StrikeMoverLadderProps) {
-  const { rows: rawRows, loading, error } = useGexbotData(SPEC, marketOpen);
+  const {
+    rows: rawRows,
+    loading,
+    error,
+    asOf,
+  } = useGexbotData(SPEC, marketOpen);
   const [activeTab, setActiveTab] = useState<ModelTab>('classic');
 
+  // After the close the Schwab quote may be gone, so the GEXBot snapshot's SPX
+  // spot anchors the ladder. The live session keeps the quote alone.
+  const spot = spxSpot ?? (marketOpen ? null : fallbackSpot);
+  // After the close this table and the section's header can end on different
+  // sessions: show these rows only under their own session's label.
+  const inHeaderSession = marketOpen || sameEtDate(asOf, sessionAsOf);
+
   const visibleRows = useMemo<AggregatedRow[]>(() => {
-    if (spxSpot == null) return [];
+    if (spot == null || !inHeaderSession) return [];
     const built = buildLadderRows(rawRows, activeTab);
-    return sortAndCapRows(built, spxSpot);
-  }, [rawRows, activeTab, spxSpot]);
+    return sortAndCapRows(built, spot);
+  }, [rawRows, activeTab, spot, inHeaderSession]);
 
   const maxAbsChange = useMemo(
     () => visibleRows.reduce((m, r) => Math.max(m, Math.abs(r.change)), 0),
@@ -108,6 +148,7 @@ function StrikeMoverLadderInner({
   }
 
   const hasRows = visibleRows.length > 0;
+  const emptyWindow = marketOpen ? 'last 5 min' : "the session's last 5 min";
 
   return (
     <div
@@ -117,7 +158,7 @@ function StrikeMoverLadderInner({
       <div className="flex items-baseline justify-between border-b border-white/5 px-3 py-2">
         <span className="text-tertiary text-[10px] tracking-wide uppercase">
           Strike Movers — SPX 0DTE GEX
-          {spxSpot != null && ` · spot ${formatSpot(spxSpot)}`}
+          {spot != null && ` · spot ${formatSpot(spot)}`}
         </span>
       </div>
 
@@ -149,7 +190,7 @@ function StrikeMoverLadderInner({
       {hasRows ? (
         <LadderBody
           rows={visibleRows}
-          spot={spxSpot!}
+          spot={spot!}
           maxAbsChange={maxAbsChange}
         />
       ) : (
@@ -159,7 +200,7 @@ function StrikeMoverLadderInner({
           data-testid="strike-mover-ladder-empty"
           className="text-tertiary px-3 py-3 text-xs"
         >
-          No {MODEL_LABEL[activeTab]} winners in last 5 min (0DTE)
+          No {MODEL_LABEL[activeTab]} winners in {emptyWindow} (0DTE)
         </div>
       )}
     </div>
