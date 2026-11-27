@@ -17,9 +17,11 @@
  * even when it is archived and older than yesterday (the Monday sweep, with
  * Friday archived on Saturday). An empty table has no newest session.
  *
- * A table whose gate or DELETE fails is recorded by name (with the rows it
- * removed before failing); the other table is still processed, then the run
- * throws so it is never reported success. A table skipped because the wall
+ * A table whose gate or DELETE fails, or whose `newest_cutoff` is not a date
+ * (a query that no longer returns what this code expects: nothing is deleted
+ * from that table), is recorded by name (with the rows it removed before
+ * failing); the other table is still processed, then the run throws so it is
+ * never reported success. A table skipped because the wall
  * budget ran out is reported in `skippedTables` and makes the run 'partial'.
  *
  * Mirrors `cleanup-ws-option-trades.ts` for batching + wall-budget

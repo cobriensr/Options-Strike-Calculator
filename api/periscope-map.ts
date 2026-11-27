@@ -117,9 +117,11 @@ async function fetchLatestGexbotSlot(
   bound: PanelBound | null,
 ): Promise<PeriscopeSlot | null> {
   const sql = getDb();
-  const stalenessCutoff = new Date(
-    Date.now() - STALENESS_CUTOFF_MS,
-  ).toISOString();
+  // Only an in-session read has a staleness floor (see the doc above).
+  const stalenessCutoff =
+    bound == null
+      ? new Date(Date.now() - STALENESS_CUTOFF_MS).toISOString()
+      : null;
 
   const panelRows: Record<PanelName, PeriscopeRow[] | null> = {
     gamma: null,
@@ -191,6 +193,13 @@ async function fetchLatestGexbotSlot(
  * (latest - PRIOR_LOOKBACK_MIN). Used as the "prior slice" for
  * sign-flip detection. Returns null if no qualifying rows exist
  * (e.g. cron just started for the day).
+ *
+ * The window is 10 to 30 minutes before `latestCapturedAt`
+ * (PRIOR_LOOKBACK_MIN to PRIOR_LOOKBACK_FLOOR_MIN) and has no ET-midnight lower
+ * bound of its own. It cannot reach the previous session only because captures
+ * land in regular trading hours: a latest capture is hours past midnight, so
+ * the whole window stays inside the same ET day. A capture stamped within 30
+ * minutes of ET midnight would pull in the evening before.
  */
 async function fetchPriorGexbotSlot(
   date: string,
@@ -226,7 +235,7 @@ async function fetchPriorGexbotSlot(
         ORDER BY captured_at DESC
         LIMIT 1
       `,
-    )) as { captured_at: Date | string; raw_response: unknown }[];
+    )) as CaptureRow[];
 
     if (rows.length === 0) return null;
     const row = rows[0]!;
