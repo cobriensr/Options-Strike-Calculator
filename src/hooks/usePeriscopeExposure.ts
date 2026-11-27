@@ -49,6 +49,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import {
   asOfFrom,
+  HttpStatusError,
   isCarriedOver,
   isTransientStatus,
 } from '../utils/closed-session';
@@ -117,18 +118,6 @@ interface StoredExposure {
 interface ExposureState {
   stored: StoredExposure | null;
   error: string | null;
-}
-
-/**
- * A non-2xx answer. It carries the status so the failure handler can tell a
- * retryable failure (5xx, 408, 429) from a refused request, instead of
- * matching the message.
- */
-class PeriscopeHttpError extends Error {
-  constructor(public status: number) {
-    super(`HTTP ${status}`);
-    this.name = 'PeriscopeHttpError';
-  }
 }
 
 /**
@@ -244,7 +233,7 @@ export function usePeriscopeExposure({
         : '/api/periscope-exposure';
       const url = qs ? `${baseRoute}?${qs}` : baseRoute;
       const res = await fetch(url, { method: 'GET', signal: ctrl.signal });
-      if (!res.ok) throw new PeriscopeHttpError(res.status);
+      if (!res.ok) throw new HttpStatusError(res.status);
       const body = (await res.json()) as PeriscopeExposureResponse;
       if (!mountedRef.current || ctrl.signal.aborted) return 'ok';
       setState({ stored: toStored(body, isLive), error: null });
@@ -254,7 +243,7 @@ export function usePeriscopeExposure({
       if (ctrl.signal.aborted) return 'ok';
       // A thrown HTTP status says whether another try can help; anything else
       // (no response, a body that is not JSON) counts as 0, which does.
-      const status = err instanceof PeriscopeHttpError ? err.status : 0;
+      const status = err instanceof HttpStatusError ? err.status : 0;
       if (mountedRef.current) {
         const message = getErrorMessage(err);
         // After the close polling is off, so an error would stay up all

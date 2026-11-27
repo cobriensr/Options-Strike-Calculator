@@ -51,6 +51,7 @@ import { POLL_INTERVALS } from '../constants';
 import { getAccessMode } from '../utils/auth';
 import {
   asOfFrom,
+  HttpStatusError,
   isCarriedOver,
   isTransientStatus,
 } from '../utils/closed-session';
@@ -336,18 +337,6 @@ function deriveLandscape(resp: GexLandscapeResponse | null): DerivedLandscape {
 }
 
 /**
- * A non-2xx answer. It carries the status so the failure handler can tell a
- * retryable failure (5xx, 408, 429) from a refused request, instead of
- * matching the message.
- */
-class GexLandscapeHttpError extends Error {
-  constructor(public status: number) {
-    super(`gex-landscape: HTTP ${status}`);
-    this.name = 'GexLandscapeHttpError';
-  }
-}
-
-/**
  * The parsed body with the fields the hook reads checked. The body is an
  * unchecked cast, so a wrong type would otherwise reach the carried-over check
  * and the stall age: an `asOf` that is no ISO timestamp reads as none
@@ -390,7 +379,7 @@ async function fetchGexLandscape(
   });
   if (!res.ok) {
     if (res.status === 401) return null;
-    throw new GexLandscapeHttpError(res.status);
+    throw new HttpStatusError(res.status, 'gex-landscape');
   }
   return {
     body: checkBody((await res.json()) as GexLandscapeResponse),
@@ -469,7 +458,7 @@ export function useGexLandscapeData(
       // A thrown HTTP status says whether another try can help; anything else
       // (no response, a timeout, a body that is not JSON) counts as 0, which
       // does.
-      const status = err instanceof GexLandscapeHttpError ? err.status : 0;
+      const status = err instanceof HttpStatusError ? err.status : 0;
       if (mountedRef.current) {
         const message = getErrorMessage(err);
         // After the close polling is off, so an error would stay up all

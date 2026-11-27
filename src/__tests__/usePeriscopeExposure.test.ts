@@ -908,7 +908,7 @@ describe('usePeriscopeExposure: the open flip', () => {
     expect(mockFetch.mock.calls[2]![0]).toBe('/api/periscope-map?spot=6005');
   });
 
-  it('shows the error over the held view when the read at the open fails, and starts no retry series: the poll is the retry', async () => {
+  it('shows the error when the read at the open fails, and starts no retry series: the poll is the retry', async () => {
     fakeClock(MON_BEFORE_OPEN);
     mockFetchSequence(
       answerWith(closedBody()),
