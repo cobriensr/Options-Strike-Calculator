@@ -76,6 +76,17 @@ function etInstantMs(etDate: string, etMinutes: number): number | null {
  * stays right across a DST change. If a conversion ever yields no instant (an
  * ET date that does not parse, which the formatter cannot produce), nothing is
  * cached.
+ *
+ * A closed response answered inside the session itself, from the cash open up
+ * to the close on a trading day, is cached `0` + `0` as well. A handler decides
+ * the market is closed, then reads the database; if that read runs past 09:30
+ * ET, `now` (taken after it) is already in the session, and the next-open rule
+ * above would give the response a life of up to 360 s, answering live polls
+ * with the closed body. Even so, a closed response can outlive 09:30 by up to
+ * one query's duration: the edge counts a response's life from when it was
+ * sent, and one sent at 09:29:59.9 is good until it expires. The client's
+ * carried-over drop (`isCarriedOver`) covers that: a body captured before the
+ * open is not shown once the market is open.
  */
 export function closedCacheSeconds(now: Date): ClosedCache {
   const nowMs = now.getTime();
@@ -83,14 +94,24 @@ export function closedCacheSeconds(now: Date): ClosedCache {
 
   // getMarketCloseHourET alone returns 16 on a weekend, so ask isTradingDay.
   const closeHour = isTradingDay(etDate) ? getMarketCloseHourET(etDate) : null;
+  let closeMs: number | null = null;
   if (closeHour !== null) {
-    const closeMs = etInstantMs(etDate, closeHour * 60);
+    closeMs = etInstantMs(etDate, closeHour * 60);
     if (closeMs === null) return { edgeSec: 0, swr: 0 };
     const finalFetchMs = closeMs + CLOSED_FINAL_FETCH_OFFSET_MIN * 60_000;
     if (nowMs >= closeMs && nowMs < finalFetchMs) return { edgeSec: 0, swr: 0 };
   }
 
   let openMs = etInstantMs(etDate, CASH_OPEN_MIN_ET);
+  // The open race: inside the session of a trading day, cache nothing.
+  if (
+    closeMs !== null &&
+    openMs !== null &&
+    nowMs >= openMs &&
+    nowMs < closeMs
+  ) {
+    return { edgeSec: 0, swr: 0 };
+  }
   if (openMs !== null && nowMs >= openMs) {
     // The next ET calendar day. UTC noon plus 24 h never crosses a DST edge.
     const tomorrow = new Date(Date.parse(`${etDate}T12:00:00Z`) + 86_400_000)
@@ -108,12 +129,11 @@ export function closedCacheSeconds(now: Date): ClosedCache {
 /**
  * Edge-cache headers for a closed-market response (the live route's data
  * served after the cash close): see `closedCacheSeconds`. `setLiveReadCache`
- * keeps its own rule for the readers that call it.
+ * keeps its own rule for the readers that call it. `now` is the instant the
+ * handler took after its reads, so a response that ran into the session is
+ * seen as one.
  */
-export function setClosedReadCache(
-  res: VercelResponse,
-  now: Date = new Date(),
-): void {
+export function setClosedReadCache(res: VercelResponse, now: Date): void {
   const { edgeSec, swr } = closedCacheSeconds(now);
   setCacheHeaders(res, edgeSec, swr);
 }

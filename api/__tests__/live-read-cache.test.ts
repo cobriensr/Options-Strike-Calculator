@@ -88,13 +88,12 @@ describe('closedCacheSeconds', () => {
 
   // The edges of each window, to the millisecond.
   it.each([
-    // Close window start is inclusive.
-    ['2026-11-20T20:59:59.999Z', 300, 60], // 1 ms before the Fri close
+    // The close window runs from the close instant, inclusive. (1 ms before it
+    // is in session, which caches nothing either: see the open race below.)
     ['2026-11-20T21:00:00.000Z', 0, 0], // the close instant
     // Close window end is exclusive.
     ['2026-11-20T21:02:59.999Z', 0, 0], // 1 ms before close + 3 min
     // The half day closes at 13:00 ET, and its window follows.
-    ['2026-11-27T17:59:59.999Z', 300, 60], // 1 ms before the 13:00 close
     ['2026-11-27T18:00:00.000Z', 0, 0],
     ['2026-11-27T18:02:59.999Z', 0, 0],
     ['2026-11-27T18:03:00.000Z', 300, 60], // 13:03 ET, the final fetch
@@ -107,16 +106,39 @@ describe('closedCacheSeconds', () => {
     // Whole seconds to the open, rounded down.
     ['2026-11-23T14:24:01Z', 300, 59], // 359 s to open
     ['2026-11-23T14:29:59.500Z', 0, 0], // 0.5 s to open
-    // At the open instant the open has happened; the next one is tomorrow's.
-    ['2026-11-23T14:30:00.000Z', 300, 60],
+    // Off a trading day the open has no session behind it: at 09:30 on a
+    // weekend or a holiday the next open is tomorrow's, and the life is full.
+    ['2026-11-21T14:30:00.000Z', 300, 60], // Saturday 09:30 ET
+    ['2026-11-26T15:00:00.000Z', 300, 60], // Thanksgiving 10:00 ET
   ])('edge: closedCacheSeconds(%s) = %i / %i', (iso, edge, swr) => {
+    expect(closedCacheSeconds(new Date(iso))).toEqual({ edgeSec: edge, swr });
+  });
+
+  // The open race. A handler decides the market is closed, then reads the
+  // database; if that read runs past 09:30 ET, `now` (taken after it) lands in
+  // the session. A closed response must not be cached there: it would answer
+  // live polls from the edge for up to 300 s. Nothing is cached from the cash
+  // open to the close on a trading day, the half day's 13:00 close included.
+  it.each([
+    ['2026-11-23T14:30:00.000Z', 0, 0], // the open instant
+    ['2026-11-23T14:30:00.001Z', 0, 0], // 1 ms into the session
+    ['2026-11-23T17:00:00Z', 0, 0], // mid-session
+    ['2026-11-20T20:59:59.999Z', 0, 0], // 1 ms before the Friday close
+    ['2026-11-27T17:59:59.999Z', 0, 0], // 1 ms before the half day's close
+    ['2026-11-27T14:30:00.001Z', 0, 0], // the half day, 1 ms into the session
+    ['2027-03-15T13:30:00.001Z', 0, 0], // Mon 09:30:00.001 EDT
+  ])('open race: closedCacheSeconds(%s) = %i / %i', (iso, edge, swr) => {
     expect(closedCacheSeconds(new Date(iso))).toEqual({ edgeSec: edge, swr });
   });
 
   // The ET date always converts, so a null from the conversion cannot happen
   // in practice. If it does, the helper caches nothing rather than computing
-  // a NaN life: each of the three conversions a Friday-noon call makes (the
-  // close, today's open, tomorrow's open) is nulled in turn.
+  // a NaN life: each of the three conversions a Friday evening call makes is
+  // nulled in turn. The test leans on the order `closedCacheSeconds` converts
+  // in: the close (call 1), today's open (call 2), then tomorrow's open
+  // (call 3). Reorder the helper and these rows null a different instant. The
+  // instant is after the close window, so all three conversions run: earlier,
+  // the close window or the open race returns before the third.
   it.each([1, 2, 3])(
     'caches nothing when conversion call %i has no instant',
     async (nulled) => {
@@ -128,10 +150,13 @@ describe('closedCacheSeconds', () => {
           call === nulled ? () => null : real.etWallClockToUtcIso,
         );
       }
-      expect(closedCacheSeconds(new Date('2026-11-20T17:00:00Z'))).toEqual({
+      // Fri 17:00 ET: past the close window, and tomorrow's open is Saturday's.
+      expect(closedCacheSeconds(new Date('2026-11-20T22:00:00Z'))).toEqual({
         edgeSec: 0,
         swr: 0,
       });
+      // It stopped at the conversion that answered null.
+      expect(etWallClockToUtcIso).toHaveBeenCalledTimes(nulled);
     },
   );
 });
@@ -148,14 +173,9 @@ describe('setClosedReadCache', () => {
     expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, 120, 0);
   });
 
-  it('reads the clock when no instant is given', () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    try {
-      vi.setSystemTime(new Date('2026-11-20T21:01:30Z'));
-      setClosedReadCache(res);
-      expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, 0, 0);
-    } finally {
-      vi.useRealTimers();
-    }
+  it('sends nothing cacheable for a closed response answered in the session', () => {
+    setClosedReadCache(res, new Date('2026-11-23T14:30:00.001Z'));
+    expect(mockSetCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, 0, 0);
   });
 });
