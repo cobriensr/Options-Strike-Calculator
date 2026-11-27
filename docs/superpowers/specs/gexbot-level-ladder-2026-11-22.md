@@ -7,7 +7,10 @@ author-side findings are settled in this text (see "Review, 2026-11-25" at
 the end). The owner answered every open question on 2026-11-26 (see "Owner
 decisions, 2026-11-26"); that changed phase 4's design. The second and last
 review ran on 2026-11-26 and its findings are settled too ("Review,
-2026-11-26").
+2026-11-26"). Later that day the owner changed open question 2: a short
+strike's odds now come from the price of a narrow vertical spread at the
+strike, built from GEXBot's per-strike IVs, with the ATM σ as the fallback.
+That added phases 2b and 2c.
 
 **Depends on:** `gexbot-expected-move-net-vanna-2026-11-20.md`, landed
 2026-11-25 (`4dd9d5857`..`e10448627`). Phases 2 to 4 read its
@@ -100,6 +103,8 @@ endpoint or view. Phase 4a adds a read-only mode to the existing
 | 1a    | Six level columns on the existing `snapshots-latest` view (server) | Small: 1 source file, 1 test file                  |
 | 1b    | The client's mirrored row type, and the fixtures it types          | Small: 1 source file, 4 test fixtures              |
 | 2     | Pure ladder model and odds in `level-ladder/`                      | Medium: 3 source files, 2 test files               |
+| 2b    | Per-strike IVs on the existing `expected-move` view (server)       | Small: 1 source file, 1 test file                  |
+| 2c    | The client's mirrored row type, and the fixtures it types          | Small: 1 source file, 2 or 3 test fixtures         |
 | 3a    | `LevelLadder` component, mounted, with the calculator's candidates | Medium: 1 new component, 2 modified files, 2 tests |
 | 3b    | The ladder in the narrow-screen e2e check                          | Small: 1 e2e file                                  |
 | 4a    | Read-only `GET /api/positions?readonly=1`, CSV first (server)      | Small: 2 modified files, 3 tests (1 new)           |
@@ -111,6 +116,11 @@ two commits on one branch. 1a ships alone: the server sends six more JSON
 fields that the client type does not declare yet, which is harmless. 1b
 declares them, and every fixture typed `SnapshotsLatestRow` is a full literal,
 so all four need the six fields.
+
+Phases 2b and 2c split the expected move's strike IVs the same way. Phase 2
+takes the strike IVs as a separate input (`strikeIvs`, null when none), so it
+does not wait for them, and it falls back to the ATM σ without them. 2b and 2c
+land before phase 3a, which passes the view's `strikeIvs` in.
 
 ## Files
 
@@ -141,6 +151,26 @@ Phase 2:
 - Create `src/components/Gexbot/level-ladder/build.ts`
 - Create `src/__tests__/level-ladder.odds.test.ts`
 - Create `src/__tests__/level-ladder.build.test.ts`
+
+Phase 2b:
+
+- Modify `api/_lib/gexbot-queries.ts`: the server's `ExpectedMoveRow` gains
+  `strikeIvs`, the `decodeStrikeIvs(payload)` array `getExpectedMove`
+  already builds for `computeExpectedMove`, sent as is. That is every strike
+  in the capture: 97 to 101 rows spanning about ±250 pts of spot on
+  2026-11-25, about 4.5 KB a poll. Sending the whole chain covers every short
+  strike the ladder can list, including those in `above` and `below`.
+- Tests: `api/__tests__/gexbot-queries.test.ts`.
+
+Phase 2c:
+
+- Modify `src/hooks/useGexbotData.ts`: the mirrored `ExpectedMoveRow` gains
+  `strikeIvs: { strike: number; callIv: number | null; putIv: number | null }[]`,
+  required, since the server always sends it.
+- Modify the fixtures typed `ExpectedMoveRow`:
+  `src/__tests__/ExpectedMoveTile.test.tsx`, and the phase 2 tests that
+  build one (`level-ladder.build.test.ts`, and `level-ladder.odds.test.ts`
+  if it does).
 
 Phase 3a:
 
@@ -207,10 +237,16 @@ None new.
 - **σ:** the SPX row of `/api/gexbot?view=expected-move`: `expectedMove`,
   `dteFraction`, `asOf`, `unavailable` and `spot`. The ladder draws its band at
   its own spot ± E (see "Odds and status"), not at the row's `lower` and
-  `upper`, which are centred on GEXBot's spot. One spot then drives the band,
-  the σ and the status, so a strike can't read "tested" while it sits outside
-  the band on the same screen. `ExpectedMoveTile` keeps GEXBot's centre, so
-  the two ranges can differ by the spot lag.
+  `upper`, which are centred on GEXBot's spot. One spot then drives the band
+  and the odds. `ExpectedMoveTile` keeps GEXBot's centre, so the two ranges
+  can differ by the spot lag.
+- **Strike IVs (phase 2b):** the same row's `strikeIvs`, the call and put IV
+  GEXBot sends for every strike in the capture the move is computed from. The
+  odds price each short strike from them (see "Odds and status"). Because the
+  band is the ATM move and the odds use each strike's own IVs, a short put
+  can read "watch" just outside the −1σ line when the skew prices it that
+  way. That is intended: the band is GEXBot's move, the status is the
+  strike's own priced chance.
 - **Spot:** the existing `spxSpot` prop (Schwab), as `StrikeMoverLadder` uses,
   while it is fresh. The GEXBot snapshot's own spot can lag by a minute.
   While the market is open, a Schwab quote counts only when it is not stale
@@ -245,7 +281,8 @@ None new.
 ## Ladder rules
 
 `buildLevelLadder(input)` is pure: no clock, no fetch. Input: `spot`, the SPX
-snapshot row, the SPX expected-move row, `levelsFailed` and
+snapshot row, the SPX expected-move row, its `strikeIvs` (a separate input,
+null when none), `levelsFailed` and
 `expectedMoveFailed`, the short strikes, `nowMs`, `marketOpen`. Output:
 `result` (status and sentence), `rows` (top to bottom, each a strike entry or
 a marker entry), `above` and `below` (what fell outside the window), `levels`
@@ -323,29 +360,68 @@ Ids are the ladder's own, chosen to match the planned study's tags.
 
 ### Odds and status
 
-`odds.ts`, pure. For a short strike `K`, the ladder's spot `S` and `E`, one
-standard deviation to expiry in points:
+`odds.ts`, pure. For a short strike `K` and the ladder's spot `S`, with
+`distance = K − S` for a call and `S − K` for a put:
 
-- `E` is the expected-move row's `expectedMove` carried forward to now:
-  `E_row × √(T_now ÷ T_row)`, where `T_row` is the row's `dteFraction` (days)
-  and `T_now = T_row − (nowMs − asOf) ÷ 86,400,000`. The row is sized at the
-  vendor's stamp, which can be a couple of minutes old, and that overstates `E`
-  near the close: a 2-minute-old row with 5 minutes left is about 18% too wide
-  (√(7 ÷ 5)). `T_now` ≤ 0 means no odds.
-- `sigmaAway = (K − S) / E` for a call and `(S − K) / E` for a put
-- `finishBeyond = normalCDF(−sigmaAway)`
+- `T_now`, the time left in days, is the expected-move row's `dteFraction`
+  carried forward to now: `T_now = T_row − (nowMs − asOf) ÷ 86,400,000`,
+  where `T_row` is the row's `dteFraction`. Elapsed time below 0 (a row
+  stamped after `nowMs`) counts as 0. `T_now` ≤ 0 means no odds.
+- `E`, one ATM standard deviation to expiry in points, is the row's
+  `expectedMove` carried forward the same way: `E_row × √(T_now ÷ T_row)`.
+  The row is sized at the vendor's stamp, which can be a couple of minutes
+  old, and that overstates `E` near the close: a 2-minute-old row with 5
+  minutes left is about 18% too wide (√(7 ÷ 5)). `E` draws the band and is
+  the fallback below.
+- **The priced chance of finishing beyond `K`** (owner, 2026-11-26) is what
+  a narrow vertical spread at `K` costs, divided by its width: the market's
+  own price for "SPX finishes past `K`". With `h = DEFAULTS.STRIKE_INCREMENT`
+  (5), and each strike priced at its own IV:
+  - `n(k) = S × IV(k) × √(T_now ÷ 365)`, in points. `IV(k)` is strike `k`'s
+    put IV for a short put and its call IV for a short call, from
+    `strikeIvs`, whichever side of spot `K` is on.
+  - Normal-model (Bachelier) prices, with `Φ` = `normalCDF` and `φ` =
+    `normalPDF` from `black-scholes.ts`: put
+    `P(k) = (k − S)·Φ(d) + n(k)·φ(d)` with `d = (k − S) ÷ n(k)`; call
+    `C(k) = (S − k)·Φ(x) + n(k)·φ(x)` with `x = (S − k) ÷ n(k)`.
+  - Short put: `finishBeyond = (P(K + h) − P(K − h)) ÷ 2h`. Short call:
+    `finishBeyond = (C(K − h) − C(K + h)) ÷ 2h`.
+  - With every IV equal, this is the ATM formula below, to within the finite
+    difference.
+- Why not put the strike's own IV into the ATM formula: downside IV is
+  higher, but it also falls as the strike rises toward spot, and that slope
+  takes most of the extra back. Measured over 370 minutes of 2026-11-25
+  (08:35 to 14:45 CT, strikes 1.28 ATM σ out), the mean finish beyond, put
+  and call: ATM σ 9.3% and 9.3%; the strike's own IV 11.2% and 10.6%; the
+  spread price 9.0% and 8.7%. The strike's own IV read the put "not clear"
+  in 132 of the 370 minutes, the spread price in 2. One day, the only one
+  still in the raw captures.
+- **Fallback, the ATM σ:** `finishBeyond = normalCDF(−distance ÷ E)`. Used
+  when `strikeIvs` is null or empty, either neighbour (`K − h` or `K + h`)
+  has no IV on the needed side, or the spread result is not finite or not
+  strictly between 0 and 1. Each short strike records which was used
+  (`oddsSource: 'spread' | 'atm'`). The panel prints nothing about it.
+- `sigmaAway = −Φ⁻¹(finishBeyond)`: the σ whose normal tail equals the
+  priced chance, so the printed σ and the printed odds always agree. On the
+  fallback it equals `distance ÷ E`. `Φ⁻¹` is new in `odds.ts` (the repo has
+  none): a rational approximation refined against `normalCDF`, so the round
+  trip agrees with the same `Φ` the odds use.
 - `touch = min(1, 2 × finishBeyond)`
 
-| Status     | Condition               | At the boundary          |
-| ---------- | ----------------------- | ------------------------ |
-| `clear`    | `sigmaAway` ≥ 1.2       | touch 23%, finish 12%    |
-| `watch`    | 1.0 ≤ `sigmaAway` < 1.2 | touch 32%, finish 16%    |
-| `tested`   | 0 < `sigmaAway` < 1     | the strike is inside ±1σ |
-| `breached` | `sigmaAway` ≤ 0         | spot is at or past it    |
+| Status     | Condition                               | At the boundary       |
+| ---------- | --------------------------------------- | --------------------- |
+| `clear`    | `sigmaAway` ≥ 1.2                       | touch 23%, finish 12% |
+| `watch`    | 1.0 ≤ `sigmaAway` < 1.2                 | touch 32%, finish 16% |
+| `tested`   | `sigmaAway` < 1, and `distance` > 0     | priced inside ±1σ     |
+| `breached` | `distance` ≤ 0                          | spot is at or past it |
 
-- These are the odds options are pricing through GEXBot's expected move, on
-  a normal curve with no skew. They are not an edge and not a forecast. The
-  panel says "priced" every time it prints one.
+- Breached is decided by spot's position, not by σ. A strike spot has not
+  reached whose priced chance is 50% or more (`sigmaAway` ≤ 0, possible
+  within a point or two of spot under a skew) is `tested` and prints
+  "0.00σ".
+- These are the odds the options are pricing, from GEXBot's IVs. They are
+  not an edge and not a forecast. The panel says "priced" every time it
+  prints one.
 - With no usable expected move there are no odds and no status. That covers
   `unavailable` set, an empty view (pre-open and the first minutes after the
   open), a failed view (`expectedMoveFailed`), a held row whose `asOf` is
@@ -584,13 +660,39 @@ holds SPX spreads.
 `api/__tests__/gexbot-queries.test.ts`:
 
 - The six fields map from their columns; null stays null.
+- Phase 2b: `getExpectedMove` returns `strikeIvs` as decoded, a strike with
+  no IV on one side keeping `null` there; a capture with no `mini_contracts`
+  gives `strikeIvs: []`; a capture whose move is `unavailable` still sends
+  its `strikeIvs`.
 
 `src/__tests__/level-ladder.odds.test.ts`, as input/output tables:
 
-- Known points: 1.0σ gives finish 15.9% and touch 31.7%; 1.28σ gives 10.0%
-  and 20.1%; 0.5σ gives 30.9% and 61.7%; 2.0σ gives 2.3% and 4.6%.
-- Call and put sides give the same odds at the same distance.
-- Status at 1.2, just under 1.2, 1.0, just under 1.0, 0 and below 0.
+- Known points on the ATM fallback: 1.0σ gives finish 15.9% and touch
+  31.7%; 1.28σ gives 10.0% and 20.1%; 0.5σ gives 30.9% and 61.7%; 2.0σ
+  gives 2.3% and 4.6%.
+- Spread price, flat smile: every IV equal to the ATM IV gives the
+  fallback's finish to within 0.1 point at 1.0σ and at 1.28σ, with
+  `oddsSource: 'spread'`.
+- Spread price, a real smile (the 2026-11-25 16:00:09Z capture, 10:00 CT:
+  spot 7,004.43, 5 h left, so `dteFraction` 0.2083): a short put at 6,905
+  from put IVs 0.522 at 6,900 and 0.514 at 6,910 gives finish beyond about
+  9.8%, where that strike's own put IV (0.518) in the ATM formula would give
+  12.6%; a short call at 7,100 from call IVs 0.465 at 7,095 and 0.469 at
+  7,105 gives about 9.8%. These were worked by hand; assert within 0.3
+  point.
+- Fallback: `strikeIvs` null, a missing neighbour IV on the needed side
+  (the other side's IV present), and a spread result outside (0, 1) from
+  crafted IVs each use the ATM σ, with `oddsSource: 'atm'`.
+- `Φ⁻¹`: 0.5 gives 0; 0.1 gives −1.2816 to 4 decimals; `normalCDF(Φ⁻¹(p))`
+  returns `p` to within 1e-8 from `p` = 1e-6 to 1 − 1e-6.
+- `sigmaAway` and the printed odds agree: `normalCDF(−sigmaAway)` equals
+  `finishBeyond` on both sources.
+- Call and put sides give the same odds at the same distance, on the
+  fallback and with a symmetric flat smile.
+- Status from `sigmaAway` at 1.2, just under 1.2, 1.0 and just under 1.0;
+  `breached` from spot's position: spot at the strike and past it are
+  `breached`; a strike spot has not reached with a priced chance over 50% is
+  `tested` and prints "0.00σ".
 - Touch never exceeds 1.
 - A null or non-positive expected move gives no odds and no status.
 - Carry-forward: a row stamped with 7 min left, read 2 min later, gives
@@ -616,6 +718,9 @@ holds SPX spreads.
 - Short strikes: candidates from `allDeltas`; `allDeltas` null; an error row
   at 10Δ; open legs hide candidates; two open short calls use the nearer one
   in the result.
+- Strike IVs: with `strikeIvs` a short strike's odds come from the spread
+  price (`oddsSource: 'spread'`); with `strikeIvs` null from the ATM σ; the
+  band is the ATM move either way.
 - Result line: both clear; one side on watch; one side tested; breached; a
   tie on the worst status; one side only; no short strikes, with and without
   levels; no usable expected move; market closed. Each asserted as the full
@@ -712,8 +817,8 @@ Postgres and not by a mock:
 ## Open questions (default picks)
 
 All nine were settled by the owner on 2026-11-26: question 4 as option A with
-the CSV shown, every other question at its default. They stay here with their
-reasoning.
+the CSV shown, question 2 changed later that day to the spread price, every
+other question at its default. They stay here with their reasoning.
 
 1. **Status thresholds.** Default: clear at 1.2σ, tested inside 1σ. These are
    a first guess with nothing measured behind them. A 10Δ strike is 1.28σ out
@@ -724,9 +829,13 @@ reasoning.
    guesses for now.** The constants' doc comment says they are unmeasured;
    the panel prints no extra text about it.
 2. **Odds model.** Default: one σ for both sides, from GEXBot's smoothed ATM
-   IV. It ignores skew, so it understates the put side. Alternatives: the
-   strike's own IV from the state ladder (`decodeStrikeIvs` already decodes
-   it), or the calculator's kurtosis factors (`getKurtosisFactor`).
+   IV. It ignores skew. Alternatives: the strike's own IV from the state
+   ladder (`decodeStrikeIvs` already decodes it), or the calculator's
+   kurtosis factors (`getKurtosisFactor`). **Owner 2026-11-26: the spread
+   price, with the ATM σ as its fallback** (see "Odds and status"). The
+   owner first chose the strike's own IV; measured on 2026-11-25 it read
+   both sides riskier than the market priced them, so the owner took the
+   spread price instead.
 3. **Candidates while a position is open.** Default: hidden. Alternative:
    shown in a lighter chip for adding a second spread.
 4. **Positions polling, and the saved rows.** Owner, from the review. Each
@@ -778,7 +887,8 @@ reasoning.
   bounds a direct database read at fire time.
 - `LADDER_POSITIONS_POLL_MS = 60_000` (owner, 2026-11-26: every minute,
   read-only)
-- Strike step: `DEFAULTS.STRIKE_INCREMENT` (5), existing.
+- Strike step: `DEFAULTS.STRIKE_INCREMENT` (5), existing. The odds' spread
+  is two steps wide (10 pts), centred on the short strike.
 - Staleness re-check: `useNow(30_000)` from `session-clock.ts` while the
   market is open, so a stalled feed ages out without a new poll.
 - GEXBot polling: unchanged, the hook's 30 s. Odds recompute on every spot
@@ -838,7 +948,13 @@ Settled here by the author:
   saved row (this replaces the 2026-11-25 "spot from a ref" note). It polls
   every minute.
 - Question 1: keep the guessed thresholds for now.
-- Questions 2, 3 and 5 to 9: the defaults.
+- Questions 3 and 5 to 9: the defaults.
+- Question 2, changed later on 2026-11-26: a short strike's priced odds are
+  the price of a 10-wide vertical spread centred on it, from GEXBot's
+  per-strike IVs, with the ATM σ as the fallback. The owner first said yes
+  to the strike's own IV in the ATM formula, then chose the spread price
+  after the 2026-11-25 comparison under "Odds and status". That adds phases
+  2b (the view sends `strikeIvs`) and 2c (the client type and fixtures).
 
 ## Review, 2026-11-26
 
