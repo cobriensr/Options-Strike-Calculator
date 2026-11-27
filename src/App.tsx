@@ -1328,6 +1328,9 @@ export default function StrikeCalculator() {
               <GexbotSection
                 marketOpen={liveMarketOpen}
                 spxSpot={market.data.quotes?.spx?.price ?? null}
+                allDeltas={backtestMode ? null : (results?.allDeltas ?? null)}
+                quotesFetchedAt={market.quotesFetchedAt}
+                session={market.session}
               />
             </GatedSection>
           ),
@@ -1515,6 +1518,7 @@ export default function StrikeCalculator() {
       ]),
     [
       analysisContext,
+      backtestMode,
       breakevenTarget,
       bwbNarrowWidth,
       bwbWideMultiplier,

@@ -2,8 +2,13 @@ import '@testing-library/jest-dom';
 import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 
-import type { GexbotView, SnapshotsLatestRow } from '../hooks/useGexbotData';
+import type {
+  ExpectedMoveRow,
+  GexbotView,
+  SnapshotsLatestRow,
+} from '../hooks/useGexbotData';
 import type { PeriscopeView } from '../hooks/usePeriscopeExposure';
+import type { DeltaRow, DeltaRowError } from '../types';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -22,6 +27,21 @@ import { ScrubControls } from '../components/ScrubControls';
 import { dealerClaims } from './helpers/dealer-claims';
 import { makeWinner } from './helpers/makeWinner';
 
+/**
+ * The section's props beyond `marketOpen` and `spxSpot` for the tests that
+ * don't care about the ladder's inputs: no calculator rows, no quote fetched.
+ */
+const LIVE = {
+  allDeltas: null,
+  quotesFetchedAt: null,
+  session: 'regular',
+} as const;
+const CLOSED = {
+  allDeltas: null,
+  quotesFetchedAt: null,
+  session: 'closed',
+} as const;
+
 describe('<GexbotSection>', () => {
   beforeEach(() => {
     mockUseGexbotData.mockReset();
@@ -34,25 +54,29 @@ describe('<GexbotSection>', () => {
   });
 
   it('renders without crashing with marketOpen=true', () => {
-    const { container } = render(<GexbotSection marketOpen spxSpot={6750} />);
+    const { container } = render(
+      <GexbotSection {...LIVE} marketOpen spxSpot={6750} />,
+    );
     expect(container.firstChild).not.toBeNull();
   });
 
   it('renders without crashing with marketOpen=false', () => {
     const { container } = render(
-      <GexbotSection marketOpen={false} spxSpot={null} />,
+      <GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />,
     );
     expect(container.firstChild).not.toBeNull();
   });
 
   it('shows the source-honest section label', () => {
-    render(<GexbotSection marketOpen spxSpot={6750} />);
+    render(<GexbotSection {...LIVE} marketOpen spxSpot={6750} />);
     expect(screen.getAllByText(/GEXBot Taker Flow/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Dealer State/i)).toBeNull();
   });
 
   it('footer names the 14 underlyings and makes no dealer claims', () => {
-    const { container } = render(<GexbotSection marketOpen spxSpot={6750} />);
+    const { container } = render(
+      <GexbotSection {...LIVE} marketOpen spxSpot={6750} />,
+    );
     const footer = container.querySelector('p');
     expect(footer).toHaveTextContent('14 underlyings');
     expect(dealerClaims(footer?.textContent ?? '')).toEqual([]);
@@ -60,19 +84,22 @@ describe('<GexbotSection>', () => {
 
   it('no longer renders the cross-asset skew dashboard', () => {
     // Built on delta_risk_reversal, which GEXBot lists as discontinued.
-    const { container } = render(<GexbotSection marketOpen spxSpot={6750} />);
+    const { container } = render(
+      <GexbotSection {...LIVE} marketOpen spxSpot={6750} />,
+    );
     expect(screen.queryByTestId('skew-dashboard-empty')).toBeNull();
     expect(screen.queryByTestId('skew-dashboard')).toBeNull();
     expect(container.textContent ?? '').not.toMatch(/skew/i);
   });
 
-  it('mounts the 8 child components (drives empty-state testids)', () => {
-    render(<GexbotSection marketOpen spxSpot={6750} />);
+  it('mounts the 9 child components (drives empty-state testids)', () => {
+    render(<GexbotSection {...LIVE} marketOpen spxSpot={6750} />);
     expect(
       screen.getByTestId('dealer-state-summary-strip-empty'),
     ).toBeInTheDocument();
     expect(screen.getByTestId('expected-move-tile-empty')).toBeInTheDocument();
     expect(screen.getByTestId('net-vanna-tile-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('level-ladder')).toBeInTheDocument();
     expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
     expect(screen.getByTestId('charm-clock-empty')).toBeInTheDocument();
     expect(screen.getByTestId('gamma-compass-empty')).toBeInTheDocument();
@@ -81,7 +108,7 @@ describe('<GexbotSection>', () => {
   });
 
   it('forwards marketOpen=false to the data hook for each child', () => {
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     const calls = mockUseGexbotData.mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     for (const call of calls) {
@@ -90,8 +117,152 @@ describe('<GexbotSection>', () => {
   });
 
   it('renders the trial-context footnote', () => {
-    render(<GexbotSection marketOpen spxSpot={6750} />);
+    render(<GexbotSection {...LIVE} marketOpen spxSpot={6750} />);
     expect(screen.getByText(/GEXBot Orderflow-tier data/i)).toBeInTheDocument();
+  });
+
+  it('mounts the level ladder under the two tiles and above the strike movers', () => {
+    render(<GexbotSection {...LIVE} marketOpen spxSpot={6750} />);
+    const follows = (a: HTMLElement, b: HTMLElement) =>
+      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const ladder = screen.getByTestId('level-ladder');
+    expect(follows(screen.getByTestId('net-vanna-tile-empty'), ladder)).toBe(
+      true,
+    );
+    expect(
+      follows(ladder, screen.getByTestId('strike-mover-ladder-empty')),
+    ).toBe(true);
+  });
+
+  it('renders the ladder without allDeltas: no candidate chips', () => {
+    render(<GexbotSection {...LIVE} marketOpen spxSpot={6750} />);
+    expect(screen.getByTestId('level-ladder')).toBeInTheDocument();
+    expect(screen.queryByText(/CANDIDATE/)).toBeNull();
+  });
+});
+
+describe('<GexbotSection> level ladder inputs', () => {
+  const NOW = Date.parse('2026-11-25T15:46:00.000Z'); // 09:46 CT
+  const deltaRow = (delta: number, callSnapped: number, putSnapped: number) =>
+    ({ delta, callSnapped, putSnapped }) as unknown as DeltaRow;
+  const DELTAS: ReadonlyArray<DeltaRow | DeltaRowError> = [
+    deltaRow(10, 7620, 7555),
+  ];
+
+  /** SPX rows for the two views the ladder reads; GEXBot's spot is 7,588.1. */
+  const snapshot: SnapshotsLatestRow = {
+    ticker: 'SPX',
+    capturedAt: '2026-11-25T15:45:12.000Z',
+    spot: 7588.1,
+    zeroGamma: null,
+    zMlgamma: null,
+    zMsgamma: null,
+    zcvr: null,
+    zgr: null,
+    zvanna: null,
+    zcharm: null,
+    oMlgamma: null,
+    oMsgamma: null,
+    ocvr: null,
+    ogr: null,
+    ovanna: null,
+    ocharm: null,
+    oneDexoflow: null,
+    oneGexoflow: null,
+    oneCvroflow: null,
+    zeroMcall: null,
+    zeroMput: null,
+    majorPosVol: null,
+    majorPosOi: null,
+    majorNegVol: null,
+    majorNegOi: null,
+    minDte: 0,
+  };
+  const move: ExpectedMoveRow = {
+    ticker: 'SPX',
+    capturedAt: '2026-11-25T15:46:00.000Z',
+    asOf: '2026-11-25T15:46:00.000Z',
+    spot: 7588.1,
+    minDte: 0,
+    atmStrike: 7590,
+    atmIv: 0.11,
+    dteFraction: 0.25,
+    expectedMove: 23,
+    lower: 7565.1,
+    upper: 7611.1,
+    unavailable: null,
+    strikeIvs: [],
+  };
+
+  beforeEach(() => {
+    mockUseGexbotData.mockReset();
+    // Only the two views the ladder reads carry rows; the other tiles read
+    // their own views, which stay empty.
+    const rowsByView: Partial<Record<GexbotView['view'], unknown[]>> = {
+      'snapshots-latest': [snapshot],
+      'expected-move': [move],
+    };
+    mockUseGexbotData.mockImplementation((spec: GexbotView) => ({
+      rows: rowsByView[spec.view] ?? [],
+      loading: false,
+      error: null,
+      freshestAt: null,
+      asOf: null,
+    }));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("hands the ladder the calculator's rows", () => {
+    render(
+      <GexbotSection
+        marketOpen
+        spxSpot={7588.4}
+        allDeltas={DELTAS}
+        quotesFetchedAt={NOW - 5_000}
+        session="regular"
+      />,
+    );
+    expect(screen.getByTestId('level-ladder-row-7620')).toHaveTextContent(
+      'CANDIDATE · 10Δ CALL',
+    );
+    expect(screen.getByTestId('level-ladder-row-7555')).toHaveTextContent(
+      'CANDIDATE · 10Δ PUT',
+    );
+  });
+
+  it('hands the ladder the quote age and the session', () => {
+    // A quote 2 min old in a live session is stale: GEXBot's spot is used.
+    const { unmount } = render(
+      <GexbotSection
+        marketOpen
+        spxSpot={7500}
+        allDeltas={null}
+        quotesFetchedAt={NOW - 120_000}
+        session="regular"
+      />,
+    );
+    expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
+      'GEXBot spot 7,588.1',
+    );
+    unmount();
+    // The same age with the quote session closed is not judged: it is used.
+    render(
+      <GexbotSection
+        marketOpen
+        spxSpot={7500}
+        allDeltas={null}
+        quotesFetchedAt={NOW - 120_000}
+        session="closed"
+      />,
+    );
+    expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
+      'spot 7,500.0',
+    );
   });
 });
 
@@ -196,7 +367,7 @@ describe('<GexbotSection> after the close', () => {
         asOf: FRIDAY_CLOSE,
       },
     });
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     expect(screen.getByTestId('gexbot-closed-label')).toHaveTextContent(
       'CLOSED · as of Fri 3:00 PM CT',
     );
@@ -213,7 +384,7 @@ describe('<GexbotSection> after the close', () => {
         asOf: FRIDAY_CLOSE,
       },
     });
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     const headerRow = screen.getByRole('button', {
       name: 'Toggle GEXBot Taker Flow',
     }).parentElement;
@@ -231,7 +402,7 @@ describe('<GexbotSection> after the close', () => {
     answerViews({
       'snapshots-latest': { rows: [snapshotRow('SPX', 6600)], asOf },
     });
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     expect(screen.queryByTestId('gexbot-closed-label')).toBeNull();
     expect(screen.queryByText(/CLOSED · as of/)).toBeNull();
   });
@@ -244,7 +415,7 @@ describe('<GexbotSection> after the close', () => {
         asOf: FRIDAY_CLOSE,
       },
     });
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     expect(screen.getByTestId('gexbot-closed-label')).toHaveTextContent(
       'CLOSED · as of Fri Nov 20 3:00 PM CT',
     );
@@ -257,13 +428,13 @@ describe('<GexbotSection> after the close', () => {
         asOf: FRIDAY_CLOSE,
       },
     });
-    render(<GexbotSection marketOpen spxSpot={6600} />);
+    render(<GexbotSection {...LIVE} marketOpen spxSpot={6600} />);
     expect(screen.queryByTestId('gexbot-closed-label')).toBeNull();
   });
 
   it('shows no label after the close when the table has no capture time', () => {
     answerViews({});
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     expect(screen.queryByTestId('gexbot-closed-label')).toBeNull();
   });
 
@@ -278,7 +449,7 @@ describe('<GexbotSection> after the close', () => {
         asOf: FRIDAY_CLOSE,
       },
     });
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     expect(
       screen.getByTestId('strike-mover-ladder-spot-divider'),
     ).toHaveTextContent('SPX spot 6600');
@@ -298,7 +469,7 @@ describe('<GexbotSection> after the close', () => {
         asOf: '2026-11-19T21:00:00.000Z',
       },
     });
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     expect(screen.getByTestId('gexbot-closed-label')).toBeInTheDocument();
     expect(screen.getByTestId('strike-mover-ladder-empty')).toHaveTextContent(
       "No Classic GEX winners in the session's last 5 min (0DTE)",
@@ -318,7 +489,7 @@ describe('<GexbotSection> after the close', () => {
       },
       'expected-move': { rows: [], asOf: null },
     });
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     expect(screen.getByTestId('gexbot-closed-label')).toBeInTheDocument();
     expect(screen.getByTestId('expected-move-range')).toHaveTextContent(
       'session closed',
@@ -335,7 +506,7 @@ describe('<GexbotSection> after the close', () => {
         asOf: FRIDAY_CLOSE,
       },
     });
-    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    render(<GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />);
     expect(screen.getByTestId('charm-clock-closed')).toBeInTheDocument();
   });
 
@@ -348,7 +519,7 @@ describe('<GexbotSection> after the close', () => {
     });
     render(
       <>
-        <GexbotSection marketOpen={false} spxSpot={null} />
+        <GexbotSection {...CLOSED} marketOpen={false} spxSpot={null} />
         <ScrubControls
           timestamp={FRIDAY_CLOSE}
           timestamps={[FRIDAY_CLOSE]}
