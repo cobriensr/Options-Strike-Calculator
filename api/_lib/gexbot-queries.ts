@@ -409,6 +409,7 @@ export async function getLatestSnapshots(
   const sql = getDb();
   let rows: RawSnapshotsRow[];
   if (anchors) {
+    // Repeats the clock branch's SELECT list: extend the parity test's columns.
     const { tickers, times } = anchorArrays(anchors);
     rows = (await withDbRetry(
       () => sql`
@@ -540,12 +541,103 @@ interface RawVelocityRow {
  *
  * "Now" is a bound JS clock reading rather than SQL `now()`, so the whole
  * statement is evaluated against one instant.
+ *
+ * With `anchors` (a closed market) "now" is per ticker: each ticker's window
+ * ends at its anchor, its last real capture of the session, and the session
+ * starts at the ET midnight of `anchors.sessionDate` instead of today's. The
+ * gap and stale-stamp rules measure from the anchor row, so after the close
+ * the anchor's delta is the anchor minus the minute before it, and the vendor's
+ * replay row after the close, which would null every delta, is not read. The
+ * 15-minute freshness rule needs no clause of its own: the anchor row is the
+ * newest row of its window, and `getClosedAnchors` already took it from the 15
+ * minutes before the table's newest row. A ticker with no anchor has no row.
+ * The two branches repeat the differencing SQL, so a rule changed in one
+ * belongs in the other; `gexbot-velocity-pglite.test.ts` reads one in-session
+ * tape both ways and expects the same rows.
  */
-export async function getVelocityTape(): Promise<VelocityRow[]> {
+export async function getVelocityTape(
+  anchors?: ClosedAnchors,
+): Promise<VelocityRow[]> {
   const sql = getDb();
-  const nowIso = new Date().toISOString();
-  const rows = (await withDbRetry(
-    () => sql`
+  let rows: RawVelocityRow[];
+  if (anchors) {
+    const { tickers, times } = anchorArrays(anchors);
+    rows = (await withDbRetry(
+      () => sql`
+      WITH a AS (
+        SELECT t.ticker, t.anchor
+        FROM unnest(${tickers}::text[], ${times}::timestamptz[])
+          AS t(ticker, anchor)
+      ),
+      bounds AS (
+        SELECT (${anchors.sessionDate}::date::timestamp
+                AT TIME ZONE 'America/New_York') AS day_start
+      ),
+      lagged AS (
+        SELECT
+          s.ticker, s.captured_at, s.min_dte, s.source_timestamp,
+          s.agg_dex, s.zgr, s.zcvr,
+          LAG(s.captured_at)       OVER w AS prev_at,
+          LAG(s.source_timestamp)  OVER w AS prev_src,
+          LAG(s.agg_dex)           OVER w AS prev_agg_dex,
+          LAG(s.zgr)               OVER w AS prev_zgr,
+          LAG(s.zcvr)              OVER w AS prev_zcvr
+        FROM gexbot_snapshots s
+        JOIN a ON a.ticker = s.ticker
+        CROSS JOIN bounds b
+        WHERE s.captured_at >= b.day_start
+          AND s.captured_at < a.anchor + INTERVAL '1 millisecond'
+        WINDOW w AS (PARTITION BY s.ticker ORDER BY s.captured_at)
+      ),
+      paired AS (
+        SELECT
+          l.*,
+          (
+            l.prev_at IS NOT NULL
+            AND l.captured_at - l.prev_at <= INTERVAL '3 minutes'
+            AND (l.prev_src IS NULL
+                 OR l.prev_src >= extract(epoch FROM b.day_start))
+            AND (l.source_timestamp IS NULL
+                 OR l.source_timestamp IS DISTINCT FROM l.prev_src)
+          ) AS ok
+        FROM lagged l, bounds b
+      ),
+      diffs AS (
+        SELECT
+          p.ticker, p.captured_at, p.min_dte,
+          CASE WHEN p.ok THEN (p.agg_dex - p.prev_agg_dex)::float8 END AS d_agg_dex,
+          CASE WHEN p.ok THEN (p.zgr - p.prev_zgr)::float8 END AS d_zgr,
+          CASE WHEN p.ok THEN (p.zcvr - p.prev_zcvr)::float8 END AS d_zcvr
+        FROM paired p
+      ),
+      typical AS (
+        SELECT
+          ticker,
+          percentile_cont(0.5) WITHIN GROUP (ORDER BY abs(d_agg_dex)) AS median_abs
+        FROM diffs
+        WHERE d_agg_dex IS NOT NULL
+        GROUP BY ticker
+      ),
+      latest AS (
+        SELECT DISTINCT ON (d.ticker) d.*
+        FROM diffs d
+        ORDER BY d.ticker, d.captured_at DESC
+      )
+      SELECT
+        l.ticker, l.captured_at, l.min_dte,
+        l.d_agg_dex, l.d_zgr, l.d_zcvr,
+        t.median_abs::float8 AS typical_abs_d_agg_dex
+      FROM latest l
+      LEFT JOIN typical t USING (ticker)
+      ORDER BY l.ticker
+    `,
+      READ_RETRIES,
+      READ_TIMEOUT_MS,
+    )) as RawVelocityRow[];
+  } else {
+    const nowIso = new Date().toISOString();
+    rows = (await withDbRetry(
+      () => sql`
       WITH bounds AS (
         SELECT
           ${nowIso}::timestamptz AS now_ts,
@@ -609,9 +701,10 @@ export async function getVelocityTape(): Promise<VelocityRow[]> {
       LEFT JOIN typical t USING (ticker)
       ORDER BY l.ticker
     `,
-    READ_RETRIES,
-    READ_TIMEOUT_MS,
-  )) as RawVelocityRow[];
+      READ_RETRIES,
+      READ_TIMEOUT_MS,
+    )) as RawVelocityRow[];
+  }
 
   return rows.map((r) => ({
     ticker: r.ticker,

@@ -17,13 +17,13 @@
  *   ?view=sibling-confirm      → requires &ticker=AAPL&side=call|put&at=<ISO
  *                                fire time>: sibling taker-flow direction then
  *
- * While the market is closed, `snapshots-latest`, `convexity-trend` and
- * `maxchange-winners` end each ticker's window at its anchor (its last real
- * capture of the session) instead of at now, so they keep showing the
- * session after the close; an empty table gives no rows. Those three bodies
- * are `{ rows, asOf }`, where `asOf` is the latest capture time in the
- * payload, or null when it is empty. A closed response takes the closed-market
- * edge cache, a live one 15 s.
+ * While the market is closed, `snapshots-latest`, `velocity`,
+ * `convexity-trend` and `maxchange-winners` end each ticker's window at its
+ * anchor (its last real capture of the session) instead of at now, so they
+ * keep showing the session after the close; an empty table, or one with no
+ * anchored ticker, gives no rows. Those four bodies are `{ rows, asOf }`,
+ * where `asOf` is the latest capture time in the payload, or null when it is
+ * empty. A closed response takes the closed-market edge cache, a live one 15 s.
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md (sibling-confirm
  * superseded by P12a: docs/superpowers/specs/gexbot-refresh-2026-10-28.md);
@@ -55,8 +55,9 @@ import { gexbotQuerySchema } from './_lib/validation.js';
 
 /**
  * Read one anchored view. While the market is open it is the plain read from
- * the clock. When closed it reads from each ticker's anchor in `table`, and an
- * empty table gives no rows without touching the reader.
+ * the clock. When closed it reads from each ticker's anchor in `table`; an
+ * empty table, or one whose rows name no ticker, gives no rows without
+ * touching the reader.
  */
 async function readView<T>(
   closed: boolean,
@@ -65,7 +66,7 @@ async function readView<T>(
 ): Promise<T[]> {
   if (!closed) return read();
   const anchors = await getClosedAnchors(table);
-  return anchors ? read(anchors) : [];
+  return anchors && anchors.byTicker.size > 0 ? read(anchors) : [];
 }
 
 /** The latest of some capture times, as the original string; null if none. */
@@ -125,9 +126,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         };
         break;
       }
-      case 'velocity':
-        body = { rows: await getVelocityTape() };
+      case 'velocity': {
+        const rows = await readView(
+          closed,
+          'gexbot_snapshots',
+          getVelocityTape,
+        );
+        body = {
+          rows,
+          asOf: latestCapture(rows.map((r) => r.capturedAt)),
+        };
         break;
+      }
       case 'convexity-trend': {
         const rows = await readView(closed, 'gexbot_snapshots', (anchors) =>
           anchors ? getConvexityTrend(undefined, anchors) : getConvexityTrend(),

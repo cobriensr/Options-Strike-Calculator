@@ -172,7 +172,7 @@ describe('GET /api/gexbot', () => {
       res,
     );
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({ rows: [row] });
+    expect(res._json).toEqual({ rows: [row], asOf: row.capturedAt });
     expect(mockGetVelocity).toHaveBeenCalledTimes(1);
   });
 
@@ -364,6 +364,7 @@ describe('GET /api/gexbot', () => {
       ['snapshots-latest', mockGetLatest],
       ['convexity-trend', mockGetTrend],
       ['maxchange-winners', mockGetMax],
+      ['velocity', mockGetVelocity],
     ])(
       'reads %s from the clock: no anchor probe, no anchors',
       async (view, reader) => {
@@ -374,14 +375,16 @@ describe('GET /api/gexbot', () => {
       },
     );
 
-    it.each(['snapshots-latest', 'convexity-trend', 'maxchange-winners'])(
-      'caches %s for 15 s and never uses the closed rule',
-      async (view) => {
-        const res = await get(view);
-        expect(setCacheHeaders).toHaveBeenCalledWith(res, 15);
-        expect(setClosedReadCache).not.toHaveBeenCalled();
-      },
-    );
+    it.each([
+      'snapshots-latest',
+      'convexity-trend',
+      'maxchange-winners',
+      'velocity',
+    ])('caches %s for 15 s and never uses the closed rule', async (view) => {
+      const res = await get(view);
+      expect(setCacheHeaders).toHaveBeenCalledWith(res, 15);
+      expect(setClosedReadCache).not.toHaveBeenCalled();
+    });
 
     it('sets asOf to the newest capture time among the rows, whatever their order', async () => {
       mockGetLatest.mockResolvedValue([
@@ -438,11 +441,20 @@ describe('GET /api/gexbot', () => {
       expect(res._json).toEqual({ rows: [], asOf: null });
     });
 
-    it('adds no asOf to the other views', async () => {
+    it('sets asOf for velocity to the newest capture time among the rows', async () => {
       mockGetVelocity.mockResolvedValue([
         { ticker: 'SPX', capturedAt: '2026-11-20T21:00:49.000Z' },
+        { ticker: 'ES_SPX', capturedAt: '2026-11-20T21:01:55.000Z' },
       ]);
       const res = await get('velocity');
+      expect(res._json).toMatchObject({ asOf: '2026-11-20T21:01:55.000Z' });
+    });
+
+    it('adds no asOf to expected-move', async () => {
+      mockGetExpectedMove.mockResolvedValue([
+        { ticker: 'SPX', capturedAt: '2026-11-20T21:00:49.000Z' },
+      ]);
+      const res = await get('expected-move');
       expect(res._json).not.toHaveProperty('asOf');
     });
   });
@@ -497,14 +509,56 @@ describe('GET /api/gexbot', () => {
       expect(res._json).toMatchObject({ asOf: '2026-11-20T21:00:49.000Z' });
     });
 
-    it.each([
+    it('anchors velocity on the snapshots table and passes the anchors through', async () => {
+      mockGetVelocity.mockResolvedValue([
+        { ticker: 'SPX', capturedAt: '2026-11-20T21:00:49.000Z', dAggDex: 30 },
+      ]);
+      const res = await get('velocity');
+      expect(mockGetAnchors).toHaveBeenCalledTimes(1);
+      expect(mockGetAnchors).toHaveBeenCalledWith('gexbot_snapshots');
+      expect(mockGetVelocity).toHaveBeenCalledTimes(1);
+      expect(mockGetVelocity).toHaveBeenCalledWith(ANCHORS);
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        rows: [
+          {
+            ticker: 'SPX',
+            capturedAt: '2026-11-20T21:00:49.000Z',
+            dAggDex: 30,
+          },
+        ],
+        asOf: '2026-11-20T21:00:49.000Z',
+      });
+    });
+
+    const ANCHORED_READERS = [
       ['snapshots-latest', mockGetLatest],
       ['convexity-trend', mockGetTrend],
       ['maxchange-winners', mockGetMax],
-    ])(
+      ['velocity', mockGetVelocity],
+    ] as const;
+
+    it.each(ANCHORED_READERS)(
       'answers %s with no rows and a null asOf when the table is empty',
       async (view, reader) => {
         mockGetAnchors.mockResolvedValue(null);
+        const res = await get(view);
+        expect(res._status).toBe(200);
+        expect(res._json).toEqual({ rows: [], asOf: null });
+        expect(reader).not.toHaveBeenCalled();
+        expect(setClosedReadCache).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(ANCHORED_READERS)(
+      'answers %s with no rows, without calling the reader, when no ticker has an anchor',
+      async (view, reader) => {
+        // A table whose rows all lack a vendor stamp has a session date and
+        // no tickers: the reader would only join an empty list.
+        mockGetAnchors.mockResolvedValue({
+          sessionDate: '2026-11-20',
+          byTicker: new Map(),
+        });
         const res = await get(view);
         expect(res._status).toBe(200);
         expect(res._json).toEqual({ rows: [], asOf: null });
@@ -522,6 +576,7 @@ describe('GET /api/gexbot', () => {
       'snapshots-latest',
       'convexity-trend',
       'maxchange-winners',
+      'velocity',
       'expected-move',
     ])(
       'caches %s with the closed rule, built from one clock reading',
@@ -558,11 +613,7 @@ describe('GET /api/gexbot', () => {
       expect(mockGetSibling).toHaveBeenCalledTimes(1);
     });
 
-    it.each([
-      ['snapshots-latest', mockGetLatest],
-      ['convexity-trend', mockGetTrend],
-      ['maxchange-winners', mockGetMax],
-    ])(
+    it.each(ANCHORED_READERS)(
       'surfaces an anchor-probe failure on %s as 500 and a Sentry capture',
       async (view, reader) => {
         mockGetAnchors.mockRejectedValue(new Error('connection lost'));
@@ -579,24 +630,31 @@ describe('GET /api/gexbot', () => {
       },
     );
 
-    it('surfaces an anchored-read failure as 500 and a Sentry capture', async () => {
-      mockGetLatest.mockRejectedValue(new Error('db down'));
-      const res = await get('snapshots-latest');
-      expect(res._status).toBe(500);
-      expect(Sentry.captureException).toHaveBeenCalledWith(
-        expect.objectContaining({ message: 'db down' }),
-        expect.objectContaining({
-          tags: { route: '/api/gexbot', view: 'snapshots-latest' },
-        }),
-      );
-      expect(setClosedReadCache).not.toHaveBeenCalled();
-    });
+    it.each([
+      ['snapshots-latest', mockGetLatest],
+      ['velocity', mockGetVelocity],
+    ])(
+      'surfaces an anchored-read failure on %s as 500 and a Sentry capture',
+      async (view, reader) => {
+        reader.mockRejectedValue(new Error('db down'));
+        const res = await get(view);
+        expect(res._status).toBe(500);
+        expect(Sentry.captureException).toHaveBeenCalledWith(
+          expect.objectContaining({ message: 'db down' }),
+          expect.objectContaining({ tags: { route: '/api/gexbot', view } }),
+        );
+        expect(setClosedReadCache).not.toHaveBeenCalled();
+      },
+    );
 
-    it('keeps the anchored views behind the owner-or-guest guard', async () => {
-      vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(true);
-      await get('snapshots-latest');
-      expect(mockGetAnchors).not.toHaveBeenCalled();
-      expect(mockGetLatest).not.toHaveBeenCalled();
-    });
+    it.each(ANCHORED_READERS)(
+      'keeps %s behind the owner-or-guest guard',
+      async (view, reader) => {
+        vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(true);
+        await get(view);
+        expect(mockGetAnchors).not.toHaveBeenCalled();
+        expect(reader).not.toHaveBeenCalled();
+      },
+    );
   });
 });

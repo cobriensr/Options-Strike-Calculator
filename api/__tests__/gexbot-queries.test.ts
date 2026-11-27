@@ -203,6 +203,16 @@ describe('gexbot-queries', () => {
       mockSql.mockRejectedValueOnce(new Error('connection lost'));
       await expect(getVelocityTape()).rejects.toThrow('connection lost');
     });
+
+    it('propagates a DB failure from an anchored read', async () => {
+      mockSql.mockRejectedValueOnce(new Error('connection lost'));
+      await expect(
+        getVelocityTape({
+          sessionDate: '2026-11-20',
+          byTicker: new Map([['SPX', '2026-11-20T21:00:49.000Z']]),
+        }),
+      ).rejects.toThrow('connection lost');
+    });
   });
 
   // ── getConvexityTrend ────────────────────────────────────
