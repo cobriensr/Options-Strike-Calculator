@@ -10,6 +10,12 @@ validated reference query it follows matched live on 1,053 of 1,053 rows over si
 spot on the live rows from the tape, and from 2026-10-29 adds the alerts live missed, when the
 live settings that cover the day ran this rule.
 
+The replay is also what studies read, one Parquet file per session (spec
+docs/superpowers/specs/2026-11-26-interval-ba-replay-days-design.md). This module owns the
+file's schema (`EXPORT_COLUMNS`), its builder (`export_table`), its key (`day_key`) and its
+rule (`rule`, which carries `REPLAY_VERSION`), so the nightly step, the one-off tool's
+snapshot export and its per-day export all write the same file.
+
 What it never does:
 - open R2 or Neon. The caller hands in a DuckDB connection, a tape location (a local path or an
   s3:// URL) and a psycopg2 cursor or connection. `insert_alerts` leaves the commit to its
@@ -18,8 +24,10 @@ What it never does:
 - fetch a TIMESTAMP or TIMESTAMPTZ column. Every time leaves DuckDB as an epoch_us integer and
   becomes an aware UTC datetime here: DuckDB needs pytz to hand over a TIMESTAMPTZ, and the
   nightly image has none;
-- import anything but duckdb, psycopg2 and the standard library. The tool loads this file by
-  path, so a nightly import (constants, config, resources) would break it.
+- import anything but duckdb, psycopg2, pyarrow and the standard library. The tool loads this
+  file by path, so a nightly import (constants, config, resources) would break it. pyarrow is in
+  ml/.venv and in the nightly image; it builds the export table. Writing the file stays with the
+  caller.
 
 Both tape layouts read the same way. Before 2026-05-04 executed_at is a naive TIMESTAMP holding
 UTC, prices are DECIMAL(18,4), and tags and report_flags are bare comma lists; from then on
@@ -69,6 +77,7 @@ from zoneinfo import ZoneInfo
 import duckdb
 import psycopg2
 import psycopg2.extras
+import pyarrow as pa
 
 # The live detector's rule. tests/test_interval_ba_drift.py pins each against uw-stream.
 TICKERS: tuple[str, ...] = ("SPXW", "SPY", "QQQ")
@@ -80,6 +89,16 @@ MULTI_LEG_CODES: frozenset[str] = frozenset(
     {"mlat", "mlet", "mlft", "masl", "mesl", "mfsl", "mlct", "cbmo", "mctp"}
 )
 CONFLUENCE_WINDOW_SEC = 90
+
+# Bumped by hand on any change to what `replay_day` outputs, constants or not, the way
+# research-derive bumps DERIVE_VERSION. It rides in `rule()`, so the day files of two versions
+# differ in their rule and the readers refuse the mix. The constants alone would miss a logic
+# fix (the spot fill, a tie-break); a code hash would trip on an edit to `heal_day`.
+# tests/test_interval_ba_replay.py pins it against the output of a fixture tape.
+REPLAY_VERSION = "1"
+# One Parquet file per session, in the research store: `research/interval-ba/replay/{day}.parquet`.
+# The one-time snapshot (`research/interval-ba/replay-{end}.parquet`) is not under this prefix.
+REPLAY_DAYS_PREFIX = "research/interval-ba/replay/"
 
 # The first live row is 2026-05-13 15:55:37Z. Live ran today's nine codes from the 2026-10-29
 # session on, so only from then may the replay add the alerts live missed.
@@ -136,11 +155,90 @@ ALERT_INSERT_COLUMNS: tuple[str, ...] = (*(f.name for f in fields(TapeAlert)), "
 
 @dataclass(frozen=True)
 class Replay:
-    """A day's alerts, sorted by (fired_at, ticker, option_chain), and the kept rows whose
-    underlying_symbol is not their OCC root."""
+    """The replay of one day: the day it is of, its alerts sorted by (fired_at, ticker,
+    option_chain), and the kept rows whose underlying_symbol is not their OCC root.
 
+    `day` lets `heal_day` take a replay made earlier and refuse one of another day."""
+
+    day: date
     alerts: tuple[TapeAlert, ...]
     root_label_mismatch: int
+
+
+# --- The export: the replay as a Parquet table ---------------------------------------------------
+# One schema for the snapshot export and the per-day files (spec 6.5 and the replay-days design).
+# A reader that selects by name needs the names; one that reads the types (DuckDB
+# read_parquet) needs the exact types. tests/test_interval_ba_replay.py freezes both.
+
+_UTC_US = pa.timestamp("us", tz="UTC")
+# The TapeAlert fields in order.
+EXPORT_COLUMNS: tuple[tuple[str, pa.DataType], ...] = (
+    ("option_chain", pa.string()),
+    ("ticker", pa.string()),
+    ("option_type", pa.string()),
+    ("strike", pa.decimal128(10, 3)),
+    ("expiry", pa.date32()),
+    ("bucket_start", _UTC_US),
+    ("bucket_end", _UTC_US),
+    ("fired_at", _UTC_US),
+    ("ratio_pct", pa.decimal128(5, 2)),
+    ("ask_premium", pa.decimal128(14, 2)),
+    ("total_premium", pa.decimal128(14, 2)),
+    ("trade_count", pa.int32()),
+    ("top_trade_premium", pa.decimal128(14, 2)),
+    ("top_trade_size", pa.int32()),
+    ("top_trade_executed_at", _UTC_US),
+    ("top_trade_is_sweep", pa.bool_()),
+    ("top_trade_is_floor", pa.bool_()),
+    ("underlying_price", pa.decimal128(10, 2)),
+    ("confluence_tickers", pa.list_(pa.string())),
+)
+EXPORT_NULLABLE = frozenset({"underlying_price"})  # an SPXW crossing with no spot to give
+
+
+def day_key(day: date) -> str:
+    """The research-store key of `day`'s replay file."""
+    return f"{REPLAY_DAYS_PREFIX}{day.isoformat()}.parquet"
+
+
+def rule() -> dict[str, str]:
+    """The rule constants and the replay version, as ASCII strings (they go in R2 user metadata
+    and in a file's `interval_ba` metadata). Two files with different rules are not one study."""
+    return {
+        "tickers": ",".join(TICKERS),
+        "ratio-threshold": str(RATIO_THRESHOLD),
+        "premium-floor-dollars": str(PREMIUM_FLOOR_DOLLARS),
+        "window-sec": str(WINDOW_SEC),
+        "multi-leg-share-max": str(MULTI_LEG_SHARE_MAX),
+        "multi-leg-codes": ",".join(sorted(MULTI_LEG_CODES)),
+        "confluence-window-sec": str(CONFLUENCE_WINDOW_SEC),
+        "replay-version": REPLAY_VERSION,
+    }
+
+
+def _epoch_us(at: datetime) -> int:
+    return (at - _EPOCH) // timedelta(microseconds=1)
+
+
+def _export_column(name: str, kind: pa.DataType, alerts: Sequence[TapeAlert]) -> pa.Array:
+    values = [getattr(alert, name) for alert in alerts]
+    if kind == _UTC_US:  # written from epoch microseconds, so no time zone conversion runs
+        return pa.array([_epoch_us(at) for at in values], pa.int64()).cast(_UTC_US)
+    if name == "confluence_tickers":
+        return pa.array([list(tags) for tags in values], kind)
+    return pa.array(values, kind)
+
+
+def export_table(alerts: Sequence[TapeAlert], meta: dict[str, Any]) -> pa.Table:
+    """`alerts` in the export's columns and types, with `meta` as JSON in the schema metadata
+    key `interval_ba`. No alerts is a table of zero rows with the same schema."""
+    schema = pa.schema(
+        [pa.field(name, kind, nullable=name in EXPORT_NULLABLE) for name, kind in EXPORT_COLUMNS],
+        metadata={b"interval_ba": json.dumps(meta, sort_keys=True).encode("utf-8")},
+    )
+    return pa.Table.from_arrays(
+        [_export_column(name, kind, alerts) for name, kind in EXPORT_COLUMNS], schema=schema
+    )
 
 
 @dataclass(frozen=True)
@@ -417,6 +515,7 @@ def replay_day(con: duckdb.DuckDBPyConnection, tape: str, day: date) -> Replay:
     alerts.sort(key=lambda a: (a.fired_at, a.ticker, a.option_chain))
     partners = _confluence([(a.fired_at, a.ticker, a.option_type) for a in alerts])
     return Replay(
+        day=day,
         alerts=tuple(
             replace(alert, confluence_tickers=tags)
             for alert, tags in zip(alerts, partners, strict=True)
@@ -919,9 +1018,12 @@ def _plan_day(
     settings: Sequence[LiveSettings],
     *,
     insert_missed: bool,
+    replay: Replay | None,
 ) -> DayPlan:
-    """Steps 1 to 6 as a plan: the counts and what each write would send."""
-    replay = replay_day(con, tape, day)
+    """Steps 1 to 6 as a plan: the counts and what each write would send. `replay` is the day's
+    replay when the caller has one; None replays the day here."""
+    if replay is None:
+        replay = replay_day(con, tape, day)
     rows = read_live_rows(conn, day)
     live = [row for row in rows if row.source == "live"]
     if insert_missed:
@@ -1047,10 +1149,12 @@ def heal_day(
     insert_missed: bool,
     apply: bool,
     expect_sha256: str | None = None,
+    replay: Replay | None = None,
 ) -> DayPlan:
     """One live day's pass over its rows (spec 6.4), in one transaction.
 
-    1. Replay the day, read its rows, and compare the two on the key over the on tickers.
+    1. Replay the day (or take the `replay` the caller made), read its rows, and compare the two
+       on the key over the on tickers.
     2. With insert_missed, hold the inserts when no settings row covers the day, a covering row
        ran another rule, or any covering row had the detector off.
     3. With insert_missed and nothing held, insert the on tickers' tape alerts at keys with no
@@ -1070,6 +1174,11 @@ def heal_day(
     With expect_sha256, a fresh plan whose sha256 differs raises PlanChanged before any write,
     on a dry run as well, so a plan the owner approved is applied exactly or not at all.
 
+    With `replay`, the day is not replayed again: the nightly step replays it once, writes the
+    day's replay file, and hands the same replay here, so the file and the heal agree. A replay
+    of another day raises ValueError before anything is read or written: it would insert that
+    day's alerts and remove this day's replay rows. `tape` still serves the flags and the spot.
+
     `conn` must be idle when called: autocommit on, or committed or rolled back after any read
     (read_covering_settings included). psycopg2 refuses to switch autocommit inside a
     transaction. Autocommit is off for the call and restored after.
@@ -1085,10 +1194,12 @@ def heal_day(
             f"insert_missed on {day}: {day} is before {INSERT_MISSED_FROM}, the first session"
             " live ran this rule"
         )
+    if replay is not None and replay.day != day:
+        raise ValueError(f"heal_day for {day} was given the replay of {replay.day}, not {day}")
     previous = conn.autocommit
     conn.autocommit = False
     try:
-        plan = _plan_day(conn, con, tape, day, settings, insert_missed=insert_missed)
+        plan = _plan_day(conn, con, tape, day, settings, insert_missed=insert_missed, replay=replay)
         if expect_sha256 is not None and plan.sha256 != expect_sha256:
             raise PlanChanged(
                 f"{day}: the fresh plan's sha256 {plan.sha256} is not the expected {expect_sha256}"

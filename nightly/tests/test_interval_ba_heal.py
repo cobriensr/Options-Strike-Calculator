@@ -22,6 +22,7 @@ import duckdb
 import psycopg2
 import pytest
 
+import interval_ba_replay
 from interval_ba_replay import (
     INSERT_MISSED_FROM,
     LIVE_START,
@@ -1054,6 +1055,67 @@ def test_tape_without_the_day_raises_and_writes_nothing(tmp_path, con):
 
     assert db.writes() == []
     assert db.commits == 0
+    assert db.autocommit is True
+
+
+def test_heal_day_uses_a_given_replay_and_does_not_replay_again(tmp_path, con, monkeypatch):
+    tape = _day_tape(tmp_path)
+    alerts, rows = _scenario(con, tape)
+    full = replay_day(con, tape, DAY)
+    expected = _heal(_FakeConn(rows), con, tape, [default_settings()], apply=True)
+
+    def replayed_again(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("heal_day replayed a day it was given the replay of")
+
+    monkeypatch.setattr(interval_ba_replay, "replay_day", replayed_again)
+    db = _FakeConn(rows)
+
+    plan = heal_day(
+        db, con, tape, DAY, [default_settings()], insert_missed=True, apply=True, replay=full
+    )
+
+    # The same plan as the heal that replayed the day itself, written once.
+    assert plan == expected
+    assert db.commits == 1
+    # And the plan is built from the replay it was given, not from the tape: a replay without the
+    # one alert live missed has nothing to insert.
+    assert alerts[QQQ_P] in full.alerts
+    fewer = replace(full, alerts=tuple(a for a in full.alerts if a.option_chain != QQQ_P))
+    narrowed = heal_day(
+        _FakeConn(rows),
+        con,
+        tape,
+        DAY,
+        [default_settings()],
+        insert_missed=True,
+        apply=False,
+        replay=fewer,
+    )
+    assert (narrowed.tape_alerts, narrowed.inserts, narrowed.inserted) == (5, (), 0)
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_heal_day_refuses_a_replay_of_another_day(tmp_path, con, apply):
+    # A wrong day's replay would insert that day's alerts and remove this day's replay rows.
+    tape = _day_tape(tmp_path)
+    _, rows = _scenario(con, tape)
+    other = replace(replay_day(con, tape, DAY), day=DAY + timedelta(days=1))
+    db = _FakeConn(rows)
+
+    with pytest.raises(ValueError, match=f"replay of {other.day}.*not {DAY}"):
+        heal_day(
+            db,
+            con,
+            tape,
+            DAY,
+            [default_settings()],
+            insert_missed=True,
+            apply=apply,
+            replay=other,
+        )
+
+    assert db.statements == []
+    assert (db.commits, db.rollbacks) == (0, 0)
     assert db.autocommit is True
 
 

@@ -14,8 +14,10 @@ own execute_values with a fake cursor, or with execute_values patched. No test o
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import sys
-from dataclasses import fields
+from dataclasses import asdict, fields, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -25,16 +27,25 @@ import duckdb
 import psycopg2
 import psycopg2.extensions
 import psycopg2.extras
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 import interval_ba_replay as replay
 from interval_ba_replay import (
     ALERT_INSERT_COLUMNS,
+    EXPORT_COLUMNS,
+    EXPORT_NULLABLE,
+    REPLAY_DAYS_PREFIX,
+    REPLAY_VERSION,
     LiveRow,
     Replay,
     TapeAlert,
+    day_key,
+    export_table,
     insert_alerts,
     replay_day,
+    rule,
     top_trade_flags,
 )
 from tests._interval_ba_tape import (
@@ -338,7 +349,7 @@ def test_day_with_no_fires_still_counts_label_mismatches(tmp_path, layout, con):
 
     result = _replay(tmp_path, rows, layout, con)
 
-    assert result == Replay(alerts=(), root_label_mismatch=1)
+    assert result == Replay(day=DAY, alerts=(), root_label_mismatch=1)
 
 
 # --- Dates, money and times ---------------------------------------------------------------------
@@ -837,12 +848,278 @@ def test_insert_alerts_with_nothing_to_insert_returns_zero():
     assert cursor.pages == []
 
 
+# --- The export table and the day file's key and rule -------------------------------------------
+# The schema the snapshot export has always written (research/interval-ba/replay-<end>.parquet),
+# now also the schema of each day file. Written out here in full, apart from the module's own
+# EXPORT_COLUMNS, so a drift in either shows.
+
+_UTC_US = pa.timestamp("us", tz="UTC")
+SNAPSHOT_SCHEMA: tuple[tuple[str, pa.DataType], ...] = (
+    ("option_chain", pa.string()),
+    ("ticker", pa.string()),
+    ("option_type", pa.string()),
+    ("strike", pa.decimal128(10, 3)),
+    ("expiry", pa.date32()),
+    ("bucket_start", _UTC_US),
+    ("bucket_end", _UTC_US),
+    ("fired_at", _UTC_US),
+    ("ratio_pct", pa.decimal128(5, 2)),
+    ("ask_premium", pa.decimal128(14, 2)),
+    ("total_premium", pa.decimal128(14, 2)),
+    ("trade_count", pa.int32()),
+    ("top_trade_premium", pa.decimal128(14, 2)),
+    ("top_trade_size", pa.int32()),
+    ("top_trade_executed_at", _UTC_US),
+    ("top_trade_is_sweep", pa.bool_()),
+    ("top_trade_is_floor", pa.bool_()),
+    ("underlying_price", pa.decimal128(10, 2)),
+    ("confluence_tickers", pa.list_(pa.string())),
+)
+META = {"day": "2026-11-17", "rows": 2, "rule": {"tickers": "SPXW,SPY,QQQ"}, "created_at": "t"}
+
+
+def _export_alerts() -> list[TapeAlert]:
+    """An SPXW call with no spot and no partner, and a QQQ put with a spot and two partners."""
+    spxw = TapeAlert(
+        option_chain=SPXW_C,
+        ticker="SPXW",
+        option_type="C",
+        strike=Decimal("6700.000"),
+        expiry=DAY,
+        bucket_start=_at("14:30:00"),
+        bucket_end=_at("14:35:00"),
+        fired_at=_at("14:31:00.250"),
+        ratio_pct=Decimal("87.50"),
+        ask_premium=Decimal("262500.00"),
+        total_premium=Decimal("300000.00"),
+        trade_count=3,
+        top_trade_premium=Decimal("250000.00"),
+        top_trade_size=100,
+        top_trade_executed_at=_at("14:30:59.750"),
+        top_trade_is_sweep=True,
+        top_trade_is_floor=False,
+        underlying_price=None,
+        confluence_tickers=(),
+    )
+    qqq = replace(
+        _alert(1, ("SPXW", "SPY")),
+        option_chain=QQQ_P,
+        ticker="QQQ",
+        option_type="P",
+        strike=Decimal("590.000"),
+        underlying_price=Decimal("600.12"),
+        top_trade_is_floor=True,
+    )
+    return [spxw, qqq]
+
+
+def test_export_table_matches_the_snapshot_schema(tmp_path):
+    alerts = _export_alerts()
+    path = tmp_path / "day.parquet"
+
+    pq.write_table(export_table(alerts, META), path)
+
+    schema = pq.read_schema(path)
+    assert [(field.name, field.type) for field in schema] == list(SNAPSHOT_SCHEMA)
+    assert tuple(EXPORT_COLUMNS) == SNAPSHOT_SCHEMA
+    assert {field.name for field in schema if field.nullable} == {"underlying_price"}
+    assert set(EXPORT_NULLABLE) == {"underlying_price"}
+    assert json.loads(schema.metadata[b"interval_ba"]) == META
+    # The columns are the TapeAlert fields, in order.
+    assert [name for name, _ in SNAPSHOT_SCHEMA] == [f.name for f in fields(TapeAlert)]
+    first, second = pq.read_table(path).to_pylist()
+    assert (first["option_chain"], first["underlying_price"], first["confluence_tickers"]) == (
+        SPXW_C,
+        None,
+        [],
+    )
+    assert second["fired_at"] == alerts[1].fired_at
+    assert second["confluence_tickers"] == ["SPXW", "SPY"]
+    assert second["underlying_price"] == Decimal("600.12")
+
+
+def test_export_table_of_no_alerts_keeps_the_schema_and_metadata(tmp_path):
+    # A quiet day's file: zero rows, so "no alerts" and "not written" stay apart.
+    path = tmp_path / "quiet.parquet"
+
+    pq.write_table(export_table([], {**META, "rows": 0}), path)
+
+    schema = pq.read_schema(path)
+    assert [(field.name, field.type) for field in schema] == list(SNAPSHOT_SCHEMA)
+    assert json.loads(schema.metadata[b"interval_ba"])["rows"] == 0
+    assert pq.read_table(path).num_rows == 0
+
+
+def test_the_snapshot_export_table_is_unchanged():
+    # The table the tool's snapshot export built before the builder moved here, frozen as
+    # literals. Compared as a table (schema, metadata, values), not as bytes: pyarrow's own
+    # version is in a Parquet footer.
+    table = export_table(_export_alerts(), META)
+
+    expected_schema = pa.schema(
+        [
+            pa.field(name, kind, nullable=name == "underlying_price")
+            for name, kind in SNAPSHOT_SCHEMA
+        ],
+        metadata={
+            b"interval_ba": b'{"created_at": "t", "day": "2026-11-17", "rows": 2,'
+            b' "rule": {"tickers": "SPXW,SPY,QQQ"}}'
+        },
+    )
+    expected = pa.Table.from_pylist(
+        [
+            {
+                "option_chain": SPXW_C,
+                "ticker": "SPXW",
+                "option_type": "C",
+                "strike": Decimal("6700.000"),
+                "expiry": DAY,
+                "bucket_start": _at("14:30:00"),
+                "bucket_end": _at("14:35:00"),
+                "fired_at": _at("14:31:00.250"),
+                "ratio_pct": Decimal("87.50"),
+                "ask_premium": Decimal("262500.00"),
+                "total_premium": Decimal("300000.00"),
+                "trade_count": 3,
+                "top_trade_premium": Decimal("250000.00"),
+                "top_trade_size": 100,
+                "top_trade_executed_at": _at("14:30:59.750"),
+                "top_trade_is_sweep": True,
+                "top_trade_is_floor": False,
+                "underlying_price": None,
+                "confluence_tickers": [],
+            },
+            {
+                "option_chain": QQQ_P,
+                "ticker": "QQQ",
+                "option_type": "P",
+                "strike": Decimal("590.000"),
+                "expiry": DAY,
+                "bucket_start": _at("14:30:00"),
+                "bucket_end": _at("14:35:00"),
+                "fired_at": _at("14:30:01"),
+                "ratio_pct": Decimal("100.00"),
+                "ask_premium": Decimal("250000.00"),
+                "total_premium": Decimal("250000.00"),
+                "trade_count": 1,
+                "top_trade_premium": Decimal("250000.00"),
+                "top_trade_size": 100,
+                "top_trade_executed_at": _at("14:30:01"),
+                "top_trade_is_sweep": False,
+                "top_trade_is_floor": True,
+                "underlying_price": Decimal("600.12"),
+                "confluence_tickers": ["SPXW", "SPY"],
+            },
+        ],
+        schema=expected_schema,
+    )
+
+    assert table.schema.equals(expected.schema, check_metadata=True)
+    assert table.to_pylist() == expected.to_pylist()
+    assert table.equals(expected, check_metadata=True)
+
+
+def test_rule_carries_the_replay_version(monkeypatch):
+    assert rule() == {
+        "tickers": "SPXW,SPY,QQQ",
+        "ratio-threshold": "0.75",
+        "premium-floor-dollars": "250000",
+        "window-sec": "300",
+        "multi-leg-share-max": "0.5",
+        "multi-leg-codes": "cbmo,masl,mctp,mesl,mfsl,mlat,mlct,mlet,mlft",
+        "confluence-window-sec": "90",
+        "replay-version": REPLAY_VERSION,
+    }
+    assert all(key.isascii() and value.isascii() for key, value in rule().items())  # R2 metadata
+    # Read from the constants at each call, not frozen at import.
+    monkeypatch.setattr(replay, "REPLAY_VERSION", "2")
+    monkeypatch.setattr(replay, "WINDOW_SEC", 60)
+    assert (rule()["replay-version"], rule()["window-sec"]) == ("2", "60")
+
+
+def test_day_key_is_the_session_date():
+    assert REPLAY_DAYS_PREFIX == "research/interval-ba/replay/"
+    assert day_key(date(2026, 11, 25)) == "research/interval-ba/replay/2026-11-25.parquet"
+    assert day_key(date(2026, 1, 2)) == "research/interval-ba/replay/2026-01-02.parquet"
+    # The snapshot's keys (research/interval-ba/replay-<end>.parquet) are not under the prefix.
+    assert not "research/interval-ba/replay-2026-11-25.parquet".startswith(REPLAY_DAYS_PREFIX)
+
+
+def test_replay_day_sets_the_day_on_its_replay(tmp_path, layout, con):
+    next_day = DAY + timedelta(days=1)
+    rows = [_tick(_at("14:31:00", next_day), _chain("SPY", "C", 670, next_day), "25.00", 100)]
+
+    result = _replay(tmp_path, rows, layout, con, next_day)
+
+    assert result.day == next_day
+    assert [a.expiry for a in result.alerts] == [next_day]
+
+
+# --- The replay version -------------------------------------------------------------------------
+# A change to what replay_day outputs, constants or not, must come with a bump of REPLAY_VERSION:
+# the day files carry it in their rule, and the readers refuse a mix. The constants alone would
+# miss a logic fix (the spot fill, a tie-break), so this pins the output of a fixture tape that
+# reaches each branch, against the version. Changing the output fails it; bumping the version
+# and re-pinning is the fix.
+
+PINNED_REPLAY = (
+    "1",
+    "827e28af07f5ce490f0d2fcc725f55debbd474f08adb70449f13f86e95948265",
+)
+
+
+def _pin_fixture(tmp_path: Path, layout: Layout) -> str:
+    return _write_tape(
+        tmp_path,
+        [
+            # SPY call: an intermarket sweep is the top print, two equal prints tie (earliest).
+            _tick(_at("14:31:00.250"), SPY_C, "12.50", 100, flags=("intermarket_sweep",)),
+            _tick(_at("14:31:00.500"), SPY_C, "12.50", 100),
+            # QQQ call 10 s later (a confluence); a canceled print counts toward the bucket.
+            _tick(_at("14:31:10"), QQQ_C, "10.00", 100, canceled=True),
+            _tick(_at("14:31:11"), QQQ_C, "15.00", 100),
+            # SPXW call whose crossing tick has no spot: the next SPXW print's spot.
+            _tick(_at("14:32:00"), SPXW_C, "30.00", 100, spot=None),
+            _tick(_at("14:32:01"), SPXW_P, "1.00", 1, side="bid", spot="6701.25"),
+            # SPY put: a multi-leg print inside the share, then a futures floor print that fires.
+            _tick(_at("14:41:00"), SPY_P, "1.00", 100, code="mlat"),
+            _tick(_at("14:41:01"), SPY_P, "25.00", 100, flags=("futures_floor",)),
+            # A bucket that never reaches the floor, and an SPXW print labelled SPX.
+            _tick(_at("14:43:00"), QQQ_P, "24.00", 100),
+            _tick(_at("14:44:00"), SPXW_C, "1.00", 1, label="SPX"),
+        ],
+        layout=layout,
+    )
+
+
+def _digest(result: Replay) -> str:
+    payload = {
+        "day": result.day.isoformat(),
+        "root_label_mismatch": result.root_label_mismatch,
+        "alerts": [asdict(alert) for alert in result.alerts],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def test_replay_version_pins_the_replay_output(tmp_path, layout, con):
+    result = replay_day(con, _pin_fixture(tmp_path, layout), DAY)
+
+    # Four fires, one of them a confluence pair; the fixture reaches what it claims to.
+    assert [a.option_chain for a in result.alerts] == [SPY_C, QQQ_C, SPXW_C, SPY_P]
+    assert result.root_label_mismatch == 1
+    assert (REPLAY_VERSION, _digest(result)) == PINNED_REPLAY, (
+        "replay_day's output changed. Bump REPLAY_VERSION in interval_ba_replay.py, then pin the"
+        " new (version, digest) here: the day files carry the version in their rule"
+    )
+
+
 # --- The module's own imports -------------------------------------------------------------------
 
 
-def test_imports_only_duckdb_psycopg2_and_the_standard_library():
+def test_the_import_pin_allows_pyarrow_and_nothing_of_nightly():
     # scripts/interval_ba_tape.py loads this file by path, with nightly/src off sys.path, so a
-    # nightly import (constants, config, resources) would break the tool.
+    # nightly import (constants, config, resources) would break the tool. pyarrow is in the
+    # nightly image and in ml/.venv; it builds the export table.
     tree = ast.parse(MODULE.read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -854,4 +1131,5 @@ def test_imports_only_duckdb_psycopg2_and_the_standard_library():
 
     third_party = {name for name in imported if name.split(".")[0] not in sys.stdlib_module_names}
 
-    assert third_party <= {"duckdb", "psycopg2", "psycopg2.extras"}, third_party
+    assert "pyarrow" in third_party
+    assert third_party <= {"duckdb", "psycopg2", "psycopg2.extras", "pyarrow"}, third_party
