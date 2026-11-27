@@ -198,26 +198,53 @@ def _profile_frame(**columns: float) -> pd.DataFrame:
     return frame
 
 
+# Every end-of-day column carries this one value in the profile frames, so a
+# profile line that reads any of the 12 prints it. No other number in the
+# profile gets near it (the VIX means are in the teens and twenties), and the
+# check looks for the digits the profile's formats would print for it (.2f
+# "7777.77", .1f "7777.8", .0f "7778"), not for a short string a VIX or GEX
+# figure could contain. A line that scaled the value first (a premium shown
+# in millions, say) would print something else and would not show here.
+SENTINEL = 7777.77
+SENTINEL_PRINTED = ("7777", "7778")
+
+
+def _eod_sentinels() -> dict[str, float]:
+    """All 12 end-of-day columns, each held at the sentinel."""
+    return dict.fromkeys(OPTIONS_VOLUME_EOD_FEATURES, SENTINEL)
+
+
+def _printed_sentinel(out: str) -> list[str]:
+    return [digits for digits in SENTINEL_PRINTED if digits in out]
+
+
 def test_cluster_profile_describes_a_cluster_with_the_previous_days_pcr(capsys):
-    frame = _profile_frame(prev_day_opt_vol_pcr=1.25, opt_vol_pcr=9.0)
+    frame = _profile_frame(prev_day_opt_vol_pcr=1.25, **_eod_sentinels())
     labels = np.array([0] * 6 + [1] * 6)
 
     clustering.characterize_clusters(frame, labels, 2, "K-Means")
 
     out = capsys.readouterr().out
     assert out.count("Options PCR (prev day): 1.25 avg") == 2
-    assert "9.00" not in out
+    assert _printed_sentinel(out) == []
 
 
-def test_cluster_profile_prints_no_pcr_from_the_same_days_column_alone(capsys):
-    frame = _profile_frame(opt_vol_pcr=9.0)
+def test_cluster_profile_prints_nothing_from_the_end_of_day_columns_alone(capsys):
+    frame = _profile_frame(**_eod_sentinels())
     labels = np.array([0] * 6 + [1] * 6)
 
     clustering.characterize_clusters(frame, labels, 2, "K-Means")
 
     out = capsys.readouterr().out
     assert "Options PCR" not in out
-    assert "9.00" not in out
+    assert _printed_sentinel(out) == []
+
+
+def test_the_sentinel_check_sees_the_value_in_each_number_format():
+    """The check above is only as good as its ability to see the sentinel:
+    a value of 7777.77 printed in any of the profile's number formats shows."""
+    for rendered in (f"{SENTINEL:.2f}", f"{SENTINEL:.1f}", f"{SENTINEL:.0f}"):
+        assert _printed_sentinel(f"  Premium ratio: {rendered} avg") != []
 
 
 def test_cluster_heatmap_reads_the_previous_days_pcr_and_no_eod_column(
