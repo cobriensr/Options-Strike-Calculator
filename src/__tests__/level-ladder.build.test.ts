@@ -80,6 +80,7 @@ function expectedMove(over: Partial<ExpectedMoveRow> = {}): ExpectedMoveRow {
     lower: 7565.1,
     upper: 7611.1,
     unavailable: null,
+    strikeIvs: [],
     ...over,
   };
 }

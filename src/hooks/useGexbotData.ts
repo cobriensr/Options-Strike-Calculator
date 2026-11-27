@@ -123,6 +123,16 @@ export interface MaxchangeWinnerRow {
 }
 
 /**
+ * One strike's call and put IV from the expected-move capture. IVs are
+ * fractions (0.11 = 11%); null where GEXBot sent no quote on that side.
+ */
+export interface ExpectedMoveStrikeIv {
+  strike: number;
+  callIv: number | null;
+  putIv: number | null;
+}
+
+/**
  * GEXBot's ±1σ expected move for one ticker, as of the vendor snapshot.
  * `unavailable` is null exactly when `expectedMove` is a number; otherwise
  * it names why the latest capture could not produce one.
@@ -145,6 +155,12 @@ export interface ExpectedMoveRow {
   lower: number | null;
   upper: number | null;
   unavailable: 'no_spot' | 'no_dte' | 'expired' | 'no_atm_iv' | null;
+  /**
+   * Every strike in the capture the move is computed from, with its call and
+   * put IV; `[]` when the capture has no usable strike rows. Carried even
+   * when the move itself is `unavailable`.
+   */
+  strikeIvs: ExpectedMoveStrikeIv[];
 }
 
 export interface SiblingConfirmRow {

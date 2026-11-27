@@ -7,6 +7,7 @@
 
 import type {
   ExpectedMoveRow,
+  ExpectedMoveStrikeIv,
   SnapshotsLatestRow,
 } from '../../../hooks/useGexbotData';
 import type { DeltaTarget } from '../../../types';
@@ -195,13 +196,11 @@ export type StrikeStatus = 'clear' | 'watch' | 'tested' | 'breached';
 
 /**
  * One strike's call and put IV from the expected-move capture (fractions,
- * 0.11 = 11%); null where GEXBot sent none on that side.
+ * 0.11 = 11%); null where GEXBot sent none on that side. The shape is the
+ * expected-move row's (`ExpectedMoveStrikeIv` in `useGexbotData`), defined
+ * once there.
  */
-export interface LadderStrikeIv {
-  strike: number;
-  callIv: number | null;
-  putIv: number | null;
-}
+export type LadderStrikeIv = ExpectedMoveStrikeIv;
 
 /**
  * Everything a short strike's odds are priced from: `E` and the time left,

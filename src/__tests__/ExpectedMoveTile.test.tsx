@@ -32,6 +32,7 @@ function makeRow(overrides: Partial<ExpectedMoveRow> = {}): ExpectedMoveRow {
     lower: 6310.014426216093,
     upper: 6342.525573783908,
     unavailable: null,
+    strikeIvs: [],
     ...overrides,
   };
 }
