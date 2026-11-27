@@ -479,8 +479,8 @@ export type OptionsVolumePrefix = 'opt_' | 'prev_day_opt_';
  * - the 30-day average volumes are read as integers too, so a fractional
  *   average is truncated before it divides.
  *
- * The daily build calls it, and the history repair (phase 2 of the options-
- * volume design, not written yet) will too, so the two cannot diverge.
+ * The daily build calls it, and the history repair
+ * (`scripts/_lib/options-volume-repair.ts`) does too, so the two cannot diverge.
  */
 export function optionsVolumeFeaturesFromRow(
   ov: Record<string, unknown>,

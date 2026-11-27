@@ -26,8 +26,8 @@
  * ends is not readable either. A tab, LF, CR or space AT the ends is: a trailing
  * newline is what `echo "$URL" | vercel env add` leaves.
  *
- * `readableUrl` is that test. The stale-range tool's `databaseOf` takes it and
- * keeps one check of its own (an `@` with no user and no password parsed), so
+ * `readableUrl` is that test. `databaseOf` (below) takes it and keeps one check
+ * of its own (an `@` with no user and no password parsed), so
  * `databaseOf` refuses everything `dbHost` refuses, and `postgres://@host/db`
  * besides: the host for `dbHost`, the sentinel for `databaseOf`, which is the
  * safe way round. This file imports one pure helper (`trimUrlEnds`) and no

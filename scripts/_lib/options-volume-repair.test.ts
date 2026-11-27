@@ -81,7 +81,8 @@ function uwRow(
   };
 }
 
-/** The largest value of an INTEGER column. */
+/** The smallest and the largest value of an INTEGER column. */
+const INT_MIN = -2_147_483_648;
 const INT_MAX = 2_147_483_647;
 
 /** The trading days of the fixture, with the call volume that names each. */
@@ -624,6 +625,11 @@ describe('planRepair', () => {
         /opt_call_volume: .* does not fit INTEGER/,
       ],
       [
+        'a count one below INTEGER',
+        { call_open_interest: INT_MIN - 1 },
+        /opt_call_oi: .* does not fit INTEGER/,
+      ],
+      [
         'a premium so large its text has an exponent',
         { call_premium: '1e21' },
         /opt_call_premium: .* is not a value a column holds/,
@@ -646,6 +652,14 @@ describe('planRepair', () => {
       expect(after.opt_vol_pcr).toBe('99.9999');
       expect(after.opt_call_premium).toBe('999999999999.99');
       expect(after.opt_call_oi).toBe(String(INT_MAX));
+    });
+
+    it('takes the smallest count INTEGER holds', () => {
+      const plan = planWith({ call_open_interest: INT_MIN })();
+
+      expect(dateOf(plan, '2026-11-11').after.opt_call_oi).toBe(
+        String(INT_MIN),
+      );
     });
 
     it('rounds a premium so small its text has an exponent to zero, not to an error', () => {

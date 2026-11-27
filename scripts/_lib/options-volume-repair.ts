@@ -134,7 +134,8 @@ const DECIMALS = {
   decimal2: { scale: 2, precision: 14, label: 'DECIMAL(14,2)' },
   decimal4: { scale: 4, precision: 6, label: 'DECIMAL(6,4)' },
 } as const;
-/** The largest value of an INTEGER column. */
+/** The smallest and the largest value of an INTEGER column. */
+const INT_MIN = -2_147_483_648;
 const INT_MAX = 2_147_483_647;
 
 /**
@@ -172,7 +173,7 @@ function renderValue(column: Column, value: number | null): string | null {
     );
   }
   if (column.kind === 'int') {
-    if (!Number.isInteger(value) || Math.abs(value) > INT_MAX) {
+    if (!Number.isInteger(value) || value < INT_MIN || value > INT_MAX) {
       throw new RangeError(`${column.name}: ${value} does not fit INTEGER`);
     }
     return String(value);

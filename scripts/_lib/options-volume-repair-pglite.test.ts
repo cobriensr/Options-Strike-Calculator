@@ -1032,12 +1032,24 @@ describe('an undo', () => {
 });
 
 describe('the database name', () => {
-  it('is the one DATABASE_URL names, and is read only after a query succeeded', async () => {
+  it('is the one DATABASE_URL names, without its credentials', async () => {
     await seed();
 
     const { result } = await dryRun();
 
     expect(result.database).toBe(databaseOf(DATABASE_URL));
     expect(result.database).not.toContain('pw-secret');
+  });
+
+  it('is named by no run whose read failed: its error is the driver’s, with nothing added', async () => {
+    await seed();
+    failWhen = (text) =>
+      /^\s*SELECT/.test(text) ? new Error('connection refused') : null;
+
+    const failure = await dryRun().catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe('connection refused');
+    expect(String(failure)).not.toMatch(/ep-test|neondb|pw-secret|owner/);
   });
 });
