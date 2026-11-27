@@ -20,8 +20,9 @@
  *
  * After the close the server answers `snapshots-latest`, `velocity`,
  * `convexity-trend` and `maxchange-winners` with the last session's rows and
- * their capture time, `asOf` (spec: gexbot-after-close-design). For those four
- * views (`CLOSED_SESSION_VIEWS`) the hook:
+ * their capture time, `asOf` (spec:
+ * docs/superpowers/specs/2026-11-20-gexbot-after-close-design.md). For those
+ * four views (`CLOSED_SESSION_VIEWS`) the hook:
  *  - exposes `asOf`;
  *  - drops a body whose `asOf` is before today's open once the market is open
  *    (a tab carried over from the closed view, an edge-cached closed response,
@@ -39,7 +40,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { POLL_INTERVALS } from '../constants';
-import { isCarriedOver, isTransientStatus } from '../utils/closed-session';
+import {
+  asOfFrom,
+  isCarriedOver,
+  isTransientStatus,
+} from '../utils/closed-session';
 import { fetchJson } from './useMarketData.fetchers';
 import { useFinalFetch, type FinalFetchOutcome } from './useFinalFetch';
 import { usePolling } from './usePolling';
@@ -190,8 +195,8 @@ export interface UseGexbotDataResult<V extends GexbotView['view']> {
   /**
    * The capture time of the data, from the body's `asOf`: the latest capture
    * among its rows, which after the close is the last session's. Null for a
-   * view whose body has none, an empty body, a body dropped as carried over
-   * from a closed session, or an `asOf` that is not a timestamp.
+   * view whose body has none, a body with no `asOf`, a body dropped as carried
+   * over from a closed session, or an `asOf` that is not an ISO timestamp.
    */
   asOf: string | null;
 }
@@ -223,17 +228,6 @@ function freshestFrom(rows: unknown[]): string | null {
     }
   }
   return best;
-}
-
-/**
- * The body's `asOf` when it is a timestamp, else null. The body is cast, not
- * parsed, so a wrong type or text that is not a date would otherwise reach the
- * closed label, where it renders as nothing.
- */
-function asOfFrom(raw: unknown): string | null {
-  return typeof raw === 'string' && Number.isFinite(Date.parse(raw))
-    ? raw
-    : null;
 }
 
 /**
@@ -361,8 +355,9 @@ export function useGexbotData<V extends GexbotView['view']>(
   const fetchNow = useCallback(async (): Promise<FinalFetchOutcome> => {
     latestRead.current += 1;
     const thisRead = latestRead.current;
+    // `data` is null for a 2xx whose JSON is `null`: the body is cast, not parsed.
     const result = (await fetchDeduped(url)) as
-      | { data: { rows?: ViewPayload[V]; asOf?: unknown } }
+      | { data: { rows?: ViewPayload[V]; asOf?: unknown } | null }
       | { error: string; status: number };
     const superseded = latestRead.current !== thisRead;
     if ('error' in result) {
@@ -393,7 +388,7 @@ export function useGexbotData<V extends GexbotView['view']>(
       return outcome;
     }
     if (superseded) return 'ok';
-    const asOf = asOfFrom(result.data.asOf);
+    const asOf = asOfFrom(result.data?.asOf);
     // An answer from before today's open, with the market open, is the last
     // session's: a closed response cached at the edge, or a client clock ahead
     // of the server's. It is no live row, and no error either.
@@ -410,7 +405,7 @@ export function useGexbotData<V extends GexbotView['view']>(
       });
       return 'ok';
     }
-    const list = result.data.rows ?? ([] as ViewPayload[V]);
+    const list = result.data?.rows ?? ([] as ViewPayload[V]);
     setState({
       url,
       rows: list,

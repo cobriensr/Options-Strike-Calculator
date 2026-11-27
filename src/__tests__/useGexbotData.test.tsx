@@ -928,10 +928,46 @@ describe('useGexbotData', () => {
         expect(result.current.asOf).toBeNull();
       });
 
+      // R4: a 2xx whose JSON is `null` has no `data.asOf` or `data.rows` to
+      // read. That is an empty body, not a throw out of `fetchNow` (which would
+      // be an unhandled rejection on the `readNow` path and leave the tiles
+      // loading for good).
+      it('reads a 2xx null body as an empty one, with no asOf and no error', async () => {
+        fakeClock();
+        mockFetchJson.mockResolvedValue({ data: null });
+        const { result } = mount(true);
+        await advance(0);
+        expect(result.current.loading).toBe(false);
+        expect(result.current.rows).toEqual([]);
+        expect(result.current.asOf).toBeNull();
+        expect(result.current.freshestAt).toBeNull();
+        expect(result.current.error).toBeNull();
+      });
+
+      it('clears held rows when a later 2xx null body replaces them', async () => {
+        fakeClock();
+        mockFetchJson
+          .mockResolvedValueOnce({
+            data: {
+              rows: [{ ticker: 'SPX', capturedAt: '2026-11-23T16:00:00Z' }],
+            },
+          })
+          .mockResolvedValue({ data: null });
+        const { result } = mount(true);
+        await advance(0);
+        expect(result.current.rows).toHaveLength(1);
+        await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.rows).toEqual([]);
+        expect(result.current.error).toBeNull();
+      });
+
       it.each([
         ['a number', 1_764_000_000],
-        // Date.parse reads both of these as a date once they are strings.
+        // Date.parse reads all of these as a date once they are strings.
         ['a number that reads as a year', 2026],
+        ['a string that reads as a year', '2026'],
+        ['a string that reads as a month', '5'],
         ['an array holding a timestamp', [CLOSE_AT]],
         ['an empty string', ''],
         ['text that is not a date', 'yesterday'],
