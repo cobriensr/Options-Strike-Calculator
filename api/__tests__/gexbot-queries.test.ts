@@ -957,23 +957,26 @@ describe('gexbot-queries', () => {
     // The level ladder prices each short strike from its own IVs, so the row
     // carries the whole decoded chain, not just the ATM read.
     describe('strikeIvs', () => {
-      it('sends every strike as decoded, a missing IV staying null on its side', async () => {
+      it('sends every strike as decoded, in the capture order, a missing IV staying null on its side', async () => {
+        // Deliberately not ascending: the move sorts its own copy to find the
+        // ATM strike, and the row must keep the capture's order.
         mockSql.mockResolvedValueOnce([
           capture({
             mini_contracts: [
-              [6320, 0.12, 0, 1, [], 0, null],
-              [6325, 0.1, 0.12, 1, [], 0, null],
               // No call IV, and no Greek: the row is still a strike.
               [6330, null, 0.1, null, [], 0, null],
+              [6320, 0.12, 0, 1, [], 0, null],
+              [6325, 0.1, 0.12, 1, [], 0, null],
             ],
           }),
         ]);
         const [row] = await getExpectedMove();
         expect(row!.strikeIvs).toEqual([
+          { strike: 6330, callIv: null, putIv: 0.1 },
           { strike: 6320, callIv: 0.12, putIv: null },
           { strike: 6325, callIv: 0.1, putIv: 0.12 },
-          { strike: 6330, callIv: null, putIv: 0.1 },
         ]);
+        expect(row!.atmStrike).toBe(6325);
         expect(row!.unavailable).toBeNull();
       });
 
