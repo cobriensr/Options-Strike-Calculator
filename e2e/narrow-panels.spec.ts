@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
-import { fillVix, setEntryTime } from './helpers/calculator';
+import { FULL_SESSION_NOW, fillVix, setEntryTime } from './helpers/calculator';
 
 /**
  * Rows that don't wrap run past their card on a phone. These two now wrap:
@@ -92,6 +92,9 @@ test.describe('Panels on a phone', () => {
   test('the hedge calculator chips stay in the strike results card at 320px', async ({
     page,
   }) => {
+    // The entry time seeds from the wall clock, so after a half day's 1 PM ET
+    // close no results render (see the constant).
+    await page.clock.setFixedTime(new Date(FULL_SESSION_NOW));
     await page.setViewportSize({ width: 320, height: 640 }); // iPhone SE
     await page.goto('/');
     await page.getByLabel('SPY Price').fill('679');

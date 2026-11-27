@@ -1,5 +1,10 @@
 import { test, expect, type Page } from '@playwright/test';
-import { dateTimeSection, fillVix, openSection } from './helpers/calculator';
+import {
+  FULL_SESSION_NOW,
+  dateTimeSection,
+  fillVix,
+  openSection,
+} from './helpers/calculator';
 
 /**
  * Tests for responsive behavior: mobile viewport, layout shifts,
@@ -88,6 +93,9 @@ test.describe('Responsive Layout', () => {
   });
 
   test('calculation works on mobile viewport', async ({ page }) => {
+    // The entry time seeds from the wall clock, so after a half day's 1 PM ET
+    // close no results render (see the constant).
+    await page.clock.setFixedTime(new Date(FULL_SESSION_NOW));
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto('/');
 
@@ -102,6 +110,8 @@ test.describe('Responsive Layout', () => {
   });
 
   test('strike table becomes delta cards on mobile', async ({ page }) => {
+    // Pinned for the same reason as the calculation test above.
+    await page.clock.setFixedTime(new Date(FULL_SESSION_NOW));
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto('/');
 
