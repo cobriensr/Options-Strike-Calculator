@@ -360,6 +360,60 @@ describe('plot-analysis-prompts.ts', () => {
   });
 
   // ============================================================
+  // Claims the 2026-11-27 re-checks did not support
+  // (docs/tmp/prompt-check-pcr-2026-11-27.md)
+  // ============================================================
+  describe('PCR trend and pipeline claims', () => {
+    /** The IV_PCR_FEATURES group: its heading line to the blank line after. */
+    function ivPcrGroup(): string {
+      const start = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf('\nIV_PCR_FEATURES:\n');
+      expect(start).toBeGreaterThan(-1);
+      const end = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf('\n\n', start + 1);
+      return PLOT_ANALYSIS_SYSTEM_PROMPT.slice(start, end);
+    }
+
+    it('says the pcr_trend_t1_t2 split did not hold, and gives no direction', () => {
+      const line = ivPcrGroup()
+        .split('\n')
+        .find((l) => l.includes('pcr_trend_t1_t2'));
+
+      expect(line).toBe(
+        '  pcr_trend_t1_t2 — the PCR direction from checkpoint 1 to 2. A 64%/31% UP split on the first 27 days did not hold on 175 days (57% vs 52%, p = 0.65), so it carries no directional signal.',
+      );
+      expect(PLOT_ANALYSIS_SYSTEM_PROMPT).not.toContain('64% UP settlement');
+      expect(PLOT_ANALYSIS_SYSTEM_PROMPT).not.toContain(
+        'Rising PCR associated',
+      );
+    });
+
+    it('leaves the other IV_PCR_FEATURES lines as they were', () => {
+      // The slice starts at the newline before the heading: '' then the heading.
+      const lines = ivPcrGroup().split('\n').slice(2);
+
+      expect(lines.map((l) => l.split(' — ')[0])).toEqual([
+        '  iv_open',
+        '  iv_max',
+        '  iv_range',
+        '  iv_crush_rate',
+        '  iv_spike_count',
+        '  iv_at_t2',
+        '  pcr_open through pcr_spike_count',
+        '  pcr_trend_t1_t2',
+      ]);
+      expect(lines[0]).toBe('  iv_open — Implied volatility at market open.');
+    });
+
+    it('no longer says the pipeline feeds the live prompt as calibration data', () => {
+      expect(PLOT_ANALYSIS_SYSTEM_PROMPT).not.toContain(
+        'feed back into the live prompt',
+      );
+      expect(PLOT_ANALYSIS_SYSTEM_PROMPT).toContain(
+        "the live analysis no longer reads the pipeline's findings",
+      );
+    });
+  });
+
+  // ============================================================
   // Plot reference blocks — all 21 must be present
   // ============================================================
   describe('plot reference blocks', () => {

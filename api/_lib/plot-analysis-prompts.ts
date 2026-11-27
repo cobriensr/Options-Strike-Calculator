@@ -72,7 +72,7 @@ IV_PCR_FEATURES:
   iv_spike_count — Number of IV spikes during the session.
   iv_at_t2 — IV level at checkpoint 2 (mid-morning).
   pcr_open through pcr_spike_count — Put/call ratio dynamics throughout the session.
-  pcr_trend_t1_t2 — PCR direction from checkpoint 1 to 2. Rising PCR associated with 64% UP settlement; falling with 31% UP.
+  pcr_trend_t1_t2 — the PCR direction from checkpoint 1 to 2. A 64%/31% UP split on the first 27 days did not hold on 175 days (57% vs 52%, p = 0.65), so it carries no directional signal.
 
 MAX_PAIN_FEATURES:
   max_pain_0dte — The strike where total option holder losses are maximized. Settlement gravitates here in the final 2 hours.
@@ -837,7 +837,7 @@ This system selects one of three credit spread structures daily:
 - CALL CREDIT SPREAD (CCS) — bearish thesis, sells call spreads above the market
 - IRON CONDOR (IC) — neutral thesis, sells both sides
 
-The live trading system uses Claude Opus with a 23K-token system prompt that ingests real-time flow data, gamma profiles, charm patterns, dark pool blocks, and IV dynamics to make daily structure recommendations. ML findings from this pipeline feed back into the live prompt as calibration data (signal hierarchy, confidence calibration, feature importance rankings).
+The live trading system uses Claude Opus with a 23K-token system prompt that ingests real-time flow data, gamma profiles, charm patterns, dark pool blocks, and IV dynamics to make daily structure recommendations. Earlier runs of this pipeline informed the live prompt's signal hierarchy and calibration text, but the live analysis no longer reads the pipeline's findings: the calibration section built from them was removed on 2026-11-27, because the pipeline is disabled and the section held frozen April values.
 
 Key facts:
 - The pipeline processes 39+ trading days of feature data (growing daily)
