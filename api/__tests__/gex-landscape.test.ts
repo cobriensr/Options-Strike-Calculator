@@ -96,6 +96,7 @@ import handler from '../gex-landscape.js';
 import { TransientDbError } from '../_lib/db.js';
 import { setCacheHeaders, isMarketOpen } from '../_lib/api-helpers.js';
 import { setClosedReadCache } from '../_lib/live-read-cache.js';
+import logger from '../_lib/logger.js';
 import { STALENESS_CUTOFF_MS } from '../_lib/periscope-gexbot.js';
 import type { ClosedAnchors } from '../_lib/gexbot-queries.js';
 import { etWallClockToUtcIso, getETDateStr } from '../../src/utils/timezone.js';
@@ -821,38 +822,72 @@ describe('/api/gex-landscape after the close', () => {
     );
   });
 
-  it.each([
-    ['an empty table', null],
-    ['a table with no anchored ticker', anchorsFor([])],
-    ['no SPX anchor', anchorsFor([['NDX', '2026-11-20T21:00:50.000Z']])],
-  ])('%s returns no_slot with asOf null', async (_label, anchors) => {
-    mockGetClosedAnchors.mockResolvedValue(anchors);
-    // Only a table with a session date can list that session's minutes.
-    if (anchors !== null) {
-      mockSql.mockResolvedValueOnce([{ minute: new Date(ANCHOR) }]);
-    }
-    const res = await call();
-    const body = res._json as LandscapeBody;
+  describe('with no SPX anchor', () => {
+    const NO_SPX_ANCHOR_MESSAGE =
+      'gex-landscape: no SPX anchor for the closed market — returning no_slot';
 
-    expect(res._status).toBe(200);
-    expect(body).toMatchObject({
-      marketOpen: false,
-      asOf: null,
-      data: null,
-      reason: 'no_slot',
-    });
-    if (anchors === null) {
+    /** Reply `no_slot` with no capture time; the panels are never read. */
+    function expectNoSlot(res: ReturnType<typeof mockResponse>): LandscapeBody {
+      const body = res._json as LandscapeBody;
+      expect(res._status).toBe(200);
+      expect(body).toMatchObject({
+        marketOpen: false,
+        asOf: null,
+        data: null,
+        reason: 'no_slot',
+      });
+      return body;
+    }
+
+    it('an empty table returns no_slot and reads nothing', async () => {
+      mockGetClosedAnchors.mockResolvedValue(null);
+      const res = await call();
+      const body = expectNoSlot(res);
+
       // Nothing is stored, so there is nothing to list or to read.
       expect(body.availableMinutes).toEqual([]);
       expect(body).not.toHaveProperty('lastMinuteAgeSec');
       expect(mockSql).not.toHaveBeenCalled();
-    } else {
+      // A closed market with no capture at all is worth a log line.
+      expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+        { ticker: 'SPX', sessionDate: null },
+        NO_SPX_ANCHOR_MESSAGE,
+      );
+    });
+
+    it('a table with no anchored ticker lists the session and reads no panel', async () => {
+      mockGetClosedAnchors.mockResolvedValue(anchorsFor([]));
+      mockSql.mockResolvedValueOnce([{ minute: new Date(ANCHOR) }]);
+      const res = await call();
+      const body = expectNoSlot(res);
+
       // The session's minutes are listed, so the panel can still step back.
       // The panels are not read: no anchor, no row to look for.
       expect(body.availableMinutes).toEqual([ANCHOR]);
       expect(callValues(0)).toEqual(['SPX', SESSION]);
       expect(mockSql).toHaveBeenCalledTimes(1);
-    }
+      expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+        { ticker: 'SPX', sessionDate: SESSION },
+        NO_SPX_ANCHOR_MESSAGE,
+      );
+    });
+
+    it("another ticker's anchor is not SPX's: the session is listed and no panel is read", async () => {
+      mockGetClosedAnchors.mockResolvedValue(
+        anchorsFor([['NDX', '2026-11-20T21:00:50.000Z']]),
+      );
+      mockSql.mockResolvedValueOnce([{ minute: new Date(ANCHOR) }]);
+      const res = await call();
+      const body = expectNoSlot(res);
+
+      expect(body.availableMinutes).toEqual([ANCHOR]);
+      expect(callValues(0)).toEqual(['SPX', SESSION]);
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+        { ticker: 'SPX', sessionDate: SESSION },
+        NO_SPX_ANCHOR_MESSAGE,
+      );
+    });
   });
 
   it('returns no_slot when one panel has no row on the session, never an older session', async () => {
@@ -898,6 +933,20 @@ describe('/api/gex-landscape after the close', () => {
     ]);
     const res = await call();
     // Friday 21:00:00Z to Saturday 15:00:00Z: 18 hours.
+    expect((res._json as LandscapeBody).lastMinuteAgeSec).toBe(18 * 3600);
+  });
+
+  it("measures that age from the request's own clock reading, not a later one", async () => {
+    // The clock moves 5 s while the anchors are read. The age still counts
+    // from the instant the request started at, like the cache rule's `now`.
+    mockGetClosedAnchors.mockImplementation(async () => {
+      vi.setSystemTime(new Date(Date.now() + 5_000));
+      return anchorsFor([]);
+    });
+    mockSql.mockResolvedValueOnce([
+      { minute: new Date('2026-11-20T21:00:00.000Z') },
+    ]);
+    const res = await call();
     expect((res._json as LandscapeBody).lastMinuteAgeSec).toBe(18 * 3600);
   });
 
@@ -1013,6 +1062,50 @@ describe('/api/gex-landscape ?at= scrub stays inside its own session', () => {
       expect(mockGetClosedAnchors).not.toHaveBeenCalled();
       expect(setClosedReadCache).not.toHaveBeenCalled();
       expect(setCacheHeaders).toHaveBeenCalledExactlyOnceWith(res, 300, 60);
+    },
+  );
+
+  // `new Date(at)` parses these, but the ET formatter returns '1-01-01',
+  // '999-06-01', '275760-09-12' and '3-12-31' for them: no date, so no ET
+  // midnight to bound a read with. A guest key must not turn that into a 500
+  // and a Sentry event; the reply is the live one, as for a malformed `at`.
+  const NO_ET_SESSION_AT = [
+    ['year 1', '0001-01-01T12:00:00Z'],
+    ['year 999', '0999-06-01T12:00:00Z'],
+    ['the last representable instant', '+275760-09-13T00:00:00Z'],
+    ['a year before year 1', '-000001-01-01T00:00:00Z'],
+  ] as const;
+
+  it.each(NO_ET_SESSION_AT)(
+    'falls back to the live read in session when ?at= has no ET session date (%s)',
+    async (_label, at) => {
+      queueFullResponse(new Date(Date.now() - 30_000));
+      const res = await call({ at });
+
+      expect(res._status).toBe(200);
+      expect((res._json as LandscapeBody).data).not.toBeNull();
+      expect(mockSentryCapture).not.toHaveBeenCalled();
+      // The live reads: each panel bound only by the staleness cutoff.
+      expect(callValues(1)).toHaveLength(3);
+      expect(mockGetClosedAnchors).not.toHaveBeenCalled();
+      expect(setCacheHeaders).toHaveBeenCalledExactlyOnceWith(res, 10, 0);
+    },
+  );
+
+  it.each(NO_ET_SESSION_AT)(
+    'falls back to the closed read when the market is closed and ?at= has no ET session date (%s)',
+    async (_label, at) => {
+      vi.mocked(isMarketOpen).mockReturnValue(false);
+      mockGetClosedAnchors.mockResolvedValue(anchorsFor());
+      const now = setNow(SATURDAY);
+      queueFullResponse(new Date(ANCHOR));
+      const res = await call({ at });
+
+      expect(res._status).toBe(200);
+      expect((res._json as LandscapeBody).asOf).toBe(ANCHOR);
+      expect(mockSentryCapture).not.toHaveBeenCalled();
+      expect(mockGetClosedAnchors).toHaveBeenCalledOnce();
+      expect(setClosedReadCache).toHaveBeenCalledExactlyOnceWith(res, now);
     },
   );
 

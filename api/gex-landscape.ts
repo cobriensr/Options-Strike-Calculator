@@ -20,7 +20,8 @@
  *   1. Pick the session and the bound on each panel read. Every read stays
  *      inside one session, so a row from another session never shows under
  *      this one's label.
- *      - Scrub `?at=ISO` (malformed → fall back to "latest", matching the
+ *      - Scrub `?at=ISO` (malformed, or a date outside years 1000-9999 that
+ *        has no ET session date → fall back to "latest", matching the
  *        project's permissive query handling): the session is the ET date of
  *        `at`, and a panel's row is the newest at or before `at` and after ET
  *        midnight of that date. The date comes from `at`, not from the row
@@ -116,17 +117,33 @@ interface PanelSlot {
   rows: DecodedStrikeWithHistory[];
 }
 
+/** A usable `?at=`: the instant, the ET session it falls on, and its start. */
+interface Scrub {
+  /** The requested instant, as an ISO string. */
+  at: string;
+  /** Its ET calendar date: the one session a scrub reads. */
+  date: string;
+  /** ET midnight of `date`, as an instant. */
+  midnight: string;
+}
+
 /**
- * Try parsing `at` into an ISO timestamp. Returns null when the value
- * is missing, not a string, or `new Date(at)` yields Invalid Date.
- * Matches the project's permissive convention — we don't 400 on bad
- * scrub input, we fall back to "latest".
+ * Try parsing `at` into a scrub. Returns null when the value is missing, not a
+ * string, `new Date(at)` yields Invalid Date, or the instant has no ET session
+ * date we can bound a read with. The last case is a parseable date outside
+ * years 1000-9999: the ET formatter then returns `1-01-01` or `275760-09-12`,
+ * which has no ET midnight. Matches the project's permissive convention — we
+ * don't 400 (or 500) on bad scrub input, we fall back to "latest".
  */
-function parseScrubAt(raw: unknown): string | null {
+function parseScrub(raw: unknown): Scrub | null {
   if (typeof raw !== 'string' || raw.length === 0) return null;
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
+  // The session is the ET date of `at`, not the date of any row found.
+  const date = getETDateStr(d);
+  const midnight = etWallClockToUtcIso(date, 0);
+  if (midnight === null) return null;
+  return { at: d.toISOString(), date, midnight };
 }
 
 /**
@@ -140,8 +157,18 @@ interface PanelBound {
   upper: string;
 }
 
-/** What a request reads: the session date, and how its panels are bounded. */
-type ReadPlan =
+/**
+ * Which of the three reads a request is, decided once in `planRead`: a scrub
+ * (`?at=`), a live read in the session, or a live read with the market closed.
+ * The cache rule follows it.
+ */
+type ReadMode = 'scrub' | 'live' | 'closed';
+
+/**
+ * What a request reads: its mode, the session date, and how its panels are
+ * bounded.
+ */
+type ReadPlan = { mode: ReadMode } & (
   | {
       kind: 'read';
       date: string;
@@ -150,12 +177,15 @@ type ReadPlan =
     }
   // The market is closed and there is no SPX anchor to read up to. `date` is
   // the session the table's newest row is on, or null when the table is empty.
-  | { kind: 'no_slot'; date: string | null };
+  | { kind: 'no_slot'; date: string | null }
+);
 
 /**
- * ET midnight of an ET calendar date, as a UTC ISO instant. Every date here
- * comes from the ET formatter or from the database, so a null conversion
- * means a bug; fail the request rather than read without a lower bound.
+ * ET midnight of the closed session's date, as a UTC ISO instant. The date
+ * comes from `to_char` in `getClosedAnchors`, so a null conversion means a bug;
+ * fail the request rather than read without a lower bound. (A scrub's date is
+ * user-controlled, so `parseScrub` has already ruled out a date with no ET
+ * midnight.)
  */
 function etMidnightUtcIso(date: string): string {
   const iso = etWallClockToUtcIso(date, 0);
@@ -166,33 +196,42 @@ function etMidnightUtcIso(date: string): string {
 }
 
 /**
- * Decide the session a request reads and how each panel read is bounded.
- * See the pipeline notes in the file header.
+ * Decide the mode of a request, the session it reads, and how each panel read
+ * is bounded. See the pipeline notes in the file header.
  */
 async function planRead(
-  scrubAt: string | null,
+  scrub: Scrub | null,
   marketOpen: boolean,
   now: Date,
 ): Promise<ReadPlan> {
-  if (scrubAt != null) {
-    // The session is the ET date of `at`, not the date of any row found.
-    const date = getETDateStr(new Date(scrubAt));
+  if (scrub != null) {
     return {
+      mode: 'scrub',
       kind: 'read',
-      date,
-      bound: { lower: etMidnightUtcIso(date), upper: scrubAt },
+      date: scrub.date,
+      bound: { lower: scrub.midnight, upper: scrub.at },
     };
   }
   if (marketOpen) {
-    return { kind: 'read', date: getETDateStr(now), bound: null };
+    return {
+      mode: 'live',
+      kind: 'read',
+      date: getETDateStr(now),
+      bound: null,
+    };
   }
   const anchors = await getClosedAnchors('gexbot_api_capture');
-  if (anchors == null) return { kind: 'no_slot', date: null };
-  const spxAnchor = anchors.byTicker.get(TICKER);
-  if (spxAnchor === undefined) {
-    return { kind: 'no_slot', date: anchors.sessionDate };
+  const spxAnchor = anchors?.byTicker.get(TICKER);
+  if (anchors == null || spxAnchor === undefined) {
+    const sessionDate = anchors?.sessionDate ?? null;
+    logger.warn(
+      { ticker: TICKER, sessionDate },
+      'gex-landscape: no SPX anchor for the closed market — returning no_slot',
+    );
+    return { mode: 'closed', kind: 'no_slot', date: sessionDate };
   }
   return {
+    mode: 'closed',
     kind: 'read',
     date: anchors.sessionDate,
     bound: { lower: etMidnightUtcIso(anchors.sessionDate), upper: spxAnchor },
@@ -376,23 +415,22 @@ export default async function handler(
     const now = new Date();
     const marketOpen = isMarketOpen();
 
-    const scrubAt = parseScrubAt(req.query.at);
-    const scrubbed = scrubAt != null;
-    // A scrub reads one past minute, so it keeps the scrub cache even with the
-    // market closed.
-    const closedLive = !scrubbed && !marketOpen;
+    const plan = await planRead(parseScrub(req.query.at), marketOpen, now);
 
     // Cache headers are set on each success path below, not up front, so an
-    // error reply carries none.
+    // error reply carries none. A scrub reads one past minute, so it keeps the
+    // scrub cache even with the market closed.
     const setCache = (hasData: boolean): void => {
-      if (closedLive) {
+      if (plan.mode === 'closed') {
         setClosedReadCache(res, now);
       } else {
-        setLiveReadCache(res, { historical: scrubbed, hasData, marketOpen });
+        setLiveReadCache(res, {
+          historical: plan.mode === 'scrub',
+          hasData,
+          marketOpen,
+        });
       }
     };
-
-    const plan = await planRead(scrubAt, marketOpen, now);
 
     // Available minutes is small (~390 rows max for a full session) and
     // backs the scrub stepper — fetch unconditionally so the panel can
@@ -429,7 +467,7 @@ export default async function handler(
         availableMinutes,
         ...(lastMinute !== undefined && {
           lastMinuteAgeSec: Math.round(
-            (Date.now() - Date.parse(lastMinute)) / 1000,
+            (now.getTime() - Date.parse(lastMinute)) / 1000,
           ),
         }),
       });
