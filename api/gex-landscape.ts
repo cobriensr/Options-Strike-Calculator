@@ -82,7 +82,12 @@ import { getDb, withDbRetry } from './_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { fetchSpxSpot } from './_lib/periscope-query.js';
-import { getClosedAnchors } from './_lib/gexbot-queries.js';
+import {
+  getClosedSpxBound,
+  readPanelRowInBound,
+  type CaptureRow,
+  type PanelBound,
+} from './_lib/closed-spx-bound.js';
 import { etWallClockToUtcIso, getETDateStr } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
 import {
@@ -147,17 +152,6 @@ function parseScrub(raw: unknown): Scrub | null {
 }
 
 /**
- * The instants (ISO strings) that confine a panel read to one session.
- * `upper` is the newest instant the read may return, to the millisecond.
- */
-interface PanelBound {
-  /** ET midnight of the session date, so no row from an earlier session. */
-  lower: string;
-  /** A scrub's `at`, or the SPX anchor when the market is closed. */
-  upper: string;
-}
-
-/**
  * Which of the three reads a request is, decided once in `planRead`: a scrub
  * (`?at=`), a live read in the session, or a live read with the market closed.
  * The cache rule follows it.
@@ -181,23 +175,11 @@ type ReadPlan = { mode: ReadMode } & (
 );
 
 /**
- * ET midnight of the closed session's date, as a UTC ISO instant. The date
- * comes from `to_char` in `getClosedAnchors`, so a null conversion means a bug;
- * fail the request rather than read without a lower bound. (A scrub's date is
- * user-controlled, so `parseScrub` has already ruled out a date with no ET
- * midnight.)
- */
-function etMidnightUtcIso(date: string): string {
-  const iso = etWallClockToUtcIso(date, 0);
-  if (iso === null) {
-    throw new Error(`gex-landscape: no ET midnight for session date ${date}`);
-  }
-  return iso;
-}
-
-/**
  * Decide the mode of a request, the session it reads, and how each panel read
- * is bounded. See the pipeline notes in the file header.
+ * is bounded. See the pipeline notes in the file header. The closed market's
+ * session and bound come from `getClosedSpxBound`, shared with
+ * `/api/periscope-map`; a scrub's date is user-controlled, so `parseScrub` has
+ * already ruled out one with no ET midnight.
  */
 async function planRead(
   scrub: Scrub | null,
@@ -220,22 +202,7 @@ async function planRead(
       bound: null,
     };
   }
-  const anchors = await getClosedAnchors('gexbot_api_capture');
-  const spxAnchor = anchors?.byTicker.get(TICKER);
-  if (anchors == null || spxAnchor === undefined) {
-    const sessionDate = anchors?.sessionDate ?? null;
-    logger.warn(
-      { ticker: TICKER, sessionDate },
-      'gex-landscape: no SPX anchor for the closed market — returning no_slot',
-    );
-    return { mode: 'closed', kind: 'no_slot', date: sessionDate };
-  }
-  return {
-    mode: 'closed',
-    kind: 'read',
-    date: anchors.sessionDate,
-    bound: { lower: etMidnightUtcIso(anchors.sessionDate), upper: spxAnchor },
-  };
+  return { mode: 'closed', ...(await getClosedSpxBound('gex-landscape')) };
 }
 
 /**
@@ -248,37 +215,21 @@ async function fetchPanelSlot(
   panel: PanelName,
   bound: PanelBound | null,
 ): Promise<PanelSlot | null> {
-  const sql = getDb();
-  const category = PANEL_TO_CATEGORY[panel];
-
-  let rows: { captured_at: Date | string; raw_response: unknown }[];
+  let row: CaptureRow | undefined;
   if (bound != null) {
     // Bounded mode: the newest row at or before `upper`, on the session. No
     // staleness floor (scrubbing back into history is the whole point of the
-    // param, and a closed market's last capture is hours old). The upper end
-    // is `< upper + 1 ms`, not `<= upper`: `captured_at` keeps microseconds
-    // and `upper` is a millisecond string, so `<=` would drop the very row an
-    // anchor names.
-    rows = (await withDbRetry(
-      () => sql`
-        SELECT captured_at, raw_response
-        FROM gexbot_api_capture
-        WHERE ticker = ${TICKER}
-          AND endpoint = 'state'
-          AND category = ${category}
-          AND captured_at >= ${bound.lower}
-          AND captured_at < ${bound.upper}::timestamptz + INTERVAL '1 millisecond'
-        ORDER BY captured_at DESC
-        LIMIT 1
-      `,
-    )) as { captured_at: Date | string; raw_response: unknown }[];
+    // param, and a closed market's last capture is hours old).
+    row = await readPanelRowInBound(panel, bound);
   } else {
     // Live mode: enforce the staleness window so we don't render a
     // multi-hour-old slice from a stalled cron as if it were "now".
+    const sql = getDb();
+    const category = PANEL_TO_CATEGORY[panel];
     const stalenessCutoff = new Date(
       Date.now() - STALENESS_CUTOFF_MS,
     ).toISOString();
-    rows = (await withDbRetry(
+    const rows = (await withDbRetry(
       () => sql`
         SELECT captured_at, raw_response
         FROM gexbot_api_capture
@@ -289,10 +240,11 @@ async function fetchPanelSlot(
         ORDER BY captured_at DESC
         LIMIT 1
       `,
-    )) as { captured_at: Date | string; raw_response: unknown }[];
+    )) as CaptureRow[];
+    row = rows[0];
   }
 
-  if (rows.length === 0) {
+  if (row === undefined) {
     logger.warn(
       { panel, ticker: TICKER, bound },
       'gex-landscape: no qualifying gexbot row for panel — returning no_slot',
@@ -300,7 +252,6 @@ async function fetchPanelSlot(
     return null;
   }
 
-  const row = rows[0]!;
   const decoded = decodeStrikesWithHistory(
     row.raw_response as GexbotStatePayload,
   );
