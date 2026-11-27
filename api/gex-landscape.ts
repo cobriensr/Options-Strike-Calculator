@@ -17,43 +17,72 @@
  *   docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md
  *
  * Pipeline:
- *   1. Resolve scrub `?at=ISO` → captured-at-or-before; malformed → fall
- *      back to "latest" (matches the project's permissive query handling).
- *   2. Read the latest gexbot row per panel (gamma_zero / charm_zero /
- *      vanna_zero) for SPX within STALENESS_CUTOFF_MS.
+ *   1. Pick the session and the bound on each panel read. Every read stays
+ *      inside one session, so a row from another session never shows under
+ *      this one's label.
+ *      - Scrub `?at=ISO` (malformed → fall back to "latest", matching the
+ *        project's permissive query handling): the session is the ET date of
+ *        `at`, and a panel's row is the newest at or before `at` and after ET
+ *        midnight of that date. The date comes from `at`, not from the row
+ *        found: a session's first scrub minute finds the previous session's
+ *        last row, which the lower bound turns into `no_slot`.
+ *      - Live, market closed: the session is the one `getClosedAnchors` reads
+ *        off the newest capture (a weekend, a holiday and the pre-open all
+ *        read the last session). A panel's row is the newest at or before the
+ *        SPX anchor, its last real capture of the session, and after ET
+ *        midnight. No SPX anchor, or an empty table, is `no_slot`.
+ *      - Live, in session: today, and the newest row within STALENESS_CUTOFF_MS.
+ *      A bounded read ends after its upper bound's whole millisecond
+ *      (`< upper + 1 ms`): `captured_at` is `now()` and keeps microseconds
+ *      while the bound travels as a millisecond ISO string.
+ *   2. Read the row per panel (gamma_zero / charm_zero / vanna_zero) for SPX.
  *   3. Decode each panel via `decodeStrikesWithHistory()`.
  *   4. Join the three panels by strike. Missing scalar values default
  *      to 0 so client arithmetic doesn't have to null-guard; missing
  *      prev values stay null (source-of-truth).
- *   5. `fetchSpxSpot(date, capturedAt)` → spot anchor; null returns
- *      `data: null, reason: 'no_spot'`.
- *   6. Distinct minutes for SPX gamma_zero today → `availableMinutes`
- *      for the scrub stepper (one panel is enough — same cron writes all
- *      three at the same minute mark).
+ *   5. `fetchSpxSpot(date, capturedAt)` → spot anchor, on the session date;
+ *      null returns `data: null, reason: 'no_spot'`.
+ *   6. Distinct minutes for SPX gamma_zero on the session date →
+ *      `availableMinutes` for the scrub stepper (one panel is enough — same
+ *      cron writes all three at the same minute mark).
+ *
+ * `asOf` is a capture time on every path: the freshest panel's `captured_at`
+ * for a reply with data or `no_spot`, and null for `no_slot` (no capture backs
+ * it). A `no_slot` that lists minutes also carries `lastMinuteAgeSec`: how old
+ * the last listed minute is on the server's clock, so a client can show a stall
+ * age without trusting its own clock.
  *
  * Auth: owner OR guest (read-only). Identical to /api/periscope-map.
- * Cache, chosen per response once its kind is known (an error sets none), by
- * `setLiveReadCache` (`_lib/live-read-cache.ts`, shared with the Periscope
- * readers):
- *   - live, response carries data: 10s edge, no stale reuse. A capture under
- *     5 minutes old means captures are running (the pre-open included), so
- *     healthy data never sits at the edge for a minute.
- *   - live, during the session, no_slot / no_spot: 10s edge, so a recovering
- *     feed shows within seconds.
- *   - scrubbed (`at` set): 300s edge + 60s SWR. A past minute doesn't change.
- *   - live, outside the session, no data: 300s edge + 60s SWR.
+ * Cache, chosen per response once its kind is known (an error sets none):
+ *   - live, market closed (any body): `setClosedReadCache`
+ *     (`_lib/live-read-cache.ts`). Nothing new lands after the close, so the
+ *     response lives as long as is safe: it ends before the client's final
+ *     fetch (close + 3 min) and before the next open.
+ *   - the rest, by `setLiveReadCache` (same file, shared with the Periscope
+ *     readers):
+ *     - live, response carries data: 10s edge, no stale reuse. A capture under
+ *       5 minutes old means captures are running, so healthy data never sits at
+ *       the edge for a minute.
+ *     - live, during the session, no_slot / no_spot: 10s edge, so a recovering
+ *       feed shows within seconds.
+ *     - scrubbed (`at` set), market open or closed: 300s edge + 60s SWR. A
+ *       past minute doesn't change.
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { isMarketOpen } from './_lib/api-helpers.js';
-import { setLiveReadCache } from './_lib/live-read-cache.js';
+import {
+  setClosedReadCache,
+  setLiveReadCache,
+} from './_lib/live-read-cache.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { fetchSpxSpot } from './_lib/periscope-query.js';
-import { getETDateStr } from '../src/utils/timezone.js';
+import { getClosedAnchors } from './_lib/gexbot-queries.js';
+import { etWallClockToUtcIso, getETDateStr } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
 import {
   PANELS,
@@ -101,21 +130,96 @@ function parseScrubAt(raw: unknown): string | null {
 }
 
 /**
- * Fetch one panel's latest capture under the staleness window, OR the
- * latest capture at-or-before `scrubAt` when scrubbing. Returns null
- * when no row qualifies (panel stale / cron gap / scrub before start).
+ * The instants (ISO strings) that confine a panel read to one session.
+ * `upper` is the newest instant the read may return, to the millisecond.
+ */
+interface PanelBound {
+  /** ET midnight of the session date, so no row from an earlier session. */
+  lower: string;
+  /** A scrub's `at`, or the SPX anchor when the market is closed. */
+  upper: string;
+}
+
+/** What a request reads: the session date, and how its panels are bounded. */
+type ReadPlan =
+  | {
+      kind: 'read';
+      date: string;
+      /** null: a live in-session read, held to the staleness window. */
+      bound: PanelBound | null;
+    }
+  // The market is closed and there is no SPX anchor to read up to. `date` is
+  // the session the table's newest row is on, or null when the table is empty.
+  | { kind: 'no_slot'; date: string | null };
+
+/**
+ * ET midnight of an ET calendar date, as a UTC ISO instant. Every date here
+ * comes from the ET formatter or from the database, so a null conversion
+ * means a bug; fail the request rather than read without a lower bound.
+ */
+function etMidnightUtcIso(date: string): string {
+  const iso = etWallClockToUtcIso(date, 0);
+  if (iso === null) {
+    throw new Error(`gex-landscape: no ET midnight for session date ${date}`);
+  }
+  return iso;
+}
+
+/**
+ * Decide the session a request reads and how each panel read is bounded.
+ * See the pipeline notes in the file header.
+ */
+async function planRead(
+  scrubAt: string | null,
+  marketOpen: boolean,
+  now: Date,
+): Promise<ReadPlan> {
+  if (scrubAt != null) {
+    // The session is the ET date of `at`, not the date of any row found.
+    const date = getETDateStr(new Date(scrubAt));
+    return {
+      kind: 'read',
+      date,
+      bound: { lower: etMidnightUtcIso(date), upper: scrubAt },
+    };
+  }
+  if (marketOpen) {
+    return { kind: 'read', date: getETDateStr(now), bound: null };
+  }
+  const anchors = await getClosedAnchors('gexbot_api_capture');
+  if (anchors == null) return { kind: 'no_slot', date: null };
+  const spxAnchor = anchors.byTicker.get(TICKER);
+  if (spxAnchor === undefined) {
+    return { kind: 'no_slot', date: anchors.sessionDate };
+  }
+  return {
+    kind: 'read',
+    date: anchors.sessionDate,
+    bound: { lower: etMidnightUtcIso(anchors.sessionDate), upper: spxAnchor },
+  };
+}
+
+/**
+ * Fetch one panel's newest capture inside `bound` (a scrub, or the closed
+ * market's last session), OR the latest capture under the staleness window
+ * when `bound` is null (live, in session). Returns null when no row qualifies
+ * (panel stale / cron gap / scrub before the session's first capture).
  */
 async function fetchPanelSlot(
   panel: PanelName,
-  scrubAt: string | null,
+  bound: PanelBound | null,
 ): Promise<PanelSlot | null> {
   const sql = getDb();
   const category = PANEL_TO_CATEGORY[panel];
 
   let rows: { captured_at: Date | string; raw_response: unknown }[];
-  if (scrubAt != null) {
-    // Scrub mode: at-or-before the requested minute. No staleness floor
-    // (scrubbing back into history is the whole point of the param).
+  if (bound != null) {
+    // Bounded mode: the newest row at or before `upper`, on the session. No
+    // staleness floor (scrubbing back into history is the whole point of the
+    // param, and a closed market's last capture is hours old). The upper end
+    // is `< upper + 1 ms`, not `<= upper`: `captured_at` keeps microseconds
+    // and `upper` is a millisecond string, so `<=` would drop the very row an
+    // anchor names.
     rows = (await withDbRetry(
       () => sql`
         SELECT captured_at, raw_response
@@ -123,7 +227,8 @@ async function fetchPanelSlot(
         WHERE ticker = ${TICKER}
           AND endpoint = 'state'
           AND category = ${category}
-          AND captured_at <= ${scrubAt}
+          AND captured_at >= ${bound.lower}
+          AND captured_at < ${bound.upper}::timestamptz + INTERVAL '1 millisecond'
         ORDER BY captured_at DESC
         LIMIT 1
       `,
@@ -150,7 +255,7 @@ async function fetchPanelSlot(
 
   if (rows.length === 0) {
     logger.warn(
-      { panel, ticker: TICKER, scrubAt },
+      { panel, ticker: TICKER, bound },
       'gex-landscape: no qualifying gexbot row for panel — returning no_slot',
     );
     return null;
@@ -265,39 +370,68 @@ export default async function handler(
 
   try {
     Sentry.setTag('route', '/api/gex-landscape');
+    // One clock reading per request, handed to the closed cache rule so its
+    // close and open checks see a single instant. `isMarketOpen()` takes no
+    // date and reads its own clock a moment later.
+    const now = new Date();
     const marketOpen = isMarketOpen();
-    const date = getETDateStr(new Date()); // today CT
 
     const scrubAt = parseScrubAt(req.query.at);
+    const scrubbed = scrubAt != null;
+    // A scrub reads one past minute, so it keeps the scrub cache even with the
+    // market closed.
+    const closedLive = !scrubbed && !marketOpen;
 
     // Cache headers are set on each success path below, not up front, so an
     // error reply carries none.
-    const scrubbed = scrubAt != null;
+    const setCache = (hasData: boolean): void => {
+      if (closedLive) {
+        setClosedReadCache(res, now);
+      } else {
+        setLiveReadCache(res, { historical: scrubbed, hasData, marketOpen });
+      }
+    };
+
+    const plan = await planRead(scrubAt, marketOpen, now);
 
     // Available minutes is small (~390 rows max for a full session) and
     // backs the scrub stepper — fetch unconditionally so the panel can
     // step backward even when the live slot is missing.
-    const availableMinutes = await fetchAvailableMinutes(date);
+    const availableMinutes =
+      plan.date === null ? [] : await fetchAvailableMinutes(plan.date);
 
-    // Fetch all three panels in parallel — independent reads.
-    const panelSlots = await Promise.all(
-      PANELS.map((panel) => fetchPanelSlot(panel, scrubAt)),
-    );
-    const [gammaSlot, charmSlot, vannaSlot] = panelSlots;
+    // Fetch all three panels in parallel — independent reads. With no SPX
+    // anchor there is nothing to read up to, so no panel is read.
+    const [gammaSlot, charmSlot, vannaSlot] =
+      plan.kind === 'read'
+        ? await Promise.all(
+            PANELS.map((panel) => fetchPanelSlot(panel, plan.bound)),
+          )
+        : [null, null, null];
 
-    if (gammaSlot == null || charmSlot == null || vannaSlot == null) {
-      setLiveReadCache(res, {
-        historical: scrubbed,
-        hasData: false,
-        marketOpen,
-      });
+    if (
+      plan.kind !== 'read' ||
+      gammaSlot == null ||
+      charmSlot == null ||
+      vannaSlot == null
+    ) {
+      setCache(false);
       done({ status: 200 });
+      // No capture backs this reply, so `asOf` is null. Without it a client
+      // can't tell how long the feed has been stalled, so the reply carries the
+      // age of its last listed minute, measured on this server's clock.
+      const lastMinute = availableMinutes.at(-1);
       res.status(200).json({
         marketOpen,
-        asOf: new Date().toISOString(),
+        asOf: null,
         data: null,
         reason: 'no_slot',
         availableMinutes,
+        ...(lastMinute !== undefined && {
+          lastMinuteAgeSec: Math.round(
+            (Date.now() - Date.parse(lastMinute)) / 1000,
+          ),
+        }),
       });
       return;
     }
@@ -312,17 +446,13 @@ export default async function handler(
       ),
     );
 
-    const spot = await fetchSpxSpot(date, latestCapturedAt.toISOString());
+    const spot = await fetchSpxSpot(plan.date, latestCapturedAt.toISOString());
     if (spot == null) {
-      setLiveReadCache(res, {
-        historical: scrubbed,
-        hasData: false,
-        marketOpen,
-      });
+      setCache(false);
       done({ status: 200 });
       res.status(200).json({
         marketOpen,
-        asOf: new Date().toISOString(),
+        asOf: latestCapturedAt.toISOString(),
         data: null,
         reason: 'no_spot',
         availableMinutes,
@@ -338,7 +468,7 @@ export default async function handler(
 
     const ageSec = Math.round((Date.now() - latestCapturedAt.getTime()) / 1000);
 
-    setLiveReadCache(res, { historical: scrubbed, hasData: true, marketOpen });
+    setCache(true);
     done({ status: 200 });
     res.status(200).json({
       marketOpen,
