@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { fillVix, setEntryTime } from './helpers/calculator';
+import { FULL_SESSION_NOW, fillVix, setEntryTime } from './helpers/calculator';
 
 async function fillInputs(page: Page, hour: string, ampm: 'AM' | 'PM') {
   await page.getByLabel('SPY Price').fill('679');
@@ -20,6 +20,8 @@ async function fillInputs(page: Page, hour: string, ampm: 'AM' | 'PM') {
  */
 test.describe('IV Acceleration', () => {
   test.beforeEach(async ({ page }) => {
+    // Entries at 2 PM and 3:30 PM ET need a full session (see the constant).
+    await page.clock.setFixedTime(new Date(FULL_SESSION_NOW));
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
   });

@@ -9,6 +9,22 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 
 /**
+ * The instant a spec pins the browser clock to (`page.clock.setFixedTime`)
+ * when it picks entry times through the whole session. The app reads the real
+ * date, and the real date can be a half day: on 2026-11-27 the session closes
+ * at 1 PM ET (`EARLY_CLOSE_DATES`), so a 2 PM ET entry falls after the close
+ * and no results render.
+ *
+ * Wednesday 2026-06-24: a full session (4 PM ET close), no holiday, and no
+ * event data on a static list, since the event banner reads `/api/events`,
+ * which the specs abort. 22:00 UTC is 5 PM CT, after the close, so the entry
+ * time seeds from its fixed 10:00 AM CT default (`useTimeInputs`), not from
+ * the clock. No spec starts on the hour it goes on to select, and no
+ * market-hours poll runs.
+ */
+export const FULL_SESSION_NOW = '2026-06-24T22:00:00Z';
+
+/**
  * A `Chip` toggle by its exact label. `exact` matters: a substring match on
  * 'AM' or 'ET' would hit every button whose name contains those letters.
  * Assert its state with `toHaveAttribute('aria-pressed', 'true')`.

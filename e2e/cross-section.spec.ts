@@ -1,5 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
-import { chip, fillVix, openSection, setEntryTime } from './helpers/calculator';
+import {
+  FULL_SESSION_NOW,
+  chip,
+  fillVix,
+  openSection,
+  setEntryTime,
+} from './helpers/calculator';
 
 async function fillInputs(page: Page) {
   await setEntryTime(page);
@@ -18,6 +24,9 @@ async function fillInputs(page: Page) {
  */
 test.describe('Cross-Section Input Cascades', () => {
   test.beforeEach(async ({ page }) => {
+    // The 10 AM ET entry and its strikes assume a full session (see the
+    // constant); a half day shortens the hours remaining.
+    await page.clock.setFixedTime(new Date(FULL_SESSION_NOW));
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
   });
