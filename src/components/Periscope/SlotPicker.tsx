@@ -59,7 +59,8 @@ export function SlotPicker({
 }: SlotPickerProps) {
   // Live route with the market open: the view is streaming. After the close
   // the live route holds the last session's map and the panel header carries
-  // its capture time, so neither the dot nor the asOf time shows.
+  // its capture time, so neither the dot, the green accent nor the asOf time
+  // shows: the toggle reads as a plain disabled button.
   const streaming = isLive && marketOpen;
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -146,8 +147,8 @@ export function SlotPicker({
         disabled={isLive}
         className="rounded px-2 py-0.5 font-mono text-[10px] tracking-wider uppercase disabled:opacity-50"
         style={{
-          color: isLive ? theme.green : theme.text,
-          backgroundColor: isLive ? theme.accentBg : theme.chipBg,
+          color: streaming ? theme.green : theme.text,
+          backgroundColor: streaming ? theme.accentBg : theme.chipBg,
         }}
         aria-label="Return to live"
       >

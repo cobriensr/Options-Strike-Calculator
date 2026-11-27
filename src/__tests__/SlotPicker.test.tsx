@@ -8,6 +8,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SlotPicker } from '../components/Periscope/SlotPicker';
+import { theme } from '../themes';
 
 // Friday 2026-11-20 (CST, UTC-6): 20:50Z is 14:50 CT.
 const SLOTS = [
@@ -55,6 +56,28 @@ describe('SlotPicker: live toggle', () => {
     // Still the live route: nothing to return to.
     expect(liveToggle()).toBeDisabled();
     expect(screen.queryByText(/CT$/)).toBeNull();
+  });
+
+  // The green accent says "streaming", like the dot. A live toggle on a closed
+  // market streams nothing, so it reads as a plain (disabled) button.
+  it('open on the live route: carries the green streaming accent', () => {
+    render(<SlotPicker {...makeProps()} />);
+    expect(liveToggle().style.color).toBe(theme.green);
+    expect(liveToggle().style.backgroundColor).toBe(theme.accentBg);
+  });
+
+  it('closed on the live route: looks like a plain button, not a streaming one', () => {
+    render(<SlotPicker {...makeProps({ marketOpen: false })} />);
+    expect(liveToggle().style.color).toBe(theme.text);
+    expect(liveToggle().style.backgroundColor).toBe(theme.chipBg);
+  });
+
+  it('closed on the live route: matches the toggle of a picked slot', () => {
+    const closed = render(<SlotPicker {...makeProps({ marketOpen: false })} />);
+    const closedStyle = liveToggle().getAttribute('style');
+    closed.unmount();
+    render(<SlotPicker {...makeProps({ isLive: false, marketOpen: false })} />);
+    expect(liveToggle().getAttribute('style')).toBe(closedStyle);
   });
 
   it('keeps the same accessible name with or without the dot', () => {
