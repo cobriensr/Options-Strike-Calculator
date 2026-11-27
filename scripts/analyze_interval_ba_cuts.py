@@ -552,7 +552,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f'Loading paths from {csv_path.name}…')
     # The CSV's alert_id is the table's integer id, or the export's `<chain>@<epoch>` string.
-    paths = load_forward_paths(csv_path, key=str if export else int)
+    paths = load_forward_paths(csv_path, key=eio.alert_id_reader(export, csv_path.name))
     print(f'  {len(paths)} alerts with forward path')
 
     source_note = ''

@@ -69,7 +69,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -484,18 +484,44 @@ def newest_outcomes_csv(out_dir: Path, ticker: str, export: bool) -> Path | None
     return None
 
 
+def alert_id_reader(export: bool, csv_name: str) -> Callable[[str], int | str]:
+    """How the analyze_* scripts read an outcomes CSV's alert_id column.
+
+    The two sources write two kinds of id: the table's integer, and the export's
+    `<chain>@<bucket epoch>`. The CSV of the other source is a named exit, not a raw ValueError
+    from int('SPXW...@epoch') or a join of nothing."""
+
+    def read(raw: str) -> int | str:
+        if export:
+            if '@' not in raw:
+                sys.exit(
+                    f'{csv_name} holds table alert ids (integers such as {raw!r}), not export '
+                    f'alert ids (<chain>@<epoch>): pass --source table, or an export CSV with '
+                    f'--csv.',
+                )
+            return raw
+        try:
+            return int(raw)
+        except ValueError:
+            sys.exit(
+                f'{csv_name} holds export alert ids ({raw!r}: <chain>@<epoch>), not table '
+                f'ids: pass --source export, or a table CSV with --csv.',
+            )
+
+    return read
+
+
 def require_joined(joined: int, alerts: int, paths: int, csv_name: str, source: str) -> None:
-    """Exit when the alerts and the CSV's paths share no alert_id.
+    """Exit when no alert joined a path, with no exceptions.
 
     The two analyze_* scripts join the alerts of `source` to the paths of an outcomes CSV by
-    alert_id. A CSV of the other source (integer table ids against the export's
-    `<chain>@<epoch>`) or one from another run joins nothing, and the tables would come out
-    empty with exit 0. An empty alert set or an empty CSV is not this case: it passes."""
-    if alerts and paths and not joined:
+    alert_id. An empty join (a CSV of another run, one with no rows, no alert of the ticker)
+    would give empty tables and exit 0, and an analysis of zero alerts is never what a run
+    meant."""
+    if not joined:
         sys.exit(
             f'No alert joined a path: {alerts} alerts from the {source} source and {paths} paths '
-            f'in {csv_name} share no alert_id. The CSV is the other source\'s or from another '
-            f'run: check --csv against --source ({source}).',
+            f'in {csv_name}. Check --csv against --source ({source}), and --ticker.',
         )
 
 

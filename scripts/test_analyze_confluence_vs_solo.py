@@ -349,7 +349,12 @@ def test_main_loads_the_paths_from_the_csv_of_its_source(tmp_path, monkeypatch, 
         acs.main(['--source', source])
 
     # The export's alert_id is the string `<chain>@<epoch>`, the table's an integer id.
-    assert seen == [(tmp_path / taken, str if source == 'export' else int)]
+    [(path, key)] = seen
+    assert path == tmp_path / taken
+    if source == 'export':
+        assert key('SPXW261117C06700000@1790000000') == 'SPXW261117C06700000@1790000000'
+    else:
+        assert key('12') == 12
 
 
 # --- the sources ------------------------------------------------------------------------------
@@ -410,7 +415,7 @@ def test_confluence_export_source_tags_partners_from_the_replay(
             }  # fmt: skip
         )
     write_export(run, export_rows(alerts))
-    touch(run / 'out', EXPORT_CSV)
+    write_outcomes(run / 'out' / EXPORT_CSV, alerts, export=True)
 
     acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
 
@@ -426,7 +431,7 @@ def test_confluence_an_spy_and_a_qqq_partner_make_a_3way(run):
     qqq = {**alerts[0], 'ticker': 'QQQ', 'chain': 'QQQ261117C00500000', 'fired_at': at('14:59:40')}
     alerts.append(qqq)
     write_export(run, export_rows(alerts))
-    touch(run / 'out', EXPORT_CSV)
+    write_outcomes(run / 'out' / EXPORT_CSV, alerts, export=True)
 
     acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
 
@@ -476,7 +481,8 @@ def test_confluence_counts_only_partners_at_or_before_the_alert(
     run, monkeypatch, source, partners, cohort
 ):
     alerts = _partner_alerts(partners)
-    touch(run / 'out', TABLE_CSV, EXPORT_CSV)
+    write_outcomes(run / 'out' / TABLE_CSV, alerts, export=False)
+    write_outcomes(run / 'out' / EXPORT_CSV, alerts, export=True)
     if source == 'export':
         write_export(run, export_rows(alerts))
         argv = ['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)]
@@ -575,19 +581,97 @@ def test_the_cohort_counts_change_by_design_when_a_partner_comes_after_the_alert
     assert counts_of(report(run / 'out', export=True)) == {'3way': 0, '2way': 60, 'solo': 180}
 
 
-def test_a_table_csv_with_the_export_source_joins_nothing_and_exits(run, both_sources):
-    """The old habit `--csv <table csv>` under the new default: integer ids against the export's
-    `<chain>@<epoch>` ids share nothing, and every cohort table would come out empty."""
+def test_a_table_csv_with_the_export_source_names_the_mistake(run, both_sources):
+    """The old habit `--csv <table csv>` under the new default: the CSV holds integer table ids,
+    the export's are `<chain>@<epoch>`. It says so, instead of reporting a join of nothing."""
     with pytest.raises(SystemExit) as stopped:
         acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / TABLE_CSV)])
 
     message = str(stopped.value)
+    assert message.startswith(f'{TABLE_CSV} holds table alert ids')
+    assert '--source table' in message
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+    psycopg2.connect.assert_not_called()
+
+
+def test_an_export_csv_with_the_table_source_names_the_mistake(run, monkeypatch, both_sources):
+    """The other way: not a raw ValueError from int('SPXW...@epoch')."""
+    use_table(monkeypatch, both_sources)
+
+    with pytest.raises(SystemExit) as stopped:
+        acs.main(['--source', 'table', '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    message = str(stopped.value)
+    assert message.startswith(f'{EXPORT_CSV} holds export alert ids')
+    assert 'SPXW' in message  # the first id it met
+    assert '--source export' in message
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+
+
+def test_an_export_csv_of_other_alerts_joins_nothing_and_exits(run, both_sources):
+    """Export-looking ids that match no alert in this export (another replay, another ticker)."""
+    other = [{**a, 'chain': a['chain'].replace('261117', '261001')} for a in both_sources]
+    write_outcomes(run / 'out' / EXPORT_CSV, other, export=True)
+
+    with pytest.raises(SystemExit) as stopped:
+        acs.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    message = str(stopped.value)
     assert message.startswith('No alert joined a path: 240 alerts from the export source')
-    assert TABLE_CSV in message
+    assert EXPORT_CSV in message
     assert '--csv' in message
     assert '--source' in message
     assert not list((run / 'out').glob('interval-ba-confluence*'))
     psycopg2.connect.assert_not_called()
+
+
+def test_a_table_csv_of_other_alerts_joins_nothing_and_exits(run, monkeypatch, both_sources):
+    use_table(monkeypatch, both_sources)
+    other = [{**a, 'id': a['id'] + 10_000} for a in both_sources]
+    write_outcomes(run / 'out' / TABLE_CSV, other, export=False)
+
+    with pytest.raises(SystemExit) as stopped:
+        acs.main(['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)])
+
+    message = str(stopped.value)
+    assert message.startswith('No alert joined a path: 240 alerts from the table source')
+    assert TABLE_CSV in message
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+
+
+@pytest.mark.parametrize('source', ['export', 'table'])
+def test_an_outcomes_csv_with_no_rows_exits(run, monkeypatch, both_sources, source):
+    """No exceptions: nothing joined is nothing joined, whatever the reason."""
+    header = (run / 'out' / EXPORT_CSV).read_text('utf-8').splitlines()[0] + '\n'
+    (run / 'out' / EXPORT_CSV).write_text(header, encoding='utf-8')
+    (run / 'out' / TABLE_CSV).write_text(header, encoding='utf-8')
+    if source == 'table':
+        use_table(monkeypatch, both_sources)
+        argv = ['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)]
+    else:
+        argv = ['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)]
+
+    with pytest.raises(SystemExit, match=f'No alert joined a path: 240 alerts from the {source}'):
+        acs.main(argv)
+
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+
+
+@pytest.mark.parametrize('source', ['export', 'table'])
+def test_an_empty_alert_set_exits(run, monkeypatch, both_sources, source):
+    """No SPXW alert at all (only SPY and QQQ ones, or none): an analysis of zero alerts."""
+    partners = [a for a in both_sources if a['ticker'] != 'SPXW']
+    if source == 'table':
+        use_table(monkeypatch, partners)
+        argv = ['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)]
+    else:
+        write_export(run, export_rows(partners))
+        argv = ['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)]
+
+    with pytest.raises(SystemExit, match=f'No alert joined a path: 0 alerts from the {source}'):
+        acs.main(argv)
+
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
 
 
 def test_paths_of_alerts_not_in_the_export_do_not_count_as_joined(run, both_sources):
@@ -623,7 +707,8 @@ def test_a_live_gap_makes_a_partnered_alert_solo_from_the_table_and_2way_from_th
     table has the SPXW alert alone. The replay has the partner."""
     alerts = partner_case('SPY', 'C', 30)
     write_export(run, export_rows(alerts))
-    touch(run / 'out', TABLE_CSV, EXPORT_CSV)
+    write_outcomes(run / 'out' / TABLE_CSV, alerts, export=False)
+    write_outcomes(run / 'out' / EXPORT_CSV, alerts, export=True)
     use_table(monkeypatch, [a for a in alerts if a['ticker'] == 'SPXW'])
 
     acs.main(['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)])
@@ -640,7 +725,7 @@ def test_export_end_defaults_to_the_newest_replay_object(run, capsys):
     newer = partner_case('SPY', 'C', 30)
     write_export(run, export_rows(older), end='2026-11-16')
     write_export(run, export_rows(newer), end='2026-11-17')
-    touch(run / 'out', EXPORT_CSV)
+    write_outcomes(run / 'out' / EXPORT_CSV, newer, export=True)
 
     assert acs.main([]) == 0  # no --source, --export-end or --csv
 

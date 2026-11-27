@@ -346,19 +346,95 @@ def test_export_mode_takes_the_export_outcomes_csv_and_table_mode_skips_it(
     assert f'from `{TABLE_CSV}`' in analysis_md(run / 'out').read_text('utf-8')
 
 
-def test_a_table_csv_with_the_export_source_joins_nothing_and_exits(run, capsys, both_sources):
-    """The old habit `--csv <table csv>` under the new default: integer ids against the export's
-    `<chain>@<epoch>` ids share nothing, and the tables would come out empty."""
+def test_a_table_csv_with_the_export_source_names_the_mistake(run, both_sources):
+    """The old habit `--csv <table csv>` under the new default: the CSV holds integer table ids,
+    the export's are `<chain>@<epoch>`. It says so, instead of reporting a join of nothing."""
     with pytest.raises(SystemExit) as stopped:
         cuts.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / TABLE_CSV)])
 
     message = str(stopped.value)
+    assert message.startswith(f'{TABLE_CSV} holds table alert ids')
+    assert '--source table' in message
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+    psycopg2.connect.assert_not_called()
+
+
+def test_an_export_csv_with_the_table_source_names_the_mistake(run, monkeypatch, both_sources):
+    """The other way: not a raw ValueError from int('SPXW...@epoch')."""
+    use_table(monkeypatch, table_rows(both_sources))
+
+    with pytest.raises(SystemExit) as stopped:
+        cuts.main(['--source', 'table', '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    message = str(stopped.value)
+    assert message.startswith(f'{EXPORT_CSV} holds export alert ids')
+    assert 'SPXW' in message  # the first id it met
+    assert '--source export' in message
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+
+
+def test_an_export_csv_of_other_alerts_joins_nothing_and_exits(run, both_sources):
+    """Export-looking ids that match no alert in this export (another replay, another ticker)."""
+    other = [{**a, 'chain': a['chain'].replace('261117', '261001')} for a in both_sources]
+    write_outcomes(run / 'out' / EXPORT_CSV, other, export=True)
+
+    with pytest.raises(SystemExit) as stopped:
+        cuts.main(['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)])
+
+    message = str(stopped.value)
     assert message.startswith('No alert joined a path: 200 alerts from the export source')
-    assert TABLE_CSV in message
+    assert EXPORT_CSV in message
     assert '--csv' in message
     assert '--source' in message
     assert not list((run / 'out').glob('interval-ba-analysis*'))
     psycopg2.connect.assert_not_called()
+
+
+def test_a_table_csv_of_other_alerts_joins_nothing_and_exits(run, monkeypatch, both_sources):
+    use_table(monkeypatch, table_rows(both_sources))
+    other = [{**a, 'id': a['id'] + 10_000} for a in both_sources]
+    write_outcomes(run / 'out' / TABLE_CSV, other, export=False)
+
+    with pytest.raises(SystemExit) as stopped:
+        cuts.main(['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)])
+
+    message = str(stopped.value)
+    assert message.startswith('No alert joined a path: 200 alerts from the table source')
+    assert TABLE_CSV in message
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+
+
+@pytest.mark.parametrize('source', ['export', 'table'])
+def test_an_outcomes_csv_with_no_rows_exits(run, monkeypatch, both_sources, source):
+    """No exceptions: nothing joined is nothing joined, whatever the reason."""
+    header = (run / 'out' / EXPORT_CSV).read_text('utf-8').splitlines()[0] + '\n'
+    (run / 'out' / EXPORT_CSV).write_text(header, encoding='utf-8')
+    (run / 'out' / TABLE_CSV).write_text(header, encoding='utf-8')
+    if source == 'table':
+        use_table(monkeypatch, table_rows(both_sources))
+        argv = ['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)]
+    else:
+        argv = ['--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)]
+
+    with pytest.raises(SystemExit, match=f'No alert joined a path: 200 alerts from the {source}'):
+        cuts.main(argv)
+
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+
+
+@pytest.mark.parametrize('source', ['export', 'table'])
+def test_an_empty_alert_set_exits(run, monkeypatch, both_sources, source):
+    """No alert of the ticker at all: an analysis of zero alerts is never what the run meant."""
+    if source == 'table':
+        use_table(monkeypatch, [])
+        argv = ['--source', 'table', '--csv', str(run / 'out' / TABLE_CSV)]
+    else:
+        argv = ['--ticker', 'qqq', '--export-end', DAY_ISO, '--csv', str(run / 'out' / EXPORT_CSV)]
+
+    with pytest.raises(SystemExit, match=f'No alert joined a path: 0 alerts from the {source}'):
+        cuts.main(argv)
+
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
 
 
 def test_the_cuts_header_and_output_say_how_many_alerts_joined_a_path(run, capsys, both_sources):
@@ -368,20 +444,6 @@ def test_the_cuts_header_and_output_say_how_many_alerts_joined_a_path(run, capsy
     assert '(189 of 200 alerts joined a path)' in (
         analysis_md(run / 'out', export=True).read_text('utf-8')
     )
-
-
-def test_an_outcomes_csv_with_no_rows_is_not_a_zero_join(run, both_sources):
-    """Nothing to join against is not a join that found nothing: the header says 0 of 200."""
-    (run / 'out' / EXPORT_CSV).write_text(
-        'alert_id,option_chain,option_type,severity,fired_at,t_minutes,ts_utc,spx_price,'
-        'pct_change\n',
-        encoding='utf-8',
-    )
-
-    assert cuts.main(['--export-end', DAY_ISO]) == 0
-
-    text = analysis_md(run / 'out', export=True).read_text('utf-8')
-    assert '(0 of 200 alerts joined a path)' in text
 
 
 def test_a_stale_export_csv_that_covers_some_alerts_still_runs(run, both_sources):
