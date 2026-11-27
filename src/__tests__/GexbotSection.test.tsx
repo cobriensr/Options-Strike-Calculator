@@ -171,6 +171,20 @@ describe('<GexbotSection> after the close', () => {
     );
   });
 
+  // The label is "CLOSED · as of <time>"; with no time to show, a bare
+  // "CLOSED · as of" would dangle, so the header stays plain.
+  it.each([
+    ['a capture time that does not parse', 'not a time'],
+    ['an empty capture time', ''],
+  ])('shows no label for %s', (_label, asOf) => {
+    answerViews({
+      'snapshots-latest': { rows: [snapshotRow('SPX', 6600)], asOf },
+    });
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    expect(screen.queryByTestId('gexbot-closed-label')).toBeNull();
+    expect(screen.queryByText(/CLOSED · as of/)).toBeNull();
+  });
+
   it('adds the date once the capture is more than 6 days old', () => {
     vi.setSystemTime(new Date('2026-11-30T15:00:00Z'));
     answerViews({
@@ -240,6 +254,26 @@ describe('<GexbotSection> after the close', () => {
     );
     expect(
       screen.queryByTestId('strike-mover-ladder-row-6600'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('reads "session closed" on the expected-move tile when the load finds no row', () => {
+    // A reload after the close: the expected-move view keeps its 5-minute
+    // window, so it answers empty while the snapshots still carry the capture.
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+      'expected-move': { rows: [], asOf: null },
+    });
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    expect(screen.getByTestId('gexbot-closed-label')).toBeInTheDocument();
+    expect(screen.getByTestId('expected-move-range')).toHaveTextContent(
+      'session closed',
+    );
+    expect(
+      screen.queryByTestId('expected-move-tile-empty'),
     ).not.toBeInTheDocument();
   });
 

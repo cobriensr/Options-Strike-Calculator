@@ -303,9 +303,13 @@ describe('ScrubControls CLOSED badge', () => {
   });
 
   describe('without the prop', () => {
+    // An empty label (a time that does not parse) is no label: the pill never
+    // dangles as a bare "CLOSED · as of", and the LIVE badge stays.
     it.each([
       ['absent', undefined],
       ['null', null],
+      ['an empty string', ''],
+      ['a time that does not parse', 'not a time'],
     ])('renders exactly as before when closedAsOf is %s', (_label, value) => {
       // React's useId counts up across renders, in base 32 (DateInput's input
       // id: `_r_0_`, `_r_a_`, …), so the ids are masked before the two trees

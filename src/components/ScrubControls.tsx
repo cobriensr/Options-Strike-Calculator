@@ -54,7 +54,7 @@ export interface ScrubControlsProps {
    * badge slot reads "CLOSED · as of Fri 3:00 PM CT" in place of LIVE or
    * DELAYED. A scrubbed view keeps SCRUBBED. The time select is not touched:
    * this feeds the label only. Null or absent, the controls render as they
-   * always have.
+   * always have. So do they when the time does not parse (no label to show).
    */
   closedAsOf?: string | null;
 }
@@ -95,7 +95,15 @@ export function ScrubControls({
   hideDatePicker = false,
   closedAsOf,
 }: ScrubControlsProps) {
-  const showClosed = closedAsOf != null && !isScrubbed;
+  // The clock is read at render and only decides whether the label carries a
+  // date (a capture more than 6 days old). An empty label (a capture time that
+  // does not parse) shows no closed pill, so a bare "CLOSED · as of" never
+  // dangles; the LIVE / DELAYED badge shows as it does without `closedAsOf`.
+  const closedLabel =
+    closedAsOf != null && !isScrubbed
+      ? formatClosedLabel(closedAsOf, new Date())
+      : '';
+  const showClosed = closedLabel !== '';
   const isStale =
     isLive && lastDataAgeMs != null && lastDataAgeMs >= staleThresholdMs;
   const staleMinutes =
@@ -199,7 +207,7 @@ export function ScrubControls({
             color: theme.textMuted,
           }}
         >
-          CLOSED · as of {formatClosedLabel(closedAsOf, new Date())}
+          CLOSED · as of {closedLabel}
         </span>
       )}
       {!showClosed && isLive && !isStale && (
