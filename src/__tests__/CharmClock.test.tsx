@@ -16,6 +16,8 @@ vi.mock('../hooks/useGexbotData', async () => {
   };
 });
 
+const CLOSED_LINE = 'Charm Clock: closed. By-close drift resumes at the open.';
+
 function makeRow(overrides: Partial<SnapshotsLatestRow>): SnapshotsLatestRow {
   return {
     ticker: 'SPX',
@@ -265,16 +267,18 @@ describe('<CharmClock>', () => {
     });
     const { rerender } = render(<CharmClock marketOpen={false} />);
     expect(vi.getTimerCount()).toBe(0);
+    expect(screen.queryByTestId('charm-by-close-SPX')).toBeNull();
     act(() => {
       vi.advanceTimersByTime(30 * 60_000);
     });
     rerender(<CharmClock marketOpen />);
     expect(vi.getTimerCount()).toBe(1);
-    // Catches up to the real clock on resume.
+    // Catches up to the real clock on resume, and the table is back.
     expect(screen.getByText(/time to close: 2h 30m/)).toBeInTheDocument();
+    expect(screen.getByTestId('charm-by-close-SPX')).toBeInTheDocument();
   });
 
-  it('reads the session as over once the market closes during a live session', () => {
+  it('swaps the table for the closed line once the market closes during a live session', () => {
     // 19:59:30Z = 15:59:30 ET. The gate stops the ticking, which would leave
     // the clock there and the by-close column coloured until the next open.
     vi.setSystemTime(new Date('2026-05-19T19:59:30Z'));
@@ -288,12 +292,64 @@ describe('<CharmClock>', () => {
     expect(screen.getByTestId('charm-bias-SPX')).toHaveTextContent(/▲\s*BUYS/);
 
     rerender(<CharmClock marketOpen={false} />);
-    expect(screen.getByText(/time to close: 0h 00m/)).toBeInTheDocument();
-    expect(screen.getByTestId('charm-by-close-SPX')).toHaveTextContent(
-      '$0 MM/hr',
-    );
-    expect(screen.getByTestId('charm-bias-SPX')).toHaveTextContent(/FLAT/);
+    expect(screen.getByText(CLOSED_LINE)).toBeInTheDocument();
+    expect(screen.queryByTestId('charm-by-close-SPX')).toBeNull();
+    expect(screen.queryByTestId('charm-bias-SPX')).toBeNull();
+    expect(screen.queryByText(/time to close/)).toBeNull();
   });
+
+  it('renders one closed line and no By-close cells when the market is closed', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 }),
+        makeRow({ ticker: 'NDX', spot: 21000, zcharm: -12 }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T20:00:00Z',
+    });
+    render(<CharmClock marketOpen={false} />);
+    expect(screen.getByText(CLOSED_LINE)).toBeInTheDocument();
+    expect(screen.queryByTestId(/^charm-by-close-/)).toBeNull();
+    expect(screen.queryByTestId(/^charm-bias-/)).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
+    // The panel frame stays, so the section keeps its place in the grid.
+    expect(screen.getByTestId('charm-clock')).toContainElement(
+      screen.getByText(CLOSED_LINE),
+    );
+  });
+
+  it('renders the table, not the closed line, when the market is open', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 }),
+        makeRow({ ticker: 'NDX', spot: 21000, zcharm: -12 }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByTestId('charm-by-close-SPX')).toBeInTheDocument();
+    expect(screen.getByTestId('charm-by-close-NDX')).toBeInTheDocument();
+    expect(screen.queryByText(CLOSED_LINE)).toBeNull();
+  });
+
+  it.each([
+    ['still loading', { rows: [], loading: true, error: null }],
+    ['in error', { rows: [], loading: false, error: 'HTTP 500' }],
+    ['empty', { rows: [], loading: false, error: null }],
+  ])(
+    'shows the closed line, not a data-state note, when closed and the feed is %s',
+    (_label, state) => {
+      mockUseGexbotData.mockReturnValue({ ...state, freshestAt: null });
+      render(<CharmClock marketOpen={false} />);
+      expect(screen.getByText(CLOSED_LINE)).toBeInTheDocument();
+      expect(screen.queryByTestId('charm-clock-loading')).toBeNull();
+      expect(screen.queryByTestId('charm-clock-error')).toBeNull();
+      expect(screen.queryByTestId('charm-clock-empty')).toBeNull();
+    },
+  );
 
   it('refreshes the clock when the tab becomes visible again', () => {
     mockUseGexbotData.mockReturnValue({

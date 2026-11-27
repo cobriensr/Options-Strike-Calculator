@@ -42,6 +42,9 @@ const SPEC = { view: 'snapshots-latest' as const };
 const SESSION_HOURS = 6.5;
 /** Minimum bar fill % so a tiny-but-nonzero value still produces a visible nub. */
 const MIN_BAR_PCT = 4;
+/** The panel frame, shared by the table and the closed line. */
+const FRAME_CLASS = 'rounded-md border border-white/5 bg-white/[0.02]';
+const CLOSED_LINE = 'Charm Clock: closed. By-close drift resumes at the open.';
 
 /**
  * zcharm is already in $MM per hour. Keep ~3 significant digits across the
@@ -77,8 +80,8 @@ function toneClass(byClose: number): string {
 
 function CharmClockInner({ marketOpen }: CharmClockProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
-  // 0 while the market is closed, so "By close" and the EOD bias clear at the
-  // close instead of keeping the last tick's tiny, still-coloured values.
+  // 0 while the market is closed. The closed branch below never reads it; the
+  // hook runs on every render all the same.
   const hoursRemaining = useHoursToClose(marketOpen);
 
   const charmRows = useMemo<CharmRow[]>(() => {
@@ -100,6 +103,25 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
     () => charmRows.reduce((m, r) => Math.max(m, Math.abs(r.byClose)), 0),
     [charmRows],
   );
+
+  // Outside regular hours there is no drift left to read: the hours remaining
+  // are 0 and every By close would be $0. One line says so, in the panel's
+  // frame, and wins over the loading, error and empty notes, none of which
+  // describes a closed market.
+  if (!marketOpen) {
+    return (
+      <div data-testid="charm-clock" className={FRAME_CLASS}>
+        <p
+          role="status"
+          aria-live="polite"
+          data-testid="charm-clock-closed"
+          className="text-tertiary px-3 py-2 text-xs"
+        >
+          {CLOSED_LINE}
+        </p>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -141,10 +163,7 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
   }
 
   return (
-    <div
-      data-testid="charm-clock"
-      className="rounded-md border border-white/5 bg-white/[0.02]"
-    >
+    <div data-testid="charm-clock" className={FRAME_CLASS}>
       <div className="text-tertiary flex items-baseline justify-between border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
         <span>Charm Clock — GEXBot net charm ($MM/hr)</span>
         <span>time to close: {formatHoursMinutes(hoursRemaining)}</span>
