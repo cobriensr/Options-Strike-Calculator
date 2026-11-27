@@ -158,6 +158,7 @@ import {
   processCheckDay,
   processRefitDay,
   processRepairDay,
+  refitRunSummary,
   repairGuardRefusal,
   undoRepair,
 } from './_lib/index-candle-repair.mjs';
@@ -404,8 +405,8 @@ async function runRefit() {
         apply,
       }),
   );
-  const summary = summarizeRun(run);
-  for (const line of formatRunSummary(summary)) say(line);
+  const { lines, exitCode } = refitRunSummary(run);
+  for (const line of lines) say(line);
   for (const line of failedDateLines(
     run,
     'not refit (rows unchanged), with the reason:',
@@ -419,17 +420,13 @@ async function runRefit() {
       'dropped: UW bars left out as malformed. uncovered: always 0, a refit ' +
       'that would leave a stored minute empty is skipped.)',
   );
-  say(
-    '(alreadyRefit: left alone, nothing fetched, counted done; the "empty ' +
-      'days" line above lists it too. To refit it again, undo its refit first.)',
-  );
   if (!apply) {
     say(
       '(dry run: stored is 0 by design; wouldReplace and wouldInsert are what ' +
         '--apply would change)',
     );
   }
-  return summary.exitCode;
+  return exitCode;
 }
 
 /**

@@ -47,6 +47,7 @@ import {
   DayFailure,
   formatRunSummary,
   marketHoursRefusal,
+  runDays,
   summarizeRun,
 } from './backfill-cli.mjs';
 import { schwabCronsBusyRefusal } from './schwab-local.mjs';
@@ -105,6 +106,7 @@ import {
   processRefitDay,
   processRepairDay,
   refitDay,
+  refitRunSummary,
   repairDay,
   repairGuardRefusal,
   undoRepair,
@@ -1731,7 +1733,9 @@ const RATIOS = {
   NDX: { close: 41, prior: 40.95, fitted: 41.02 },
 };
 const GAP_DATE = '2026-09-21'; // insert-only for both symbols; EDT
-const SUMMER_DATE = '2026-08-20'; // EDT
+// The one summer date with live rows (the morning's, through 14:51Z) and, in
+// production, no `outcomes` row. EDT.
+const SUMMER_DATE = '2026-07-22';
 const BACKFILL_CREATED = '2026-11-06T22:19:20Z'; // inside the 11-06 window
 
 function spotsDirOf() {
@@ -1875,6 +1879,19 @@ async function readyRefit(over = {}) {
   expect(found.ok).toBe(true);
   expect(prepared.ok).toBe(true);
   return { args, found, prepared };
+}
+
+/** `sql` with every tagged-template query's text recorded, to see what was read. */
+function watchedSql(sql) {
+  const queries = [];
+  const watched = Object.assign(
+    (strings, ...params) => {
+      queries.push(strings.join('?'));
+      return sql(strings, ...params);
+    },
+    { transaction: sql.transaction },
+  );
+  return { sql: watched, queries };
 }
 
 /** Each stored row's close over the ETF close of its minute. */
@@ -2281,16 +2298,29 @@ describe('prepareRefitDay', () => {
     expect(Math.abs(last.close - 22951.2)).toBeGreaterThan(19.9);
   });
 
-  it('does not refuse a fitted SPX day whose close is 4.01 pt from the settlement, and refits one with no outcomes row', async () => {
+  it('does not refuse a fitted SPX day whose close is 4.01 pt from the settlement', async () => {
     stageRefit('SPX', SPX_DATE);
     // The last regular close is 647 x 10.045 = 6499.115.
     await seedSettlement(SPX_DATE, '6495.10');
-    const far = await prepareRefitDay(noQuery(), refitArgs());
-    expect(far.ok).toBe(true);
 
-    await pg.query('DELETE FROM outcomes');
-    const none = await prepareRefitDay(noQuery(), refitArgs());
-    expect(none.ok).toBe(true);
+    const out = await prepareRefitDay(noQuery(), refitArgs());
+
+    expect(out.ok).toBe(true);
+  });
+
+  it('refits 07-22, the SPX date with no outcomes row, and asks the database nothing', async () => {
+    const date = '2026-07-22';
+    stageRefit('SPX', date);
+    expect(
+      await pg.query('SELECT 1 FROM outcomes WHERE date = $1', [date]),
+    ).toMatchObject({ rows: [] });
+
+    const out = await prepareRefitDay(
+      noQuery(),
+      refitArgs({ date, list: 'summer' }),
+    );
+
+    expect(out).toMatchObject({ ok: true, matched: 390 });
   });
 
   it('still refuses a fitted day with 389 regular bars on a 390-minute day', async () => {
@@ -2755,7 +2785,7 @@ describe('the summer refit', () => {
       date: SUMMER_DATE,
       at: at('13:40'),
       close: '6480',
-      created: `${SUMMER_DATE}T17:40:00Z`,
+      created: `${SUMMER_DATE}T14:00:00Z`,
     });
     // Written at the window's end (exclusive).
     const late = await seed({
@@ -2796,9 +2826,14 @@ describe('the summer refit', () => {
     expect(found.ids).toHaveLength(393);
     for (const id of keptIds) expect(found.ids).not.toContain(Number(id));
 
+    // 07-22 has no `outcomes` row in production, and none is seeded here: the
+    // refit must not look for one.
     const bars = stageRefit('SPX', SUMMER_DATE);
-    const out = await processRefitDay(makeSql(), summerArgs());
+    const watch = watchedSql(makeSql());
+    const out = await processRefitDay(watch.sql, summerArgs());
 
+    expect(watch.queries.length).toBeGreaterThan(0);
+    expect(watch.queries.filter((text) => /outcomes/.test(text))).toEqual([]);
     expect(out).toMatchObject({
       fetched: 396,
       stored: 393,
@@ -2882,7 +2917,7 @@ describe('the summer refit', () => {
     const found = await findRefitManifest(makeSql(), summerArgs());
 
     expect(found.ok).toBe(false);
-    expect(found.reason).toMatch(/no 11-06 backfill rows for SPX 2026-08-20/);
+    expect(found.reason).toMatch(/no 11-06 backfill rows for SPX 2026-07-22/);
   });
 
   it('reads the NDX price column for NDX', async () => {
@@ -3554,6 +3589,124 @@ describe('processCheckDay', () => {
         checkArgs({ closes: refitCloses(SPX_DATE, { shift: 5 }) }),
       ),
     ).rejects.toThrow(/misses Schwab's daily range on one side/);
+  });
+});
+
+describe('refitRunSummary', () => {
+  const done = (date, value) => ({ date, ok: true, value });
+  const refit = (date) =>
+    done(date, { fetched: 396, stored: 396, replaced: 396 });
+  const left = (date) =>
+    done(date, {
+      fetched: 0,
+      stored: 0,
+      alreadyRefit: true,
+      manifestPath: `/m/${date}.manifest.json`,
+    });
+  const run = (days, over = {}) => ({
+    days,
+    stoppedBy: null,
+    notRun: [],
+    ...over,
+  });
+
+  it('gives the dates left alone their own line, not an empty-days line', () => {
+    const { lines, exitCode } = refitRunSummary(
+      run([left('2026-03-26'), refit('2026-03-27'), left('2026-03-30')]),
+    );
+
+    expect(lines[0]).toBe('days: 3 run, 3 done, 0 failed');
+    expect(lines).toContain('already refit: 2 dates');
+    expect(lines.some((line) => line.startsWith('empty days'))).toBe(false);
+    // Their own per-date lines are still printed.
+    expect(lines).toContain(
+      '  2026-03-26  fetched 0  stored 0  alreadyRefit true  manifestPath /m/2026-03-26.manifest.json',
+    );
+    expect(exitCode).toBe(0);
+  });
+
+  it('says "date" for one', () => {
+    const { lines } = refitRunSummary(run([left('2026-03-26')]));
+    expect(lines).toContain('already refit: 1 date');
+  });
+
+  it('still lists a day UW had no rows for, and not the ones left alone', () => {
+    const { lines } = refitRunSummary(
+      run([
+        left('2026-03-26'),
+        done('2026-03-27', { fetched: 0, stored: 0 }),
+        left('2026-03-30'),
+      ]),
+    );
+
+    expect(lines).toContain('empty days (UW had no rows): 2026-03-27');
+    expect(lines).toContain('already refit: 2 dates');
+  });
+
+  it('puts the line ahead of a stop and the days not run, and keeps their exit code', () => {
+    const { lines, exitCode } = refitRunSummary(
+      run([left('2026-03-26')], {
+        stoppedBy: 'market hours opened',
+        notRun: ['2026-03-27', '2026-03-30'],
+      }),
+    );
+
+    const at = lines.indexOf('already refit: 1 date');
+    expect(at).toBeGreaterThan(0);
+    expect(lines.indexOf('stopped: market hours opened')).toBe(at + 1);
+    expect(lines.at(-1)).toBe('not run (2): 2026-03-27, 2026-03-30');
+    expect(exitCode).toBe(3);
+  });
+
+  it('keeps a skipped date failing the run', () => {
+    const { lines, exitCode } = refitRunSummary(
+      run([
+        left('2026-03-26'),
+        {
+          date: '2026-03-27',
+          ok: false,
+          failure: { kind: 'other', detail: 'no price file' },
+        },
+      ]),
+    );
+
+    expect(lines[0]).toBe('days: 2 run, 1 done, 1 failed');
+    expect(lines).toContain(
+      '  other: 1 day (2026-03-27); first: 2026-03-27: no price file',
+    );
+    expect(lines).toContain('already refit: 1 date');
+    expect(exitCode).toBe(1);
+  });
+
+  it('is the plain summary when no date was left alone', () => {
+    const plain = run([
+      refit('2026-03-26'),
+      done('2026-03-27', { fetched: 0, stored: 0 }),
+    ]);
+
+    const { lines, exitCode } = refitRunSummary(plain);
+
+    expect(lines).toEqual(formatRunSummary(summarizeRun(plain)));
+    expect(lines.some((line) => line.startsWith('already refit'))).toBe(false);
+    expect(exitCode).toBe(0);
+  });
+
+  it('reads a re-run end to end: the date refit before is left alone, once', async () => {
+    await seedPlaceholderDay();
+    await repairedDay();
+    stageRefit('SPX', SPX_DATE);
+    const secrets = { uwKey: 'uw-key', databaseUrl: 'postgres://example' };
+    const worker = (date) => processRefitDay(makeSql(), refitArgs({ date }));
+    const options = { allowMarketHours: true, offerFlag: false, secrets };
+    const first = await runDays([SPX_DATE], options, worker);
+    expect(refitRunSummary(first).lines).not.toContain('already refit: 1 date');
+
+    const second = await runDays([SPX_DATE], options, worker);
+    const { lines, exitCode } = refitRunSummary(second);
+
+    expect(lines).toContain('already refit: 1 date');
+    expect(lines.some((line) => line.startsWith('empty days'))).toBe(false);
+    expect(exitCode).toBe(0);
   });
 });
 

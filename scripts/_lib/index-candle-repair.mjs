@@ -53,8 +53,10 @@ import {
   WRITE_BATCH,
   chunk,
   classifyFailure,
+  formatRunSummary,
   marketHoursRefusal,
   retryTransientDb,
+  summarizeRun,
   tradingDaysInRange,
 } from './backfill-cli.mjs';
 import {
@@ -1533,7 +1535,8 @@ export async function checkRefitDay(sql, { symbol, date, closes, backupDir }) {
  * then prepareRefitDay, then refitDay. A date whose current manifest is
  * already a refit's is left alone, with no UW call and no write, and counted
  * done: `{ fetched: 0, stored: 0, alreadyRefit: true, manifestPath }` (to
- * refit it again, undo its refit first). A failed find, a day that cannot be
+ * refit it again, undo its refit first; refitRunSummary prints it on its own
+ * line, not as an empty day). A failed find, a day that cannot be
  * prepared (its UW kind kept) or a refit that skips the date throws a
  * DayFailure with the reason, so runDays records it against the date and the
  * run ends with exit code 1.
@@ -1636,6 +1639,41 @@ export async function processCheckDay(
     dl: shownPoints(out.dl),
     scaledShare: Number(out.scaledShare.toFixed(4)),
   };
+}
+
+/**
+ * The summary lines of a `--refit` run (runDays' result) and its exit code:
+ * formatRunSummary's, except for the dates processRefitDay left alone as
+ * already refit. Their `fetched 0` would list them under "empty days (UW had
+ * no rows)", which they are not, so they are taken out of that list and given
+ * a line of their own, `already refit: N dates`, ahead of any `stopped:` or
+ * `not run` line. They stay counted done: the exit code is summarizeRun's.
+ * (The value cannot carry it: runDays needs a whole `fetched`, and nothing was
+ * fetched.) `{ lines, exitCode }`.
+ */
+export function refitRunSummary(run) {
+  const summary = summarizeRun(run);
+  const left = new Set(
+    summary.okDays
+      .filter(({ value }) => value.alreadyRefit === true)
+      .map(({ date }) => date),
+  );
+  const lines = formatRunSummary({
+    ...summary,
+    emptyDays: summary.emptyDays.filter((date) => !left.has(date)),
+  });
+  if (left.size > 0) {
+    const noun = left.size === 1 ? 'date' : 'dates';
+    const stop = lines.findIndex(
+      (line) => line.startsWith('stopped: ') || line.startsWith('not run ('),
+    );
+    lines.splice(
+      stop === -1 ? lines.length : stop,
+      0,
+      `already refit: ${left.size} ${noun}`,
+    );
+  }
+  return { lines, exitCode: summary.exitCode };
 }
 
 // ── The guards ─────────────────────────────────────────────
