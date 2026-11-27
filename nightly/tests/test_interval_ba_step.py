@@ -43,6 +43,7 @@ from sentry_sdk.transport import Transport
 import interval_ba_step
 import resources
 import steps
+from calendar_nyse import trading_days
 from config import Settings, load_settings
 from constants import (
     INTERVAL_BA_CACHE_DIR,
@@ -1065,6 +1066,76 @@ def test_a_quiet_day_writes_a_zero_row_file(night: Night, settings: Settings, cl
     assert WORK[4] in night.markers  # and the heal went on
 
 
+def test_a_replay_that_fires_nothing_alerts_even_when_live_wrote_nothing(
+    night: Night, settings: Settings, clock: Clock, capture_message: MagicMock
+) -> None:
+    # Every session fires at least 19 alerts, so zero on both sides is a replay or tape fault
+    # (a column that casts to NULL after a layout change), not a quiet day. The day still gets
+    # its file, of zero rows, and its marker.
+    night.landed([WORK[4]])
+    night.replays[WORK[4]] = Replay(day=WORK[4], alerts=(), root_label_mismatch=0)
+    night.plans[WORK[4]] = _plan(WORK[4], tape_alerts=0, live_rows=0, matched=0)
+
+    result = interval_ba_step.run(_ctx(settings, clock))
+
+    (health,) = _health_calls(capture_message)
+    assert health.args == (HEALTH_TITLE.format("tape fired no alerts"),)
+    assert health.kwargs["fingerprint"] == [
+        "interval-ba-live-health",
+        "tape fired no alerts",
+        WORK[4].isoformat(),
+    ]
+    assert result.counts["health_alerts"] == 1
+    assert (result.status, result.detail) == ("ok", "")
+    (put,) = night.puts_for(WORK[4])
+    assert put.table.num_rows == 0
+    assert WORK[4] in night.markers
+
+
+@pytest.mark.parametrize(
+    ("day", "assumed"),
+    [
+        (INSERT_MISSED_FROM, True),
+        (date(2026, 11, 20), True),
+        (date(2026, 11, 24), True),
+        # uw-stream's first settings row covers 11-25: from there, no row is real.
+        (date(2026, 11, 25), False),
+        (date(2026, 11, 27), False),
+    ],
+)
+def test_a_day_before_the_first_settings_row_heals_on_the_code_defaults(
+    night: Night, settings: Settings, clock: Clock, day: date, assumed: bool
+) -> None:
+    # Live ran the code's rule on every day before the first settings row, so a re-landed one
+    # with no covering row is not "no live settings record": it heals with inserts on. From the
+    # first row's day on, an empty read stays empty and heal_day holds the inserts.
+    assert date(2026, 11, 25) == interval_ba_step.FIRST_SETTINGS_DAY
+    night.markers.update(trading_days(INSERT_MISSED_FROM, day))
+    night.markers.discard(day)
+    night.landed([day])
+    night.covering.side_effect = lambda _conn, d: night.events.append(f"settings {d}") or []
+    ctx = StepContext(settings, NOW, day, deadline=clock.now + 100_000.0, tape=())
+
+    interval_ba_step.run(ctx)
+
+    night.covering.assert_called_once_with(night.conn, day)
+    (heal_call,) = night.heal.call_args_list
+    assert heal_call.args[4] == ([default_settings()] if assumed else [])
+    assert heal_call.kwargs["insert_missed"] is True
+
+
+def test_a_settings_row_that_covers_the_day_is_never_replaced_by_the_defaults(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    other = replace(default_settings(), window_sec=60)
+    night.landed([WORK[4]])
+    night.covering.side_effect = lambda _conn, d: night.events.append(f"settings {d}") or [other]
+
+    interval_ba_step.run(_ctx(settings, clock))
+
+    assert night.heal.call_args.args[4] == [other]
+
+
 def test_replay_days_written_is_counted(
     night: Night, settings: Settings, clock: Clock, capture_exception: MagicMock
 ) -> None:
@@ -1271,7 +1342,10 @@ def test_one_health_message_per_day_by_precedence(
     ("counts", "phrase"),
     [
         ({}, None),  # healthy
-        ({"tape_alerts": 0, "live_rows": 0, "matched": 0}, None),  # a quiet day
+        # No quiet day: every session fires at least 19 alerts, so a replay that fired nothing is
+        # a fault whether or not live wrote rows.
+        ({"tape_alerts": 0, "live_rows": 0, "matched": 0}, "tape fired no alerts"),
+        ({"tape_alerts": 0, "live_rows": 3, "matched": 0, "live_only": 3}, "tape fired no alerts"),
         # live missed: at least 5, and more than 10% of the tape's alerts.
         ({"live_missed": 4, "tape_alerts": 4, "live_rows": 1, "matched": 0}, None),
         ({"live_missed": 5, "tape_alerts": 50, "live_rows": 45, "matched": 45}, None),

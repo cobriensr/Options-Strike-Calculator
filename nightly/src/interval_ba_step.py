@@ -20,6 +20,13 @@ The work list:
 - A day whose inserts were held (heal_day's `inserts_held`) keeps the marker heal_day wrote: a
   retry would hold again. Its health alert asks the owner to fix the settings or change the
   constants; deleting the marker then redoes the day.
+- A day before FIRST_SETTINGS_DAY (2026-11-25) has no `interval_ba_live_settings` row: the first
+  one was written at uw-stream's start that evening. Live ran the code's rule on those days (that
+  is why INSERT_MISSED_FROM is 2026-10-29), so a day there with no covering row is healed on
+  `default_settings()`, the same assumption the one-off tool's `--assume-default-settings` makes
+  for the days it healed. Held, it would send a false "no live settings record" alert whenever
+  the tape job re-lands one of them. From FIRST_SETTINGS_DAY on, no covering row is real (the
+  table lost its rows) and the inserts are held.
 
 Each day downloads its tape first (the Neon connection must not idle through a download, which is
 held to FETCH_DEADLINE_SECONDS or the step's deadline if nearer), then opens a fresh DuckDB
@@ -95,6 +102,7 @@ from interval_ba_replay import (
     INSERT_MISSED_FROM,
     DayPlan,
     day_key,
+    default_settings,
     export_table,
     heal_day,
     read_covering_settings,
@@ -109,9 +117,15 @@ if TYPE_CHECKING:
     from _tape_reader import TapeReader
     from psycopg2.extensions import connection
 
-    from interval_ba_replay import Replay
+    from interval_ba_replay import LiveSettings, Replay
 
 log = logging.getLogger(__name__)
+
+# The first session an `interval_ba_live_settings` row covers: uw-stream wrote its first row at
+# 2026-11-25 21:36Z, before the 16:00 CT cut that day, so the row is the day's. A day before it
+# with no covering row is not a lost table but the days live ran the code's rule without a
+# record, and the step heals it on default_settings().
+FIRST_SETTINGS_DAY = date(2026, 11, 25)
 
 # The `step` tag on a day's exception and health message: the name pipeline.STEPS registers.
 _STEP = "interval-ba-tape"
@@ -263,10 +277,19 @@ def _heal(
         counts["replay_days_written"] += 1
         with connect_db(ctx.settings) as conn:
             # Autocommit, so the read leaves the connection idle, as heal_day needs it.
-            settings = read_covering_settings(conn, day)
+            settings = _covering_settings(conn, day)
             return heal_day(
                 conn, con, str(path), day, settings, insert_missed=True, apply=True, replay=replay
             )
+
+
+def _covering_settings(conn: connection, day: date) -> list[LiveSettings]:
+    """The live settings that cover `day`; the code's defaults for a day before the first row
+    that no row covers (FIRST_SETTINGS_DAY). `conn` is autocommit, so the read leaves it idle."""
+    covering = read_covering_settings(conn, day)
+    if not covering and day < FIRST_SETTINGS_DAY:
+        return [default_settings()]
+    return covering
 
 
 def _put_day_file(ctx: StepContext, store: ResearchStore, replay: Replay) -> None:
@@ -329,12 +352,17 @@ def _health_phrase(plan: DayPlan) -> str | None:
 
     The counts are over the tickers live had on (heal_day). The thresholds are spec 6.6's: live
     missed 2 keys in 13 sessions from 2026-10-29, and 34 of 108 on 2026-05-20.
+
+    A replay that fires nothing is always a fault, with or without live rows: every session fires
+    at least 19 alerts (the lowest, 2026-08-14), and replay_day raises only for a tape with no
+    0DTE rows, so a tape that reads but fires nothing (a premium column that casts to NULL after
+    a layout change) would otherwise pass as a quiet day.
     """
     if plan.inserts_held is not None:
         return plan.inserts_held
-    if plan.tape_alerts == 0 and plan.live_rows > 0:
+    if plan.tape_alerts == 0:
         return "tape fired no alerts"  # the replay or the tape read broke
-    if plan.tape_alerts > 0 and plan.live_rows == 0:
+    if plan.live_rows == 0:
         return "live wrote no alerts"
     # At least 5, and more than 10% of the tape's alerts.
     if plan.live_missed >= 5 and plan.live_missed * 10 > plan.tape_alerts:
