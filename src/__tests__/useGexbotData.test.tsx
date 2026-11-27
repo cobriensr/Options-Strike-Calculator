@@ -732,6 +732,69 @@ describe('useGexbotData', () => {
       },
     );
 
+    // The drop must come with the render of the flip itself. An effect that
+    // clears the state after that render still lets one frame, at 09:30 ET,
+    // paint yesterday's tiles with no CLOSED label (and `result.current` after
+    // `rerender` cannot see that frame), so every render is recorded.
+    it.each([
+      'snapshots-latest',
+      'velocity',
+      'convexity-trend',
+      'maxchange-winners',
+      'expected-move',
+    ] as const)(
+      'renders no prior session rows once the market is open: %s',
+      async (view) => {
+        mockFetchJson.mockResolvedValueOnce({ data: { rows: [PRIOR] } });
+        const renders: Array<{ marketOpen: boolean; rows: unknown[] }> = [];
+        const { result, rerender } = renderHook(
+          ({ marketOpen }: { marketOpen: boolean }) => {
+            const out = useGexbotData({ view }, marketOpen);
+            renders.push({ marketOpen, rows: out.rows });
+            return out;
+          },
+          { initialProps: { marketOpen: false } },
+        );
+        await waitFor(() => expect(result.current.rows).toEqual([PRIOR]));
+
+        const fresh = deferred();
+        mockFetchJson.mockReturnValueOnce(fresh.promise);
+        rerender({ marketOpen: true });
+        fresh.resolve({ data: { rows: [FRESH] } });
+        await waitFor(() => expect(result.current.rows).toEqual([FRESH]));
+
+        // The held rows were rendered while closed, and the flip did render.
+        expect(
+          renders.some((r) => !r.marketOpen && r.rows.includes(PRIOR)),
+        ).toBe(true);
+        const open = renders.filter((r) => r.marketOpen);
+        expect(open.length).toBeGreaterThan(0);
+        for (const render of open) {
+          expect(render.rows).not.toContain(PRIOR);
+        }
+      },
+    );
+
+    it('shows the error, with none of the prior session rows, when the read at the open fails', async () => {
+      mockFetchJson.mockResolvedValueOnce({ data: { rows: [PRIOR] } });
+      const { result, rerender } = renderHook(useView, {
+        initialProps: { view: 'snapshots-latest' as const, marketOpen: false },
+      });
+      await waitFor(() => expect(result.current.rows).toEqual([PRIOR]));
+
+      mockFetchJson.mockResolvedValueOnce({
+        error: 'Unavailable',
+        status: 503,
+      });
+      rerender({ view: 'snapshots-latest', marketOpen: true });
+      await waitFor(() =>
+        expect(result.current.error).toBe('Unavailable (HTTP 503)'),
+      );
+      expect(result.current.loading).toBe(false);
+      expect(result.current.rows).toEqual([]);
+      expect(result.current.freshestAt).toBeNull();
+    });
+
     it('drops a held error too and shows loading until the new read lands', async () => {
       mockFetchJson.mockResolvedValueOnce({
         error: 'Unavailable',
@@ -797,6 +860,12 @@ describe('useGexbotData', () => {
 
     it('reads at the next opening of a tab that mounted open and saw the close', async () => {
       // Overnight: loaded in the session, closed at 16:00, open again at 09:30.
+      // Only `Date` is faked, so `waitFor` keeps its real timers: what the
+      // answer belongs to is the ET date it landed on.
+      vi.useFakeTimers({
+        toFake: ['Date'],
+        now: new Date('2026-11-24T17:00:00Z'),
+      });
       mockFetchJson.mockResolvedValue({ data: { rows: [FRESH] } });
       const { result, rerender } = renderHook(useView, {
         initialProps: { view: 'expected-move' as const, marketOpen: true },
@@ -804,6 +873,7 @@ describe('useGexbotData', () => {
       await waitFor(() => expect(result.current.loading).toBe(false));
       rerender({ view: 'expected-move', marketOpen: false });
       expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(new Date('2026-11-25T14:30:05Z'));
 
       const fresh = deferred();
       mockFetchJson.mockReturnValueOnce(fresh.promise);

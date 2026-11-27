@@ -13,10 +13,10 @@
  * Polling gate: `marketOpen` (passed in) — 30s tick happens only
  * during regular hours. Out-of-hours, returns the last-known data
  * indefinitely. The one clearing is the market's open edge (`marketOpen`
- * false to true): the held rows are then the last session's, so the hook drops
- * them (tiles read loading) and reads at once rather than at the first tick.
- * `sibling-confirm` ignores `marketOpen`: its error retry runs at any hour,
- * and it has no open edge.
+ * false to true): the held rows are then the last session's, so the hook stops
+ * returning them on the render of the flip itself (tiles read loading) and
+ * reads at once rather than at the first tick. `sibling-confirm` ignores
+ * `marketOpen`: its error retry runs at any hour, and it has no open edge.
  *
  * After the close the server answers `snapshots-latest`, `velocity`,
  * `convexity-trend` and `maxchange-winners` with the last session's rows and
@@ -37,7 +37,7 @@
  * session's last minute and are unchanged.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { POLL_INTERVALS } from '../constants';
 import {
@@ -45,6 +45,7 @@ import {
   isCarriedOver,
   isTransientStatus,
 } from '../utils/closed-session';
+import { getETDateStr } from '../utils/timezone';
 import { fetchJson } from './useMarketData.fetchers';
 import { useFinalFetch, type FinalFetchOutcome } from './useFinalFetch';
 import { usePolling } from './usePolling';
@@ -195,8 +196,9 @@ export interface UseGexbotDataResult<V extends GexbotView['view']> {
   /**
    * The capture time of the data, from the body's `asOf`: the latest capture
    * among its rows, which after the close is the last session's. Null for a
-   * view whose body has none, a body with no `asOf`, a body dropped as carried
-   * over from a closed session, or an `asOf` that is not an ISO timestamp.
+   * body with no `asOf` (a view that sends none included), a body dropped as
+   * carried over from a closed session, or an `asOf` that is not an ISO
+   * timestamp.
    */
   asOf: string | null;
 }
@@ -228,6 +230,26 @@ function freshestFrom(rows: unknown[]): string | null {
     }
   }
   return best;
+}
+
+/**
+ * The open session an answer that lands now belongs to: today's ET date while
+ * the market is open, null while it is closed.
+ */
+function openSessionNow(marketOpen: boolean): string | null {
+  return marketOpen ? getETDateStr(new Date()) : null;
+}
+
+/**
+ * True when the market is open and `session` (`FetchState.session`) is not
+ * today's open session: the answer landed in a closed hour or in an earlier
+ * session, so it is not live.
+ */
+function isBeforeOpenSession(
+  session: string | null,
+  marketOpen: boolean,
+): boolean {
+  return marketOpen && session !== openSessionNow(true);
 }
 
 /**
@@ -309,6 +331,12 @@ interface FetchState<V extends GexbotView['view']> {
   error: FetchFailure | null;
   freshestAt: string | null;
   asOf: string | null;
+  /**
+   * The open session this answer landed in (`openSessionNow`): null when it
+   * landed while the market was closed. With the market open, an answer from
+   * any session but today's is not shown (`isBeforeOpenSession`).
+   */
+  session: string | null;
 }
 
 export function useGexbotData<V extends GexbotView['view']>(
@@ -342,6 +370,9 @@ export function useGexbotData<V extends GexbotView['view']>(
 
   // Whether this view keeps the last session after the close (file header).
   const keepsLastSession = CLOSED_SESSION_VIEWS.has(view);
+  // Whether an answer is for the session: every view but `sibling-confirm`,
+  // which answers for a past fire time and has no open edge.
+  const followsSession = view !== 'sibling-confirm';
   // marketOpen as of the latest render, for an answer that lands after the
   // market flipped (usePolling's latest-value pattern).
   const marketOpenNow = useRef(marketOpen);
@@ -366,10 +397,18 @@ export function useGexbotData<V extends GexbotView['view']>(
       const message = `${result.error} (HTTP ${result.status})`;
       // After the close polling is off, so an error would stay up all evening
       // over rows that are still the session's last: hold them and say nothing.
-      const holdRows = keepsLastSession && !marketOpenNow.current;
-      // Keep the last good rows for this URL; a different URL has none.
+      const open = marketOpenNow.current;
+      const holdRows = keepsLastSession && !open;
+      const session = openSessionNow(open);
+      // Keep the last good rows for this URL; a different URL has none, and an
+      // earlier session's rows (held while closed, hidden at the open) are not
+      // good rows for a market that is open.
       setState((prev) => {
-        const same = prev?.url === url ? prev : null;
+        const same =
+          prev?.url === url &&
+          !(followsSession && isBeforeOpenSession(prev.session, open))
+            ? prev
+            : null;
         if (holdRows && same != null && (same.rows as unknown[]).length > 0) {
           return { ...same, error: null };
         }
@@ -378,6 +417,7 @@ export function useGexbotData<V extends GexbotView['view']>(
           rows: same?.rows ?? ([] as ViewPayload[V]),
           freshestAt: same?.freshestAt ?? null,
           asOf: same?.asOf ?? null,
+          session,
           error: {
             message,
             status: result.status,
@@ -389,18 +429,18 @@ export function useGexbotData<V extends GexbotView['view']>(
     }
     if (superseded) return 'ok';
     const asOf = asOfFrom(result.data?.asOf);
+    const open = marketOpenNow.current;
+    const session = openSessionNow(open);
     // An answer from before today's open, with the market open, is the last
     // session's: a closed response cached at the edge, or a client clock ahead
     // of the server's. It is no live row, and no error either.
-    if (
-      keepsLastSession &&
-      isCarriedOver(asOf, marketOpenNow.current, new Date())
-    ) {
+    if (keepsLastSession && isCarriedOver(asOf, open, new Date())) {
       setState({
         url,
         rows: [] as ViewPayload[V],
         freshestAt: null,
         asOf: null,
+        session,
         error: null,
       });
       return 'ok';
@@ -411,10 +451,11 @@ export function useGexbotData<V extends GexbotView['view']>(
       rows: list,
       freshestAt: freshestFrom(list as unknown[]),
       asOf,
+      session,
       error: null,
     });
     return 'ok';
-  }, [url, keepsLastSession]);
+  }, [url, keepsLastSession, followsSession]);
 
   // The one final read after the close, and the retries of a transient failure
   // while closed (5 x 30 s); armed for as long as the view keeps the session.
@@ -440,10 +481,10 @@ export function useGexbotData<V extends GexbotView['view']>(
     void readNow();
   }, [readNow, url]);
 
-  // The market opens (false to true): what the hook holds is the last session's
-  // rows, or a failure from a closed hour, and usePolling does not call fn on
-  // a gate flip, so the first tick would be 30 s away. Drop the state so the
-  // tiles read loading instead of showing those rows as live, and read now.
+  // The market opens (false to true): usePolling does not call fn on a gate
+  // flip, so the first tick would be 30 s away. Read now. What the hook holds
+  // at that moment is not shown while the read is out: `current` below drops it
+  // on the flip's own render, so this effect only reads.
   // Mounting open is no edge: the mount effect already read. A flip that lands
   // while an earlier read of the same URL is still out (a tab loaded seconds
   // before 09:30) joins that request through `fetchDeduped`, so no second one
@@ -453,14 +494,31 @@ export function useGexbotData<V extends GexbotView['view']>(
   useEffect(() => {
     const opened = marketOpen && !wasMarketOpen.current;
     wasMarketOpen.current = marketOpen;
-    if (!opened || view === 'sibling-confirm') return;
-    setState(null);
+    if (!opened || !followsSession) return;
     void readNow();
-  }, [marketOpen, view, readNow]);
+  }, [marketOpen, followsSession, readNow]);
 
-  // State from a previous URL answers a different question (another fire
-  // time): show it as not loaded yet, not as this URL's rows.
-  const current = state?.url === url ? state : null;
+  // What the caller sees. State from a previous URL answers a different
+  // question (another fire time): it reads as not loaded yet, not as this URL's
+  // rows.
+  //
+  // With the market open, an answer that did not land in today's open session
+  // is the last session's rows, or a failure from a closed hour, and reads as
+  // not loaded yet as well. That check runs here, at render, with `marketOpen`
+  // in the deps, so the render of the 09:30 ET flip already drops it. Clearing
+  // the state in an effect after that render would paint it for a frame, with
+  // no CLOSED label to say what it is. `useGexLandscapeData` and
+  // `usePeriscopeExposure` make the same cut at render, by capture time against
+  // today's open: this hook has no capture time on an error, nor on a view
+  // without `asOf`, so it goes by the session the answer landed in.
+  const current = useMemo(
+    () =>
+      state?.url === url &&
+      !(followsSession && isBeforeOpenSession(state.session, marketOpen))
+        ? state
+        : null,
+    [state, url, followsSession, marketOpen],
+  );
 
   // A sibling-confirm read is final once its fire time has passed: the
   // snapshot it uses is already in the table, and every alert row has its
