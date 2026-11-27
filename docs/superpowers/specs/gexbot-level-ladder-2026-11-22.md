@@ -373,34 +373,43 @@ Ids are the ladder's own, chosen to match the planned study's tags.
   old, and that overstates `E` near the close: a 2-minute-old row with 5
   minutes left is about 18% too wide (√(7 ÷ 5)). `E` draws the band and is
   the fallback below.
-- **The priced chance of finishing beyond `K`** (owner, 2026-11-26) is what
-  a narrow vertical spread at `K` costs, divided by its width: the market's
-  own price for "SPX finishes past `K`". With `h = DEFAULTS.STRIKE_INCREMENT`
-  (5), and each strike priced at its own IV:
-  - `n(k) = S × IV(k) × √(T_now ÷ 365)`, in points. `IV(k)` is strike `k`'s
-    put IV for a short put and its call IV for a short call, from
-    `strikeIvs`, whichever side of spot `K` is on.
-  - Normal-model (Bachelier) prices, with `Φ` = `normalCDF` and `φ` =
-    `normalPDF` from `black-scholes.ts`: put
-    `P(k) = (k − S)·Φ(d) + n(k)·φ(d)` with `d = (k − S) ÷ n(k)`; call
-    `C(k) = (S − k)·Φ(x) + n(k)·φ(x)` with `x = (S − k) ÷ n(k)`.
-  - Short put: `finishBeyond = (P(K + h) − P(K − h)) ÷ 2h`. Short call:
-    `finishBeyond = (C(K − h) − C(K + h)) ÷ 2h`.
-  - With every IV equal, this is the ATM formula below, to within the finite
-    difference.
+- **The priced chance of finishing beyond `K`** (owner, 2026-11-26) is the
+  market's own price for "SPX finishes past `K`": what a vertical spread at
+  `K` costs divided by its width, taken as the spread narrows to nothing (the
+  skew-adjusted digital). With `h = DEFAULTS.STRIKE_INCREMENT` (5), `Φ` =
+  `normalCDF` and `φ` = `normalPDF` from `black-scholes.ts`:
+  - `IV(k)` is strike `k`'s put IV for a short put and its call IV for a
+    short call, from `strikeIvs`, whichever side of spot `K` is on.
+  - `m = S × √(T_now ÷ 365)`, and `n = m × IV(K)`, in points.
+  - The smile's slope at `K`: `IV′ = (IV(K + h) − IV(K − h)) ÷ 2h`, per point.
+  - Short put: `finishBeyond = Φ(d) + φ(d) × m × IV′`, with
+    `d = (K − S) ÷ n`. Short call: `finishBeyond = Φ(x) − φ(x) × m × IV′`,
+    with `x = (S − K) ÷ n`.
+  - This is the strike derivative of normal-model (Bachelier) prices with
+    each strike at its own IV: the `Φ` term is the curve at `K`'s own IV, the
+    `IV′` term is the smile's slope taking part of it back (for a put the
+    slope is usually negative, so it lowers the chance). With a flat smile
+    `IV′` is 0 and it is the ATM formula exactly, at every `E`.
+  - Why not a 10-wide spread's price divided by 10, the first form of this
+    rule: that averages the chance over `K ± h`, and the average reads
+    riskier as `E` shrinks. Checked 2026-11-26 on a flat smile: with `E` 10
+    pts (about 30 min left) a strike 1.2σ out read 1.15σ, WATCH instead of
+    CLEAR, and at `E` 5 pts it read 1.03σ. The code review of phase 2 found
+    it.
 - Why not put the strike's own IV into the ATM formula: downside IV is
   higher, but it also falls as the strike rises toward spot, and that slope
   takes most of the extra back. Measured over 370 minutes of 2026-11-25
   (08:35 to 14:45 CT, strikes 1.28 ATM σ out), the mean finish beyond, put
   and call: ATM σ 9.3% and 9.3%; the strike's own IV 11.2% and 10.6%; the
-  spread price 9.0% and 8.7%. The strike's own IV read the put "not clear"
-  in 132 of the 370 minutes, the spread price in 2. One day, the only one
-  still in the raw captures.
+  market's priced chance (measured with the 10-wide spread) 9.0% and 8.7%.
+  The strike's own IV read the put "not clear" in 132 of the 370 minutes,
+  the priced chance in 2. One day, the only one still in the raw captures.
 - **Fallback, the ATM σ:** `finishBeyond = normalCDF(−distance ÷ E)`. Used
-  when `strikeIvs` is null or empty, either neighbour (`K − h` or `K + h`)
-  has no IV on the needed side, or the spread result is not finite or not
-  strictly between 0 and 1. Each short strike records which was used
-  (`oddsSource: 'spread' | 'atm'`). The panel prints nothing about it.
+  when `strikeIvs` is null or empty; when `K`, `K − h` or `K + h` has no
+  usable IV on the needed side (absent, or not above 0); or when the result
+  is not finite or not strictly between 0 and 1. Each short strike records
+  which was used (`oddsSource: 'spread' | 'atm'`, the name kept from the
+  first form). The panel prints nothing about it.
 - `sigmaAway = −Φ⁻¹(finishBeyond)`: the σ whose normal tail equals the
   priced chance, so the printed σ and the printed odds always agree. On the
   fallback it equals `distance ÷ E`. `Φ⁻¹` is new in `odds.ts` (the repo has
@@ -408,12 +417,12 @@ Ids are the ladder's own, chosen to match the planned study's tags.
   trip agrees with the same `Φ` the odds use.
 - `touch = min(1, 2 × finishBeyond)`
 
-| Status     | Condition                               | At the boundary       |
-| ---------- | --------------------------------------- | --------------------- |
-| `clear`    | `sigmaAway` ≥ 1.2                       | touch 23%, finish 12% |
-| `watch`    | 1.0 ≤ `sigmaAway` < 1.2                 | touch 32%, finish 16% |
-| `tested`   | `sigmaAway` < 1, and `distance` > 0     | priced inside ±1σ     |
-| `breached` | `distance` ≤ 0                          | spot is at or past it |
+| Status     | Condition                           | At the boundary       |
+| ---------- | ----------------------------------- | --------------------- |
+| `clear`    | `sigmaAway` ≥ 1.2                   | touch 23%, finish 12% |
+| `watch`    | 1.0 ≤ `sigmaAway` < 1.2             | touch 32%, finish 16% |
+| `tested`   | `sigmaAway` < 1, and `distance` > 0 | priced inside ±1σ     |
+| `breached` | `distance` ≤ 0                      | spot is at or past it |
 
 - Breached is decided by spot's position, not by σ. A strike spot has not
   reached whose priced chance is 50% or more (`sigmaAway` ≤ 0, possible
@@ -425,17 +434,21 @@ Ids are the ladder's own, chosen to match the planned study's tags.
 - With no usable expected move there are no odds and no status. That covers
   `unavailable` set, an empty view (pre-open and the first minutes after the
   open), a failed view (`expectedMoveFailed`), a held row whose `asOf` is
-  older than `LADDER_MAX_LEVEL_AGE_SECONDS` while the market is open, and
-  `E` ≤ 0. Short-strike rows fall back to distance, and the result line says
-  so.
+  older than `LADDER_MAX_LEVEL_AGE_SECONDS` while the market is open, a row
+  whose `minDte` is neither 0 nor null (it sizes a later expiry's move from
+  that expiry's IVs and time, the same test the levels use), a time left
+  that is not a number, and `E` ≤ 0. Short-strike rows fall back to
+  distance, and the result line says so.
 - With the market closed (`marketOpen` false) there is no band, no odds and no
   status either, matching `ExpectedMoveTile`'s "session closed". The last row
   held after the close is sized for the final minute and would print near-zero
   odds for an expiry that has settled.
 - A breached strike prints no touch or finish beyond: it has been touched. Its
   row and the result line give how far past it spot is.
-- Printing: σ to two decimals below 3 and one from 3 up; percentages whole;
-  below 1% prints "under 1%" and above 99% prints "over 99%".
+- Printing: σ to two decimals below 3 and one from 3 up, choosing the
+  precision from the value rounded to hundredths (2.996 prints "3.0σ", not
+  "3.00σ"); percentages whole; below 1% prints "under 1%" and above 99%
+  prints "over 99%".
 
 ### Result line
 
@@ -670,19 +683,22 @@ holds SPX spreads.
 - Known points on the ATM fallback: 1.0σ gives finish 15.9% and touch
   31.7%; 1.28σ gives 10.0% and 20.1%; 0.5σ gives 30.9% and 61.7%; 2.0σ
   gives 2.3% and 4.6%.
-- Spread price, flat smile: every IV equal to the ATM IV gives the
-  fallback's finish to within 0.1 point at 1.0σ and at 1.28σ, with
-  `oddsSource: 'spread'`.
-- Spread price, a real smile (the 2026-11-25 16:00:09Z capture, 10:00 CT:
+- Priced chance, flat smile: every IV equal to the ATM IV gives the
+  fallback's finish (to 1e-9) and the same status at `E` 80, 10 and 5 pts,
+  at 1.0σ and at 1.2σ, with `oddsSource: 'spread'`. These are the rows that
+  caught the 10-wide spread's late-session drift.
+- Priced chance, a real smile (the 2026-11-25 16:00:09Z capture, 10:00 CT:
   spot 7,004.43, 5 h left, so `dteFraction` 0.2083): a short put at 6,905
-  from put IVs 0.522 at 6,900 and 0.514 at 6,910 gives finish beyond about
-  9.8%, where that strike's own put IV (0.518) in the ATM formula would give
-  12.6%; a short call at 7,100 from call IVs 0.465 at 7,095 and 0.469 at
-  7,105 gives about 9.8%. These were worked by hand; assert within 0.3
-  point.
-- Fallback: `strikeIvs` null, a missing neighbour IV on the needed side
-  (the other side's IV present), and a spread result outside (0, 1) from
-  crafted IVs each use the ATM σ, with `oddsSource: 'atm'`.
+  with put IVs 0.522 at 6,900, 0.518 at 6,905 and 0.514 at 6,910 gives
+  finish beyond 9.80%, where that strike's own put IV in the ATM formula
+  would give 12.57%; a short call at 7,100 with call IVs 0.465 at 7,095,
+  0.467 at 7,100 and 0.469 at 7,105 gives 9.80%. Checked by two independent
+  scripts on 2026-11-26; assert within 0.05 point.
+- Fallback: `strikeIvs` null; `K`'s own IV missing on the needed side; a
+  missing neighbour IV on the needed side (the other side's IV present); an
+  IV of 0; and a result outside (0, 1) from crafted IVs: each uses the ATM
+  σ, with `oddsSource: 'atm'`.
+- Carry-forward with a NaN `nowMs` gives no odds (no NaN band, no status).
 - `Φ⁻¹`: 0.5 gives 0; 0.1 gives −1.2816 to 4 decimals; `normalCDF(Φ⁻¹(p))`
   returns `p` to within 1e-8 from `p` = 1e-6 to 1 − 1e-6.
 - `sigmaAway` and the printed odds agree: `normalCDF(−sigmaAway)` equals
@@ -736,7 +752,9 @@ holds SPX spreads.
   distances only with levels kept; `snapshots-latest` failed gives
   `unavailable` and no chips, with band and short strikes kept. An error with
   rows held is not a failure: fresh held rows still show, and held rows older
-  than the limit age out (`stale` levels; no usable expected move).
+  than the limit age out (`stale` levels; no usable expected move). An
+  expected-move row with `minDte` 1 gives no usable expected move ("Distances
+  only"); `minDte` null is usable.
 - Usability precedence: `unavailable`, then `missing`, then `not_same_day`,
   then `stale`; the `missing` text while open and no line with the market
   closed.
@@ -887,8 +905,8 @@ other question at its default. They stay here with their reasoning.
   bounds a direct database read at fire time.
 - `LADDER_POSITIONS_POLL_MS = 60_000` (owner, 2026-11-26: every minute,
   read-only)
-- Strike step: `DEFAULTS.STRIKE_INCREMENT` (5), existing. The odds' spread
-  is two steps wide (10 pts), centred on the short strike.
+- Strike step: `DEFAULTS.STRIKE_INCREMENT` (5), existing. The smile's slope
+  at a short strike is read over two steps (10 pts), centred on it.
 - Staleness re-check: `useNow(30_000)` from `session-clock.ts` while the
   market is open, so a stalled feed ages out without a new poll.
 - GEXBot polling: unchanged, the hook's 30 s. Odds recompute on every spot
@@ -950,11 +968,15 @@ Settled here by the author:
 - Question 1: keep the guessed thresholds for now.
 - Questions 3 and 5 to 9: the defaults.
 - Question 2, changed later on 2026-11-26: a short strike's priced odds are
-  the price of a 10-wide vertical spread centred on it, from GEXBot's
-  per-strike IVs, with the ATM σ as the fallback. The owner first said yes
-  to the strike's own IV in the ATM formula, then chose the spread price
-  after the 2026-11-25 comparison under "Odds and status". That adds phases
-  2b (the view sends `strikeIvs`) and 2c (the client type and fixtures).
+  the market's own price for finishing past it, the price of a vertical
+  spread at the strike per point of width, from GEXBot's per-strike IVs,
+  with the ATM σ as the fallback. The owner first said yes to the strike's
+  own IV in the ATM formula, then chose the spread price after the
+  2026-11-25 comparison under "Odds and status". That adds phases 2b (the
+  view sends `strikeIvs`) and 2c (the client type and fixtures). The phase 2
+  code review then showed that a 10-wide spread reads strikes riskier late
+  in the session, so the rule takes the spread's narrow limit (the
+  skew-adjusted digital); same quantity, without the drift.
 
 ## Review, 2026-11-26
 
