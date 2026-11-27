@@ -40,8 +40,9 @@ Each run:
    - `outcome-check` alerts when the fires of a recent session have no outcomes
      (see "Alert meanings").
    - `interval-ba-tape` corrects the live Interval B/A rows (`interval_ba_alerts`) of
-     each session from the tape in R2, adds the alerts live missed, and alerts on a
-     day live looks wrong for (see "Interval B/A tape").
+     each session from the tape in R2, adds the alerts live missed, alerts on a
+     day live looks wrong for, and keeps each session's replay as a day file under
+     `research/interval-ba/replay/` (see "Interval B/A tape").
    - `lottery-refit` moves one candidate version of the Lottery Finder score weights
      one step through its lifecycle, on tonight's outcomes (see "Refit").
    - `research-derive` keeps the per-day state the research reports read: the chains
@@ -594,19 +595,23 @@ the last session that has no row in `interval_ba_tape_days`, and works them newe
   (`INTERVAL_BA_CACHE_DIR`, emptied when the step opens its reader, one day on disk at a
   time, each download held to 600 s by `FETCH_DEADLINE_SECONDS`, or to the step's deadline
   if nearer). It then opens DuckDB on the file with 2 GB of memory
-  (`INTERVAL_BA_DUCKDB_MEMORY`) and 2 threads (`INTERVAL_BA_DUCKDB_THREADS`), and a fresh
-  Neon connection, and runs `heal_day` (below). Both connections close before the file is
-  released.
+  (`INTERVAL_BA_DUCKDB_MEMORY`) and 2 threads (`INTERVAL_BA_DUCKDB_THREADS`), and in this
+  order: replays the day once, writes and checks the day file (below), opens a fresh Neon
+  connection, and runs `heal_day` (below) with that same replay. Both connections close
+  before the file is released.
 - It stops for the night, leaving the rest as `days_left` (the step ends `partial`), when
   less than `INTERVAL_BA_DAY_BUDGET_SECONDS` (900 s) of its time is left, or when
   `INTERVAL_BA_MAX_DAY_FAILURES` (3) days have failed (the step ends `failed`).
-- A day that raises (its download, a tape R2 no longer has, a connection, the settings
-  read, `heal_day`) is counted in `days_failed` and sent to Sentry once as an exception
-  tagged `step` and `day`; the loop goes on. A tape with no 0DTE rows raises too, as a
-  broken tape, never as a day with no alerts. `heal_day` runs in one transaction, so a
-  failed day leaves nothing and no marker, and the next night retries it.
+- A day that raises (its download, a tape R2 no longer has, the replay, the day file's
+  write, a connection, the settings read, `heal_day`) is counted in `days_failed` and sent
+  to Sentry once as an exception tagged `step` and `day`; the loop goes on. A tape with no
+  0DTE rows raises too, as a broken tape, never as a day with no alerts. `heal_day` runs in
+  one transaction, so a failed day leaves no marker and nothing in Neon, and the next night
+  retries it. Its day file may be in R2 already (written before the failure); the retry
+  rewrites it.
 - A failure of the step's own setup (its connection, the marker delete or read, the
-  reader, the tape listing) raises out of the step: it is `failed`, and no day was tried.
+  reader, the research store, the tape listing) raises out of the step: it is `failed`, and
+  no day was tried.
 
 **What `heal_day` writes**, for the day, in one transaction in batches of 500 rows:
 
@@ -627,6 +632,41 @@ It never deletes a live row, never changes another column of one, and never chan
 `acknowledged`. The comparison counts and the inserts are over the tickers live had on
 that day, the ones on in every settings row that covers it; the removals, flags and spots
 cover every row of the day.
+
+**The day file.** Each worked day also leaves one file in the research store,
+`research/interval-ba/replay/{day}.parquet`: every alert the code's rule fires that day, for
+all three tickers, in the columns and types of `EXPORT_COLUMNS` in
+`src/interval_ba_replay.py`. It is what the studies in `scripts/` read. Design:
+`docs/superpowers/specs/2026-11-26-interval-ba-replay-days-design.md`.
+
+- **The code's rule, not live's.** The file holds what `replay_day` fires, whatever the
+  live settings were. The settings checks that can hold a day's inserts do not apply to it,
+  so a held day still gets its file.
+- **Its footer** carries the JSON `interval_ba`: `day`, `rows`, `rule` and `created_at`.
+  `rule` is the replay constants plus `replay-version` (`REPLAY_VERSION`, bumped by hand
+  with any change to what `replay_day` outputs, constants or not; a test pins it). Files
+  of two rules are not one study, so the readers refuse a mix.
+- **A day with no alerts** gets a file of zero rows, so "none fired" and "not written"
+  stay apart. A zero-row file on a day that has live rows is a replay or tape-read fault,
+  and the step's `tape fired no alerts` alert already says so. The step never rewrites a
+  marked day; once the cause is fixed, rewrite the day with the tool (the spec's
+  `export --per-day`).
+- **The order.** The step replays the day once, builds the file, puts it with
+  `ResearchStore.put_file` (one `put_object`, its size checked afterwards) and only then
+  runs `heal_day` on that same replay. `heal_day`'s commit writes the day's marker, so a
+  put that fails leaves no marker: the day fails (the per-day exception names it) and the
+  next night retries and rewrites. A `heal_day` that fails after a good put is retried the
+  same way. A failed day can therefore leave a file in R2, never a marker without one. The
+  file is written to `/tmp/nightly/interval-ba` and removed after the put.
+- **The cost, accepted.** A put that fails every night (a key bug, a token without write
+  rights) also holds back that day's Neon heal and its live-health alert. The exception
+  for the day, and the log line `interval-ba <day> day file write failed (<class>)` just
+  before the day's own line, are then the only signs.
+- **A re-landed day** is redone like any other (its marker is cleared first, above), so its
+  file is rewritten from the new tape. The known gap is the marker limit above: a day
+  re-landed on a night the step does not run keeps its marker and its old file, and the
+  step never re-heals it. The readers' stale check rewrites the file on the next study;
+  the Neon heal still needs the marker deleted by hand, as today.
 
 **When the inserts are held.** The day's inserts are held, and its marker says why
 (`inserts_held`), unless live's settings show it ran today's rule. Flags, spot and
@@ -667,11 +707,12 @@ days with none.
 
 **Counts and logs.** The counts are in the log line `step interval-ba-tape ...` and in the
 `counts` extra of the step alerts: `days_done`, `days_failed`, `days_left`,
-`days_waiting_tape`, `inserted`, `flags_changed`, `spot_filled`, `root_label_mismatch` and
-`health_alerts` (days that sent a health alert, below). The log has one line per day,
-`interval-ba <day> <status> <non-zero counts> in <seconds>s`, where the status is
-`failed (<ExceptionClass>)`, else the health phrase, else `ok`. It never carries an
-exception's text or row data. The step ends `failed` if a day failed, else `partial` if
+`days_waiting_tape`, `replay_days_written` (day files put and checked; a day whose heal
+then failed counts, since its file is in R2), `inserted`, `flags_changed`, `spot_filled`,
+`root_label_mismatch` and `health_alerts` (days that sent a health alert, below). The log
+has one line per day, `interval-ba <day> <status> <non-zero counts> in <seconds>s`, where
+the status is `failed (<ExceptionClass>)`, else the health phrase, else `ok`. It never
+carries an exception's text or row data. The step ends `failed` if a day failed, else `partial` if
 days are left, else `ok`; a health alert does not change that.
 
 The same pass runs by hand with `scripts/interval_ba_tape.py heal` (a dry run, then
@@ -1143,11 +1184,17 @@ written and could not verify (`r2_store.verify_upload_size`), and nothing else u
 | `research/lottery-tracking/state/lottery-tracking.csv`; `research/lottery-tracking/{session}/lottery-tracking.csv` | the whole series, rewritten each night; that night's view | `lottery-tracking`, the seed | state + snapshot |
 | `research/quality-sim/{session}/lottery-quality-sim-{session}.csv`                                                 | per-fire tier simulation                                  | `quality-sim`                | output           |
 | `research/takeit-drift/{session}/takeit-drift-{session}.md`, `reliability_{feed}_{session}.png`                    | the drift report and its plots                            | `takeit-drift`               | output           |
+| `research/interval-ba/replay/{day}.parquet`                                                                        | that session's replayed alerts, all three tickers         | `interval-ba-tape`           | output           |
 
 In the tracking row the seed writes only the state key, never the dated snapshot. The
 seed also writes the earlier dated reports, plots and simulation CSVs under
 `research/{family}/{date}/` (`SEED_RULES` in `src/seed_research.py`), which the report
 rows above do not list as written by it.
+
+The Interval B/A row is written by `interval-ba-tape`, which is not a research step (it
+writes Neon too; see "Interval B/A tape"). The job never reads those files back, so they
+are output. The one-time snapshot `research/interval-ba/replay-{end}.parquet`, which the
+one-off tool writes by hand, is not under that prefix.
 
 To browse them, open the Cloudflare dashboard, then R2, then the bucket, then the
 `research/` prefix, and download an object to read it. The reports are Markdown, CSV

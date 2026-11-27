@@ -74,8 +74,9 @@ ENRICH_UNPRICED_FLOOR = 20
 INTERVAL_BA_CACHE_DIR = WORK_DIR / "interval-ba"
 # A day starts only with this much step time left: its download (held to the tape reader's
 # FETCH_DEADLINE_SECONDS, 600 s; the bound is checked between reads, so a stalled read can pass
-# it, and the watchdog bounds the run) plus heal_day's DuckDB scans of the day and its one Neon
-# transaction. The same as the other two per-day tape steps.
+# it, and the watchdog bounds the run) plus the replay's DuckDB scans of the day, the put of its
+# small day file, heal_day's own scans and its one Neon transaction. The same as the other two
+# per-day tape steps.
 INTERVAL_BA_DAY_BUDGET_SECONDS = 900
 # Failed days after which the step stops for the night. Each costs a download and a Sentry
 # exception, and a tape layout the replay cannot read breaks every day alike.

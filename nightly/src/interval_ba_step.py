@@ -23,18 +23,38 @@ The work list:
 
 Each day downloads its tape first (the Neon connection must not idle through a download, which is
 held to FETCH_DEADLINE_SECONDS or the step's deadline if nearer), then opens a fresh DuckDB
-connection with the step's limits and a fresh Neon connection, reads the live settings that
-cover the day on it, and runs heal_day on the downloaded file. Both connections close before the
-tape is released.
+connection with the step's limits, and in this order:
+
+1. replays the day once (`replay_day`);
+2. writes the replay as the day's file in the research store, `research/interval-ba/replay/
+   {day}.parquet`, and checks it (`ResearchStore.put_file`; spec
+   docs/superpowers/specs/2026-11-26-interval-ba-replay-days-design.md). The file is what the
+   code's rule fires, for all three tickers, whatever live ran that day: the settings that can
+   hold the day's inserts do not apply to it. A day with no alerts still gets a file, of zero
+   rows. A re-landed day writes its key again;
+3. opens a fresh Neon connection, reads the live settings that cover the day on it, and runs
+   heal_day on the downloaded file with that same replay (`replay=`), so the file and the heal
+   agree and the day is not replayed twice.
+
+Both connections close before the tape is released.
+
+The file goes before the heal because heal_day's commit writes the day's marker, and the marker
+is what stops the step working the day again. A put that fails therefore leaves no marker, and
+the day is retried the next night, which rewrites the file; a heal_day that fails after a good
+put is retried the same way. The cost, accepted: a put that fails every night (a key bug, a
+token without write rights) also holds back that day's heal and its live-health alert, and the
+exception sent for the day is the only sign. The local Parquet sits in INTERVAL_BA_CACHE_DIR and
+is removed after the put, whether it worked or not.
 
 Failures: an Exception in a day (its download, a tape R2 no longer has, either connection, the
-settings read, heal_day, including replay_day's ValueError for a tape with no 0DTE rows, which is
-a broken tape and never a day with no alerts) is counted in `days_failed`, sent once through
-`capture_exception` tagged with the step and the day (`monitoring.scrub_event` cuts a data
-library's text), and the loop goes on. It stops, leaving the rest as `days_left`, after
-INTERVAL_BA_MAX_DAY_FAILURES failed days or with less than INTERVAL_BA_DAY_BUDGET_SECONDS left.
-Only the setup is not a day's: a failure of its connection, the marker delete or read, the reader
-or the tape listing propagates to `run_steps`.
+replay, the day file's write, the settings read, heal_day, including replay_day's ValueError for
+a tape with no 0DTE rows, which is a broken tape and never a day with no alerts) is counted in
+`days_failed`, sent once through `capture_exception` tagged with the step and the day
+(`monitoring.scrub_event` cuts a data library's text), and the loop goes on. It stops, leaving
+the rest as `days_left`, after INTERVAL_BA_MAX_DAY_FAILURES failed days or with less than
+INTERVAL_BA_DAY_BUDGET_SECONDS left. Only the setup is not a day's: a failure of its connection,
+the marker delete or read, the reader, the research store or the tape listing propagates to
+`run_steps`.
 
 Health alerts: the StepResult carries one detail, which a failed day or days left would hide, so
 after each day commits `_report_health` sends at most one Sentry message for that day (level
@@ -45,8 +65,9 @@ Status: `failed` if a day failed, else `partial` if days are left, else `ok`; th
 fixed phrases (they are part of the Sentry fingerprint). A health alert does not change it.
 
 Logs carry one line per day: the date, a status word (`failed (<ExceptionClass>)`, else the
-health phrase, else `ok`), the day's non-zero counts and the seconds. Never an exception's text
-(it can carry the Neon host) or row data.
+health phrase, else `ok`), the day's non-zero counts and the seconds. A day whose file write
+failed has one more line before it, naming the class. Never an exception's text (it can carry the
+Neon host or the R2 endpoint) or row data.
 """
 
 from __future__ import annotations
@@ -58,6 +79,7 @@ from time import monotonic
 from typing import TYPE_CHECKING
 
 import duckdb
+import pyarrow.parquet as pq
 import sentry_sdk
 from _tape_reader import FETCH_DEADLINE_SECONDS
 
@@ -69,13 +91,25 @@ from constants import (
     INTERVAL_BA_DUCKDB_THREADS,
     INTERVAL_BA_MAX_DAY_FAILURES,
 )
-from interval_ba_replay import INSERT_MISSED_FROM, DayPlan, heal_day, read_covering_settings
+from interval_ba_replay import (
+    INSERT_MISSED_FROM,
+    DayPlan,
+    day_key,
+    export_table,
+    heal_day,
+    read_covering_settings,
+    replay_day,
+    rule,
+)
+from research_store import ResearchStore
 from resources import connect_db, open_reader
 from steps import StepContext, StepResult
 
 if TYPE_CHECKING:
     from _tape_reader import TapeReader
     from psycopg2.extensions import connection
+
+    from interval_ba_replay import Replay
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +131,7 @@ _COUNT_NAMES = (
     "days_failed",
     "days_left",
     "days_waiting_tape",
+    "replay_days_written",  # day files put and verified; a day whose heal then failed counts
     *_DAY_COUNT_NAMES,
     "health_alerts",
 )
@@ -165,6 +200,7 @@ def run(ctx: StepContext) -> StepResult:
 def _heal_days(ctx: StepContext, days: Sequence[date], counts: dict[str, int]) -> None:
     """Heal `days` (newest first) until the budget, the failure cap or the work runs out."""
     with open_reader(ctx.settings, INTERVAL_BA_CACHE_DIR) as reader:
+        store = ResearchStore(ctx.settings)
         landed = reader.landed_days()
         for position, day in enumerate(days):
             if _must_stop(ctx, counts):
@@ -174,7 +210,7 @@ def _heal_days(ctx: StepContext, days: Sequence[date], counts: dict[str, int]) -
                 counts["days_waiting_tape"] += 1
                 log.info("interval-ba %s waiting for the tape", day.isoformat())
                 continue
-            _heal_one(ctx, reader, day, counts)
+            _heal_one(ctx, reader, store, day, counts)
 
 
 def _must_stop(ctx: StepContext, counts: dict[str, int]) -> bool:
@@ -185,14 +221,16 @@ def _must_stop(ctx: StepContext, counts: dict[str, int]) -> bool:
     )
 
 
-def _heal_one(ctx: StepContext, reader: TapeReader, day: date, counts: dict[str, int]) -> None:
+def _heal_one(
+    ctx: StepContext, reader: TapeReader, store: ResearchStore, day: date, counts: dict[str, int]
+) -> None:
     """One landed day: healed and judged, or failed and sent once; its tape released either way."""
     iso = day.isoformat()
     started = monotonic()
     plan: DayPlan | None = None
     error: str | None = None
     try:
-        plan = _heal(ctx, reader, day)
+        plan = _heal(ctx, reader, store, day, counts)
     except Exception as exc:
         # The event is scrubbed in before_send; the log and the counts keep the class only.
         error = type(exc).__name__
@@ -210,15 +248,52 @@ def _heal_one(ctx: StepContext, reader: TapeReader, day: date, counts: dict[str,
     _log_day(iso, plan, error, monotonic() - started)
 
 
-def _heal(ctx: StepContext, reader: TapeReader, day: date) -> DayPlan:
-    # The download comes first: neither connection may idle through it.
+def _heal(
+    ctx: StepContext, reader: TapeReader, store: ResearchStore, day: date, counts: dict[str, int]
+) -> DayPlan:
+    # The download comes first: no connection may idle through it.
     path = reader.fetch_day(day, deadline=_fetch_deadline(ctx))
     if path is None:
         raise RuntimeError(_MISSING_TAPE)
-    with _duckdb_connection() as con, connect_db(ctx.settings) as conn:
-        # Autocommit, so the read leaves the connection idle, as heal_day needs it.
-        settings = read_covering_settings(conn, day)
-        return heal_day(conn, con, str(path), day, settings, insert_missed=True, apply=True)
+    with _duckdb_connection() as con:
+        replay = replay_day(con, str(path), day)
+        # The file goes before heal_day commits the day's marker, and before Neon is opened, so
+        # that connection does not idle through the put either.
+        _put_day_file(ctx, store, replay)
+        counts["replay_days_written"] += 1
+        with connect_db(ctx.settings) as conn:
+            # Autocommit, so the read leaves the connection idle, as heal_day needs it.
+            settings = read_covering_settings(conn, day)
+            return heal_day(
+                conn, con, str(path), day, settings, insert_missed=True, apply=True, replay=replay
+            )
+
+
+def _put_day_file(ctx: StepContext, store: ResearchStore, replay: Replay) -> None:
+    """Write `replay` as its day's file in the research store and have the store check it.
+
+    The file holds every alert the code's rule fires that day, whatever the live settings were.
+    The local copy is removed whether or not the put worked. A failure is logged here by class
+    alone, with the stage the day's own line cannot name, then raised for the day to fail on.
+    """
+    day = replay.day
+    path = INTERVAL_BA_CACHE_DIR / f"replay-{day.isoformat()}.parquet"
+    meta = {
+        "day": day.isoformat(),
+        "rows": len(replay.alerts),
+        "rule": rule(),
+        "created_at": ctx.now_utc.isoformat(),
+    }
+    try:
+        pq.write_table(export_table(replay.alerts, meta), path)
+        store.put_file(day_key(day), path)
+    except Exception as exc:
+        log.warning(
+            "interval-ba %s day file write failed (%s)", day.isoformat(), type(exc).__name__
+        )
+        raise
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _duckdb_connection() -> duckdb.DuckDBPyConnection:

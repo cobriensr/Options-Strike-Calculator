@@ -2,13 +2,14 @@
 limits and the per-day health alerts.
 
 Everything below interval_ba_step is patched at its module boundary (R3): `open_reader`,
-`connect_db`, `read_covering_settings`, `heal_day` and `duckdb.connect` (one test puts the real
-`duckdb.connect` back, to read the settings of the connection the step opens). Nothing reaches a
-database, R2 or the network.
+`connect_db`, `read_covering_settings`, `replay_day`, `heal_day`, `ResearchStore` and
+`duckdb.connect` (one test puts the real `duckdb.connect` back, to read the settings of the
+connection the step opens). Nothing reaches a database, R2 or the network.
 
 `night.markers` stands in for the `interval_ba_tape_days` rows: the fake cursor answers the
 step's two statements from it, and the fake `heal_day` adds the day it heals, as the real one's
-step 7 does. `night.events` records every call that matters for order. `clock` replaces the
+step 7 does. `night.puts` holds each day file the fake store was handed, read back at the time
+of the put. `night.events` records every call that matters for order. `clock` replaces the
 monotonic clock `StepContext.seconds_left` reads, so a test spends run time by moving it.
 """
 
@@ -20,17 +21,22 @@ import re
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call, create_autospec, patch
 
+import boto3
 import duckdb
 import psycopg2
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import sentry_sdk
 from _tape_reader import FETCH_DEADLINE_SECONDS, TapeReader, TapeReadError
+from moto import mock_aws
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.transport import Transport
 
@@ -47,16 +53,25 @@ from constants import (
     WORK_DIR,
 )
 from interval_ba_replay import (
+    EXPORT_COLUMNS,
     INSERT_MISSED_FROM,
     DayPlan,
+    Replay,
+    TapeAlert,
+    day_key,
     default_settings,
+    export_table,
     heal_day,
     read_covering_settings,
+    replay_day,
+    rule,
 )
 from monitoring import init_sentry, report_step
 from pipeline import STEPS
+from research_store import ResearchStore
 from steps import StepContext, StepOutcome, run_steps
 from tape_job import DayOutcome
+from tests._interval_ba_tape import _at, _chain
 
 NOW = datetime(2026, 11, 5, 7, 15, tzinfo=UTC)
 LAST_SESSION = date(2026, 11, 4)  # a Wednesday
@@ -85,6 +100,7 @@ COUNT_NAMES = {
     "days_failed",
     "days_left",
     "days_waiting_tape",
+    "replay_days_written",
     "inserted",
     "flags_changed",
     "spot_filled",
@@ -145,6 +161,56 @@ def _plan(day: date, **counts: Any) -> DayPlan:
     )
 
 
+def _tape_alert(day: date, root: str, option_type: str, strike: int, clock: str) -> TapeAlert:
+    start = _at(clock, day)
+    return TapeAlert(
+        option_chain=_chain(root, option_type, strike, day),
+        ticker=root,
+        option_type=option_type,
+        strike=Decimal(strike).quantize(Decimal("0.001")),
+        expiry=day,
+        bucket_start=start,
+        bucket_end=start + timedelta(seconds=300),
+        fired_at=start + timedelta(seconds=1),
+        ratio_pct=Decimal("100.00"),
+        ask_premium=Decimal("250000.00"),
+        total_premium=Decimal("250000.00"),
+        trade_count=1,
+        top_trade_premium=Decimal("250000.00"),
+        top_trade_size=100,
+        top_trade_executed_at=start + timedelta(seconds=1),
+        top_trade_is_sweep=False,
+        top_trade_is_floor=False,
+        underlying_price=Decimal("6701.25") if root == "SPXW" else Decimal("670.00"),
+        confluence_tickers=(),
+    )
+
+
+def _replay_of(day: date) -> Replay:
+    """The day's replay as the fake replay_day gives it: one alert for each of the three
+    tickers, so a file that left a ticker out shows."""
+    return Replay(
+        day=day,
+        alerts=(
+            _tape_alert(day, "SPXW", "C", 6700, "14:30:00"),
+            _tape_alert(day, "SPY", "C", 670, "14:31:00"),
+            _tape_alert(day, "QQQ", "P", 590, "14:32:00"),
+        ),
+        root_label_mismatch=0,
+    )
+
+
+@dataclass(frozen=True)
+class Put:
+    """A day file the fake store was handed: its key, the path it was read from, and the table
+    and Parquet footer metadata read back from that path at the time of the put."""
+
+    key: str
+    path: Path
+    table: pa.Table
+    meta: dict[str, Any]
+
+
 # --- harness --------------------------------------------------------------------------
 
 
@@ -193,21 +259,36 @@ class Night:
     reader: MagicMock
     open_reader: MagicMock
     covering: MagicMock
+    replay: MagicMock
     heal: MagicMock
     duckdb_connect: MagicMock
     duck: MagicMock
+    store_class: MagicMock
+    store: MagicMock
+    cache_dir: Path
     # The days with an interval_ba_tape_days row.
     markers: set[date] = field(default_factory=set)
     # What heal_day returns, or raises, for a day. Absent: a healthy plan.
     plans: dict[date, DayPlan | BaseException] = field(default_factory=dict)
+    # What replay_day returns, or raises, for a day. Absent: _replay_of(day).
+    replays: dict[date, Replay | BaseException] = field(default_factory=dict)
+    # What the store's put_file raises for a key, before it keeps anything.
+    put_failures: dict[str, BaseException] = field(default_factory=dict)
+    # The day files the store was handed, in order.
+    puts: list[Put] = field(default_factory=list)
 
     def landed(self, days: list[date]) -> None:
         self.reader.landed_days.return_value = set(days)
 
+    def puts_for(self, day: date) -> list[Put]:
+        return [put for put in self.puts if put.key == day_key(day)]
+
 
 @pytest.fixture
-def night(monkeypatch: pytest.MonkeyPatch) -> Night:
+def night(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Night:
     events: list[str] = []
+    cache_dir = tmp_path / "interval-ba"
+    cache_dir.mkdir()
     conn = MagicMock(name="conn")
     cursor = MagicMock(name="cursor")
     conn.cursor.return_value.__enter__.return_value = cursor
@@ -241,6 +322,9 @@ def night(monkeypatch: pytest.MonkeyPatch) -> Night:
         events.append("duck open")
         return duck
 
+    store = create_autospec(ResearchStore, instance=True)
+    store_class = create_autospec(ResearchStore, return_value=store)
+
     n = Night(
         events=events,
         conn=conn,
@@ -252,11 +336,35 @@ def night(monkeypatch: pytest.MonkeyPatch) -> Night:
             read_covering_settings,
             side_effect=lambda _conn, day: events.append(f"settings {day}") or SETTINGS,
         ),
+        replay=create_autospec(replay_day),
         heal=create_autospec(heal_day),
         duckdb_connect=MagicMock(name="duckdb.connect", side_effect=fake_duckdb_connect),
         duck=duck,
+        store_class=store_class,
+        store=store,
+        cache_dir=cache_dir,
         markers={BEFORE_WORK},
     )
+
+    def fake_replay(_con: object, _tape: str, day: date) -> Replay:
+        events.append(f"replay {day}")
+        outcome = n.replays.get(day, _replay_of(day))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    n.replay.side_effect = fake_replay
+
+    def fake_put_file(key: str, path: Path) -> int:
+        events.append(f"put {key}")
+        if key in n.put_failures:
+            raise n.put_failures[key]
+        table = pq.read_table(path)
+        meta = json.loads(pq.read_schema(path).metadata[b"interval_ba"])
+        n.puts.append(Put(key, path, table, meta))
+        return path.stat().st_size
+
+    store.put_file.side_effect = fake_put_file
 
     def execute(sql: str, params: dict[str, Any]) -> None:
         if sql == CLEAR_SQL:
@@ -283,6 +391,7 @@ def night(monkeypatch: pytest.MonkeyPatch) -> Night:
         insert_missed: bool,
         apply: bool,
         expect_sha256: str | None = None,
+        replay: Replay | None = None,
     ) -> DayPlan:
         events.append(f"heal {day}")
         outcome = n.plans.get(day, _plan(day))
@@ -296,7 +405,11 @@ def night(monkeypatch: pytest.MonkeyPatch) -> Night:
     monkeypatch.setattr(interval_ba_step, "connect_db", n.connect)
     monkeypatch.setattr(interval_ba_step, "open_reader", n.open_reader)
     monkeypatch.setattr(interval_ba_step, "read_covering_settings", n.covering)
+    monkeypatch.setattr(interval_ba_step, "replay_day", n.replay)
     monkeypatch.setattr(interval_ba_step, "heal_day", n.heal)
+    monkeypatch.setattr(interval_ba_step, "ResearchStore", n.store_class)
+    # The day file is written under the cache directory; open_reader, which makes it, is patched.
+    monkeypatch.setattr(interval_ba_step, "INTERVAL_BA_CACHE_DIR", cache_dir)
     monkeypatch.setattr(interval_ba_step.duckdb, "connect", n.duckdb_connect)
     return n
 
@@ -346,7 +459,11 @@ def test_work_list_is_trading_days_from_insert_missed_from_newest_first(
     assert night.reader.release.call_args_list == [call(day) for day in NEWEST_FIRST]
     assert result.status == "ok"
     assert result.detail == ""
-    assert result.counts == {**dict.fromkeys(COUNT_NAMES, 0), "days_done": len(WORK)}
+    assert result.counts == {
+        **dict.fromkeys(COUNT_NAMES, 0),
+        "days_done": len(WORK),
+        "replay_days_written": len(WORK),
+    }
 
 
 def test_the_work_list_skips_exchange_holidays(
@@ -378,18 +495,22 @@ def test_heal_day_runs_on_the_downloaded_file_with_inserts_on_and_applied(
 
     interval_ba_step.run(_ctx(settings, clock))
 
-    # The covering settings are read on the day's own connection, then handed to heal_day
-    # with that connection and the day's DuckDB connection. Every work day is on or after
+    # The day is replayed once, on the downloaded file, and that replay goes to heal_day. The
+    # covering settings are read on the day's own connection, then handed to heal_day with that
+    # connection and the day's DuckDB connection. Every work day is on or after
     # INSERT_MISSED_FROM, so inserts are on; nothing here passes an expected sha.
+    tape = str(Path(f"/cache/{WORK[4]}-fulltape.parquet"))
+    night.replay.assert_called_once_with(night.duck, tape, WORK[4])
     night.covering.assert_called_once_with(night.conn, WORK[4])
     night.heal.assert_called_once_with(
         night.conn,
         night.duck,
-        str(Path(f"/cache/{WORK[4]}-fulltape.parquet")),
+        tape,
         WORK[4],
         SETTINGS,
         insert_missed=True,
         apply=True,
+        replay=_replay_of(WORK[4]),
     )
 
 
@@ -567,8 +688,9 @@ def test_a_setup_failure_propagates_for_the_runner_to_report(
 def test_one_connection_per_day_after_download(
     night: Night, settings: Settings, clock: Clock
 ) -> None:
-    # Neon never idles through a download: each day opens its own DuckDB and Neon connections
-    # after its tape is on disk, and closes both before the tape is released.
+    # Neon never idles through a download, a replay or the day file's put: each day opens its
+    # DuckDB connection after its tape is on disk, replays and writes the day file, and only then
+    # opens its Neon connection. Both close before the tape is released.
     night.landed(WORK[3:])
 
     interval_ba_step.run(_ctx(settings, clock))
@@ -581,6 +703,8 @@ def test_one_connection_per_day_after_download(
         for event in (
             f"fetch {day}",
             "duck open",
+            f"replay {day}",
+            f"put {day_key(day)}",
             "connect",
             f"settings {day}",
             f"heal {day}",
@@ -622,8 +746,9 @@ def test_duckdb_limits_and_temp_dir_set(
     assert memory == expected_memory  # DuckDB's own default is 80% of the machine's memory
     assert threads == INTERVAL_BA_DUCKDB_THREADS == 2
     # DuckDB creates only the last level of temp_directory, so it sits directly in the step's
-    # cache directory, which open_reader creates (and empties, spill a killed run left included).
-    assert Path(temp_directory).resolve() == (INTERVAL_BA_CACHE_DIR / "duckdb-tmp").resolve()
+    # cache directory (the fixture's, in place of the real one), which open_reader creates (and
+    # empties, spill a killed run left included).
+    assert Path(temp_directory).resolve() == (night.cache_dir / "duckdb-tmp").resolve()
     assert INTERVAL_BA_CACHE_DIR == WORK_DIR / "interval-ba"
     # A quarter of the Railway nightly service's 8,000,000,000-byte limit, below 2000MiB.
     # DuckDB's GB is 10**9 bytes.
@@ -705,7 +830,7 @@ def test_a_failure_at_any_stage_of_a_day_is_that_days_alone(
         night.covering.side_effect = [failure, SETTINGS]
     else:
         failure = ValueError("no 0DTE SPXW/SPY/QQQ rows: wrong day or broken tape")
-        night.plans[failing] = failure
+        night.replays[failing] = failure
 
     result = interval_ba_step.run(_ctx(settings, clock))
 
@@ -725,6 +850,10 @@ def test_a_failure_at_any_stage_of_a_day_is_that_days_alone(
     assert _days(night.events, "heal")[-1] == after  # the next day still ran
     assert failing not in night.markers
     capture_message.assert_not_called()
+    if stage == "no-tape-rows":
+        # A broken tape is no day with no alerts: no day file, and no heal on it.
+        assert night.puts_for(failing) == []
+        assert failing not in _days(night.events, "heal")
     if stage in ("fetch", "missing"):
         # Nothing was opened for the day whose download failed.
         assert night.duckdb_connect.call_count == 1
@@ -817,6 +946,7 @@ def test_counts_add_up_over_the_days(night: Night, settings: Settings, clock: Cl
     assert result.counts == {
         **dict.fromkeys(COUNT_NAMES, 0),
         "days_done": 2,
+        "replay_days_written": 2,
         "inserted": 3,
         "flags_changed": 8,
         "spot_filled": 7,
@@ -839,6 +969,250 @@ def test_a_base_exception_ends_the_step_after_the_day_is_released(
     assert night.reader.fetch_day.call_count == 1  # it did not go on to the next day
     capture_exception.assert_not_called()
     night.reader.__exit__.assert_called_once()  # the reader still closes
+
+
+# --- the day files --------------------------------------------------------------------
+
+
+def test_the_step_writes_the_day_file_before_the_heal_commits(
+    night: Night,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    # The file goes first. A put that fails leaves no marker (heal_day, which commits it, never
+    # runs), so the day is retried the next night; the failure is the day's own, sent once.
+    night.landed(WORK[3:])
+    failure = RuntimeError("put refused")
+    night.put_failures[day_key(WORK[4])] = failure
+
+    result = interval_ba_step.run(_ctx(settings, clock))
+
+    assert WORK[4] not in night.markers
+    assert WORK[4] not in _days(night.events, "heal")
+    assert night.puts_for(WORK[4]) == []
+    capture_exception.assert_called_once_with(
+        failure, tags={"step": STEP_NAME, "day": WORK[4].isoformat()}
+    )
+    assert (result.status, result.detail) == ("failed", FAILED_DETAIL)
+    assert (result.counts["days_failed"], result.counts["days_done"]) == (1, 1)
+    assert result.counts["replay_days_written"] == 1  # the other day's
+    capture_message.assert_not_called()
+    # And on the good day the file came first, then Neon, then the heal that writes its marker.
+    events = night.events
+    assert events.index(f"put {day_key(WORK[3])}") < events.index(f"settings {WORK[3]}")
+    assert events.index(f"put {day_key(WORK[3])}") < events.index(f"heal {WORK[3]}")
+    # The failed day opened no Neon connection: setup, and the other day's.
+    assert night.connect.call_count == 2
+    assert night.reader.release.call_args_list == [call(WORK[4]), call(WORK[3])]
+
+
+def test_the_heal_gets_the_replay_the_file_was_written_from(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    night.landed([WORK[4]])
+    replay = replace(_replay_of(WORK[4]), alerts=_replay_of(WORK[4]).alerts[:2])
+    night.replays[WORK[4]] = replay
+
+    interval_ba_step.run(_ctx(settings, clock))
+
+    (put,) = night.puts_for(WORK[4])
+    assert put.table.num_rows == 2
+    (heal_call,) = night.heal.call_args_list
+    assert heal_call.kwargs["replay"] is replay
+    assert night.replay.call_count == 1  # the day is replayed once, not once more by the heal
+
+
+def test_each_day_file_carries_its_day_rows_rule_and_time(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    night.landed(WORK[3:])
+
+    interval_ba_step.run(_ctx(settings, clock))
+
+    assert [put.key for put in night.puts] == [
+        f"research/interval-ba/replay/{day}.parquet" for day in (WORK[4], WORK[3])
+    ]
+    for put in night.puts:
+        day = date.fromisoformat(put.key.rsplit("/", 1)[1].removesuffix(".parquet"))
+        assert put.meta == {
+            "day": day.isoformat(),
+            "rows": 3,
+            "rule": rule(),
+            "created_at": NOW.isoformat(),
+        }
+        assert put.table.num_rows == 3
+        assert [(f.name, f.type) for f in put.table.schema] == list(EXPORT_COLUMNS)
+        assert put.table.column("ticker").to_pylist() == ["SPXW", "SPY", "QQQ"]
+        assert put.table.column("expiry").to_pylist() == [day] * 3
+        assert put.path == night.cache_dir / f"replay-{day}.parquet"
+
+
+def test_a_quiet_day_writes_a_zero_row_file(night: Night, settings: Settings, clock: Clock) -> None:
+    # "No alerts" and "not written" stay apart: the day still gets its file, with its schema.
+    night.landed([WORK[4]])
+    night.replays[WORK[4]] = Replay(day=WORK[4], alerts=(), root_label_mismatch=0)
+
+    result = interval_ba_step.run(_ctx(settings, clock))
+
+    (put,) = night.puts_for(WORK[4])
+    assert put.table.num_rows == 0
+    assert [(f.name, f.type) for f in put.table.schema] == list(EXPORT_COLUMNS)
+    assert put.meta["rows"] == 0
+    assert put.meta["day"] == WORK[4].isoformat()
+    assert result.counts["replay_days_written"] == 1
+    assert WORK[4] in night.markers  # and the heal went on
+
+
+def test_replay_days_written_is_counted(
+    night: Night, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    # Newest first: a day whose tape has not landed waits (no file); the next day's put fails
+    # (no file, no heal); the next writes its file and then its heal fails (the file is in R2, so
+    # it counts); the next writes and heals; the oldest already has its marker.
+    night.markers.add(WORK[0])
+    night.landed([WORK[1], WORK[2], WORK[3]])  # WORK[4] has no tape yet
+    night.put_failures[day_key(WORK[3])] = RuntimeError("put refused")
+    night.plans[WORK[2]] = RuntimeError("heal failed")
+
+    result = interval_ba_step.run(_ctx(settings, clock))
+
+    assert [put.key for put in night.puts] == [day_key(WORK[2]), day_key(WORK[1])]
+    assert result.counts["replay_days_written"] == 2
+    assert (result.counts["days_done"], result.counts["days_failed"]) == (1, 2)
+    assert result.counts["days_waiting_tape"] == 1
+    assert all(type(n) is int for n in result.counts.values())
+
+
+def test_a_relanded_day_rewrites_its_file(night: Night, settings: Settings, clock: Clock) -> None:
+    # Night one writes every day. On night two a re-landed tape clears one marker, so the step
+    # redoes that day and puts its key again, from the new tape's replay; no other key is put.
+    first = interval_ba_step.run(_ctx(settings, clock))
+    assert first.counts["replay_days_written"] == len(WORK)
+    assert [len(night.puts_for(day)) for day in WORK] == [1] * len(WORK)
+    newer = Replay(day=WORK[3], alerts=_replay_of(WORK[3]).alerts[:1], root_label_mismatch=0)
+    night.replays[WORK[3]] = newer
+    tape = (DayOutcome(WORK[3], "relanded", rows=10, bytes=100),)
+
+    second = interval_ba_step.run(_ctx(settings, clock, tape=tape))
+
+    assert second.counts["replay_days_written"] == 1
+    assert [len(night.puts_for(day)) for day in WORK] == [1, 1, 1, 2, 1]
+    old, new = night.puts_for(WORK[3])
+    assert (old.table.num_rows, new.table.num_rows) == (3, 1)
+    assert new.meta["rows"] == 1
+
+
+def test_the_day_file_is_the_code_rule_not_live_settings(
+    night: Night, settings: Settings, clock: Clock, capture_message: MagicMock
+) -> None:
+    # Live ran another rule that day and had two tickers off, so heal_day holds the day's
+    # inserts. The day file is still the code's rule for all three tickers: it is built from the
+    # replay alone, and written before the settings are even read.
+    night.landed([WORK[4]])
+    other_rule = replace(
+        default_settings(), enabled=False, tickers=("SPY",), window_sec=60, premium_floor=1
+    )
+    night.covering.side_effect = lambda _conn, day: (
+        night.events.append(f"settings {day}") or [other_rule]
+    )
+    night.plans[WORK[4]] = _plan(
+        WORK[4], inserts_held="live settings differ from the tape rule", live_rows=0, matched=0
+    )
+
+    result = interval_ba_step.run(_ctx(settings, clock))
+
+    (put,) = night.puts_for(WORK[4])
+    assert put.table.column("ticker").to_pylist() == ["SPXW", "SPY", "QQQ"]
+    assert put.meta["rule"] == rule()
+    assert put.meta["rule"]["window-sec"] == "300"
+    assert night.events.index(f"put {day_key(WORK[4])}") < night.events.index(f"settings {WORK[4]}")
+    # The held day kept the marker heal_day wrote, and the step counted the file.
+    assert WORK[4] in night.markers
+    assert result.counts["replay_days_written"] == 1
+    assert night.heal.call_args.args[4] == [other_rule]  # heal_day alone applies the settings
+
+
+def test_the_local_day_file_is_removed_after_the_put(
+    night: Night, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    night.landed(WORK[3:])
+    night.put_failures[day_key(WORK[4])] = RuntimeError("put refused")
+
+    interval_ba_step.run(_ctx(settings, clock))
+
+    # The good day's file was there at the put, and neither it nor the failed day's is left.
+    (kept,) = night.puts
+    assert kept.key == day_key(WORK[3])
+    assert night.puts_for(WORK[3])[0].path.parent == night.cache_dir
+    assert list(night.cache_dir.glob("replay-*")) == []
+
+
+def test_a_failed_day_file_write_is_logged_by_class_alone(
+    night: Night,
+    settings: Settings,
+    clock: Clock,
+    caplog: pytest.LogCaptureFixture,
+    capture_exception: MagicMock,
+) -> None:
+    night.landed([WORK[4]])
+    night.put_failures[day_key(WORK[4])] = ConnectionError("https://ep-x.r2.example/bucket key 7")
+
+    with caplog.at_level(logging.DEBUG, logger="interval_ba_step"):
+        interval_ba_step.run(_ctx(settings, clock))
+
+    lines = [r.getMessage() for r in caplog.records if r.name == "interval_ba_step"]
+    # The stage, then the day's own line; the older days wait for their tapes.
+    assert lines[0] == f"interval-ba {WORK[4]} day file write failed (ConnectionError)"
+    assert re.fullmatch(rf"interval-ba {WORK[4]} failed \(ConnectionError\) in \d+\.\ds", lines[1])
+    assert "ep-x.r2.example" not in caplog.text
+    assert "key 7" not in caplog.text
+
+
+def test_the_day_file_reaches_the_bucket_under_its_key_and_reads_back(
+    settings: Settings, clock: Clock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The one test with the real ResearchStore, on moto: the key passes its research/ check, the
+    # put is verified against the file, and what is stored is the table the step built.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(interval_ba_step, "INTERVAL_BA_CACHE_DIR", tmp_path)
+    # moto only intercepts AWS hostnames; a custom R2 endpoint would go out to the network.
+    config = settings.model_copy(
+        update={"r2_endpoint_url": "https://s3.amazonaws.com", "r2_bucket_fulltape": "test-bucket"}
+    )
+    replay = _replay_of(WORK[4])
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-bucket")
+        interval_ba_step._put_day_file(_ctx(config, clock), ResearchStore(config), replay)
+        stored = s3.get_object(Bucket="test-bucket", Key=day_key(WORK[4]))
+
+    body = stored["Body"].read()
+    assert stored["ContentType"] == "application/vnd.apache.parquet"
+    table = pq.read_table(pa.BufferReader(body))
+    assert table.equals(
+        export_table(replay.alerts, json.loads(table.schema.metadata[b"interval_ba"]))
+    )
+    assert table.num_rows == 3
+    assert list(tmp_path.glob("replay-*")) == []
+
+
+def test_the_research_store_is_built_once_and_only_for_a_night_with_work(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    night.markers.update(WORK)
+    interval_ba_step.run(_ctx(settings, clock))
+    night.store_class.assert_not_called()
+
+    night.markers.difference_update(WORK[3:])
+    interval_ba_step.run(_ctx(settings, clock))
+
+    night.store_class.assert_called_once_with(settings)
 
 
 # --- the health alerts ----------------------------------------------------------------
