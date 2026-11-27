@@ -12,6 +12,8 @@
  *      second). A `<Profiler>` commit count over a quiet interval is the
  *      regression guard.
  *   3. A scrub's age never reads as live, and a session edge refetches.
+ *   4. The last session's strikes, held across the open, are gone on the
+ *      render of the flip, before the refetch lands.
  */
 
 import { Profiler } from 'react';
@@ -222,6 +224,41 @@ describe('GexLandscape with the real data hook: the age on screen', () => {
     expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
+
+  it('drops the last session’s strikes on the render of the open, before the refetch lands', async () => {
+    // Friday's close, held by a panel left open over the weekend. The market
+    // opens Monday 09:30 ET; the refetch the open starts never lands here, so
+    // only the render-time drop can clear the strikes.
+    vi.setSystemTime(Date.parse('2026-11-23T14:29:50.000Z'));
+    const friClose = '2026-11-20T21:00:50.036Z';
+    let call = 0;
+    const fetchSpy = stubFetch(() => {
+      call += 1;
+      if (call > 1) return new Promise<Response>(() => undefined);
+      return jsonResponse(
+        body(
+          {
+            marketOpen: false,
+            asOf: friClose,
+            ageSec: 5 * 3_600,
+            availableMinutes: ['2026-11-20T21:00:00.000Z'],
+          },
+          [6025, 6030],
+        ),
+      );
+    });
+    const view = render(tree(false));
+    await screen.findAllByText('6,025', {}, ASYNC);
+    await flushReact();
+
+    act(() => {
+      vi.setSystemTime(Date.parse('2026-11-23T14:30:00.000Z'));
+    });
+    view.rerender(tree(true));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('6,025')).toBeNull();
+    expect(screen.queryByText('6,030')).toBeNull();
+  });
 });
 
 // The render-loop regression guard (C1). Real timers and no act(): a loop
@@ -232,7 +269,17 @@ describe('GexLandscape with the real data hook: the age on screen', () => {
 describe('GexLandscape with the real data hook: it settles', () => {
   type ActEnv = { IS_REACT_ACT_ENVIRONMENT?: boolean };
 
+  beforeEach(() => {
+    // The hook drops a body from before today's open once the market is open,
+    // so on the wall clock "with data" would depend on the day it ran. Pin the
+    // date to the body's session; it keeps ticking, so the settle deadline
+    // below still ends.
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });

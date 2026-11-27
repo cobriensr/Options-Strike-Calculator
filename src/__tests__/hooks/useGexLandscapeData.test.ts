@@ -22,6 +22,12 @@
  *     the server's marketOpen / reason, null before the first response and
  *     for any response fetched with `at` (keyed on the `at` it was fetched
  *     with, not the panel's current one)
+ *   - After the close (spec: gexbot-after-close-design): `asOf` exposed; a
+ *     body from before today's open dropped at render once the market is
+ *     open; the final fetch at close + 3 min; a failed fetch while closed
+ *     keeping the held response with no error and retrying 5 × 30 s; one
+ *     refetch when the ET date argument rolls; the `no_slot` stall age read
+ *     from the body's `lastMinuteAgeSec`. A scrub (`at` set) ignores all of it.
  */
 
 import {
@@ -33,6 +39,7 @@ import {
   afterEach,
   type MockInstance,
 } from 'vitest';
+import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 
 const { mockGetAccessMode } = vi.hoisted(() => ({
@@ -113,8 +120,17 @@ function mockFetch(
   return spy;
 }
 
+// Tue 2026-05-26 14:45 ET, mid-session. The hook drops a live body from before
+// today's open once the market is open, and arms a timer for 16:03 ET, so a test
+// on the wall clock would change with the hour and day it ran at. `toFake:
+// ['Date']` leaves setTimeout, and so `waitFor`, alone. Tests that need the
+// timers run on `fakeClock`.
+const IN_SESSION = '2026-05-26T18:45:00.000Z';
+
 beforeEach(() => {
   mockGetAccessMode.mockReturnValue('owner');
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(IN_SESSION));
 });
 
 afterEach(() => {
@@ -876,17 +892,25 @@ describe('useGexLandscapeData — freshness', () => {
   });
 });
 
-// On `no_slot` there is no capture to measure, so the panel needs the last
-// capture minute's age on the SERVER's clock: asOf (the server's `new Date()`
-// on that reply) minus the day's last availableMinutes entry, plus the edge
-// `Age`. The client clock never enters.
+// On `no_slot` there is no capture to measure and `asOf` is null (no capture
+// backs the reply), so the panel needs the last capture minute's age on the
+// SERVER's clock: the body's `lastMinuteAgeSec` (server now minus the last
+// availableMinutes entry), plus the edge `Age`. The client clock never enters.
 describe('useGexLandscapeData — lastCaptureAgeMsAtReceipt (no_slot)', () => {
+  // Fri 2026-11-20 10:30:10 ET, in session: nothing here is carried over.
+  const SESSION_NOW = '2026-11-20T15:30:10.000Z';
+
+  beforeEach(() => {
+    vi.setSystemTime(new Date(SESSION_NOW));
+  });
+
   const noSlot = (over: Partial<GexLandscapeResponse> = {}) =>
     makeResponse({
       data: null,
       reason: 'no_slot',
       ageSec: undefined,
-      asOf: '2026-11-20T15:30:10.000Z',
+      asOf: null,
+      lastMinuteAgeSec: 130,
       availableMinutes: [
         '2026-11-20T15:27:00.000Z',
         '2026-11-20T15:28:00.000Z',
@@ -906,11 +930,18 @@ describe('useGexLandscapeData — lastCaptureAgeMsAtReceipt (no_slot)', () => {
     return result.current.freshness!;
   }
 
-  it('is asOf minus the last capture minute plus the Age header: 130 s + 5 s = 135 000 ms', async () => {
+  it('is the body’s lastMinuteAgeSec plus the Age header: 130 s + 5 s = 135 000 ms', async () => {
     const f = await freshnessOfResponse(noSlot(), { Age: '5' });
     expect(f.lastCaptureAgeMsAtReceipt).toBe(135_000);
     expect(f.dataAgeMsAtReceipt).toBeNull();
     expect(f.reason).toBe('no_slot');
+  });
+
+  it('a 360 s stall with asOf null reads 360 000 ms plus the edge age', async () => {
+    const f = await freshnessOfResponse(noSlot({ lastMinuteAgeSec: 360 }), {
+      Age: '7',
+    });
+    expect(f.lastCaptureAgeMsAtReceipt).toBe(367_000);
   });
 
   it('counts a missing Age header as 0', async () => {
@@ -918,25 +949,42 @@ describe('useGexLandscapeData — lastCaptureAgeMsAtReceipt (no_slot)', () => {
     expect(f.lastCaptureAgeMsAtReceipt).toBe(130_000);
   });
 
-  it('does not depend on the client clock', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date('2001-01-01T00:00:00.000Z'));
+  // The server measured the age. A client clock hours ahead of the capture
+  // minutes (same session, so the body is not carried over) or in 2001 changes
+  // nothing.
+  it.each([
+    ['the year 2001', '2001-01-01T00:00:00.000Z'],
+    ['five hours past the capture minute', '2026-11-20T20:30:00.000Z'],
+  ])('does not depend on the client clock (%s)', async (_label, clock) => {
+    vi.setSystemTime(new Date(clock));
     const f = await freshnessOfResponse(noSlot(), { Age: '5' });
     expect(f.lastCaptureAgeMsAtReceipt).toBe(135_000);
   });
 
-  it('is never negative when the last minute stamp is ahead of asOf', async () => {
-    const f = await freshnessOfResponse(
-      noSlot({ asOf: '2026-11-20T15:20:00.000Z' }),
-      { Age: '5' },
-    );
+  it('is never negative when the server reports a minute stamp ahead of its clock', async () => {
+    const f = await freshnessOfResponse(noSlot({ lastMinuteAgeSec: -40 }), {
+      Age: '5',
+    });
     expect(f.lastCaptureAgeMsAtReceipt).toBe(5_000);
   });
 
   it.each([
-    ['no captures today', { availableMinutes: [] }],
-    ['an unparseable last minute', { availableMinutes: ['garbage'] }],
-    ['an unparseable asOf', { asOf: 'garbage' }],
+    [
+      'no captures today (the server sends no age)',
+      { availableMinutes: [], lastMinuteAgeSec: undefined },
+    ],
+    [
+      'a reply without lastMinuteAgeSec (an older server)',
+      { lastMinuteAgeSec: undefined },
+    ],
+    [
+      'a lastMinuteAgeSec that is not a number',
+      { lastMinuteAgeSec: '130' as unknown as number },
+    ],
+    [
+      'a null lastMinuteAgeSec (what JSON makes of Infinity)',
+      { lastMinuteAgeSec: null as unknown as number },
+    ],
     ['a no_spot reply', { reason: 'no_spot' as const }],
   ])('is null for %s', async (_label, over) => {
     const f = await freshnessOfResponse(noSlot(over), { Age: '5' });
@@ -945,13 +993,16 @@ describe('useGexLandscapeData — lastCaptureAgeMsAtReceipt (no_slot)', () => {
 
   // R4: a malformed reply. The body is an unchecked cast, so a `no_slot` reply
   // can arrive without the list. That is "no capture minute", not a throw
-  // inside the freshness build (which the fetch's catch would turn into an
-  // error banner and a lost response).
+  // inside the freshness build or the carried-over check (which the fetch's
+  // catch would turn into an error banner and a lost response).
   it('treats a no_slot body with no availableMinutes field as no capture minute, with no error', async () => {
     mockFetch(() =>
       jsonResponse(
         // JSON.stringify drops an undefined field, so the body lacks the key.
-        noSlot({ availableMinutes: undefined as unknown as string[] }),
+        noSlot({
+          availableMinutes: undefined as unknown as string[],
+          lastMinuteAgeSec: undefined,
+        }),
         200,
         { Age: '5' },
       ),
@@ -969,6 +1020,7 @@ describe('useGexLandscapeData — lastCaptureAgeMsAtReceipt (no_slot)', () => {
   it('is null on a response that carries data', async () => {
     const f = await freshnessOfResponse(
       makeResponse({
+        asOf: '2026-11-20T15:29:30.000Z',
         data: { spot: 7340, strikes: [makeRow({ strike: 7350, gamma: 1 })] },
         ageSec: 40,
       }),
@@ -1095,5 +1147,870 @@ describe('useGexLandscapeData — session edge', () => {
     rerender({ open: false });
     expect(calls).toHaveLength(3);
     expect(calls.every((u) => u === '/api/gex-landscape')).toBe(true);
+  });
+});
+
+// ── After the close ──────────────────────────────────────────────────────────
+// After the close /api/gex-landscape serves the last session's panels with a
+// capture-time `asOf`. Fixtures: Fri 2026-11-20, a full session in EST (open
+// 14:30Z, close 21:00Z, the final fetch due 21:03Z), and the Monday after.
+
+const FRI_CLOSE_AT = '2026-11-20T21:00:50.036Z'; // the session's last capture
+const FRI_MINUTES = [
+  '2026-11-20T20:58:00.000Z',
+  '2026-11-20T20:59:00.000Z',
+  '2026-11-20T21:00:00.000Z',
+];
+const FRI_EVENING = '2026-11-20T21:01:00.000Z'; // 16:01:00 ET: 120 s to the final fetch
+const FRI_LATER = '2026-11-20T22:00:00.000Z'; // 17:00 ET: the final fetch is days off
+const FINAL_FETCH_IN_MS = 120_000;
+const MON_BEFORE_OPEN = '2026-11-23T14:29:50.000Z'; // 09:29:50 ET
+const MON_JUST_OPEN = '2026-11-23T14:30:05.000Z'; // 09:30:05 ET
+const MON_10_CT = '2026-11-23T16:00:00.000Z'; // 10:00 CT, 11:00 ET
+
+/** Fake timers on a fixed clock, for tests that move time. */
+function fakeClock(now: string) {
+  vi.useRealTimers();
+  vi.useFakeTimers({ now: new Date(now) });
+}
+
+// Advance the fake clock inside act so state updates render between ticks.
+const advance = (ms: number) =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+
+const sixStrike = makeRow({ strike: 6000, gamma: 5000 });
+
+/** What the endpoint answers after the close: the last session, with `asOf`. */
+function closedBody(
+  over: Partial<GexLandscapeResponse> = {},
+): GexLandscapeResponse {
+  return makeResponse({
+    marketOpen: false,
+    asOf: FRI_CLOSE_AT,
+    // A closed reply's ageSec is hours (server now minus the capture): not a stall.
+    ageSec: 5 * 3600,
+    data: { spot: 6000, strikes: [sixStrike] },
+    availableMinutes: FRI_MINUTES,
+    ...over,
+  });
+}
+
+/** A body from today's session, captured `asOf`. */
+function liveBody(asOf: string, gamma = 7000): GexLandscapeResponse {
+  return makeResponse({
+    marketOpen: true,
+    asOf,
+    ageSec: 8,
+    data: { spot: 6010, strikes: [makeRow({ strike: 6010, gamma })] },
+    availableMinutes: [asOf],
+  });
+}
+
+type Answer = () => Response | Promise<Response>;
+const answerWith =
+  (body: GexLandscapeResponse): Answer =>
+  () =>
+    jsonResponse(body);
+const unavailable: Answer = () => new Response('Unavailable', { status: 503 });
+const refused =
+  (status: number): Answer =>
+  () =>
+    new Response('Refused', { status });
+
+/** Answer call n with answers[n], and the last answer from then on. */
+function mockFetchSequence(...answers: Answer[]): MockInstance {
+  let call = 0;
+  return mockFetch(() => {
+    const answer = answers[Math.min(call, answers.length - 1)]!;
+    call += 1;
+    return answer();
+  });
+}
+
+describe('useGexLandscapeData — a closed body', () => {
+  it('exposes asOf and renders the last session’s strikes while the market is closed', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(answerWith(closedBody()));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.strikes[0]).toMatchObject({
+      strike: 6000,
+      price: 6000,
+      netGamma: 5000,
+    });
+    expect(result.current.timestamps).toEqual(FRI_MINUTES);
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+    // The hours-old ageSec is not read as a stall: the reply says closed, and
+    // the panel's age rules apply only to a market-open reply.
+    expect(result.current.freshness?.serverMarketOpen).toBe(false);
+  });
+
+  it('exposes asOf on a no_spot body too, with no strikes', async () => {
+    fakeClock(FRI_LATER);
+    mockFetchSequence(
+      answerWith(
+        closedBody({ data: null, reason: 'no_spot', ageSec: undefined }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.timestamps).toEqual(FRI_MINUTES);
+  });
+
+  it('has no asOf on a closed no_slot body, and keeps the session’s minutes', async () => {
+    fakeClock(FRI_LATER);
+    mockFetchSequence(
+      answerWith(
+        closedBody({
+          data: null,
+          reason: 'no_slot',
+          asOf: null,
+          ageSec: undefined,
+          lastMinuteAgeSec: 3600,
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(result.current.asOf).toBeNull();
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.timestamps).toEqual(FRI_MINUTES);
+    expect(result.current.error).toBeNull();
+  });
+
+  // R4: the body is an unchecked cast, so asOf can be anything. It is read as
+  // no asOf, and the strikes still render.
+  it.each([
+    ['a number', 1_764_000_000],
+    ['an empty string', ''],
+    ['text that is not a date', 'yesterday'],
+    ['an object', { at: FRI_CLOSE_AT }],
+    ['an array holding a timestamp', [FRI_CLOSE_AT]],
+  ])('reads %s as no asOf and still returns the strikes', async (_n, asOf) => {
+    fakeClock(FRI_LATER);
+    mockFetchSequence(
+      answerWith(closedBody({ asOf: asOf as unknown as string })),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(result.current.asOf).toBeNull();
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.error).toBeNull();
+  });
+});
+
+describe('useGexLandscapeData — a body from before today’s open, once the market is open', () => {
+  it('is dropped at 09:30:05 ET: no strikes, minutes, asOf or freshness, and no error', async () => {
+    fakeClock(MON_JUST_OPEN);
+    const spy = mockFetchSequence(answerWith(closedBody()));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-11-23'),
+    );
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.timestamps).toEqual([]);
+    expect(result.current.gexDelta5mMap.size).toBe(0);
+    expect(result.current.asOf).toBeNull();
+    expect(result.current.freshness).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('is dropped by its last listed minute when asOf is null (a closed no_slot)', async () => {
+    fakeClock(MON_JUST_OPEN);
+    mockFetchSequence(
+      answerWith(
+        closedBody({
+          data: null,
+          reason: 'no_slot',
+          asOf: null,
+          ageSec: undefined,
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-11-23'),
+    );
+    await advance(0);
+    expect(result.current.timestamps).toEqual([]);
+    expect(result.current.freshness).toBeNull();
+  });
+
+  it('is dropped by its last listed minute when asOf is not a timestamp', async () => {
+    fakeClock(MON_JUST_OPEN);
+    mockFetchSequence(answerWith(closedBody({ asOf: 'yesterday' })));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-11-23'),
+    );
+    await advance(0);
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.timestamps).toEqual([]);
+  });
+
+  it('is kept when captured at the open instant, dropped a millisecond before', async () => {
+    fakeClock(MON_JUST_OPEN);
+    mockFetchSequence(
+      answerWith(liveBody('2026-11-23T14:30:00.000Z')),
+      answerWith(liveBody('2026-11-23T14:29:59.999Z')),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-11-23'),
+    );
+    await advance(0);
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.asOf).toBe('2026-11-23T14:30:00.000Z');
+
+    act(() => result.current.refresh());
+    await advance(0);
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.asOf).toBeNull();
+  });
+
+  it('is kept while the market is closed', async () => {
+    fakeClock(MON_BEFORE_OPEN);
+    mockFetchSequence(answerWith(closedBody()));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-23'),
+    );
+    await advance(0);
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+  });
+
+  // The pill must never read LIVE over Friday's strikes: a response held across
+  // the open is dropped on the render of the flip itself, before the refetch
+  // that the flip starts has landed.
+  it('is dropped on the render of the flip, before the refetch lands', async () => {
+    fakeClock(MON_BEFORE_OPEN);
+    let landLive: ((r: Response) => void) | undefined;
+    const spy = mockFetchSequence(
+      answerWith(closedBody()),
+      () =>
+        new Promise<Response>((resolve) => {
+          landLive = resolve;
+        }),
+    );
+    const renders: Array<{ open: boolean; strikes: number; asOf: unknown }> =
+      [];
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => {
+        const out = useGexLandscapeData(open, '2026-11-23');
+        renders.push({
+          open,
+          strikes: out.strikes.length,
+          asOf: out.asOf,
+        });
+        return out;
+      },
+      { initialProps: { open: false } },
+    );
+    await advance(0);
+    expect(result.current.strikes).toHaveLength(1);
+
+    // 09:30:00 ET: the market opens and the refetch is still out.
+    await advance(10_000);
+    rerender({ open: true });
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.timestamps).toEqual([]);
+    expect(result.current.asOf).toBeNull();
+    // No render with the market open ever carried Friday's strikes.
+    const openRenders = renders.filter((r) => r.open);
+    expect(openRenders.length).toBeGreaterThan(0);
+    expect(openRenders.filter((r) => r.strikes > 0 || r.asOf != null)).toEqual(
+      [],
+    );
+
+    // The live answer lands and replaces the empty panel.
+    await act(async () => {
+      landLive?.(jsonResponse(liveBody('2026-11-23T14:30:02.000Z')));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.asOf).toBe('2026-11-23T14:30:02.000Z');
+  });
+
+  it('stays empty when the read at the open still answers with the last session, then takes the next live poll', async () => {
+    fakeClock(MON_BEFORE_OPEN);
+    mockFetchSequence(
+      answerWith(closedBody()),
+      // An edge cache that still holds Friday's close.
+      answerWith(closedBody()),
+      answerWith(liveBody('2026-11-23T14:30:50.000Z')),
+    );
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => useGexLandscapeData(open, '2026-11-23'),
+      { initialProps: { open: false } },
+    );
+    await advance(10_000);
+    rerender({ open: true });
+    await advance(0);
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.error).toBeNull();
+
+    // The first poll after the open lands today's capture.
+    await advance(60_000);
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.asOf).toBe('2026-11-23T14:30:50.000Z');
+  });
+
+  it('keeps an in-session no_slot’s minutes: asOf null, today’s minutes', async () => {
+    fakeClock(MON_10_CT);
+    mockFetchSequence(
+      answerWith(
+        makeResponse({
+          marketOpen: true,
+          asOf: null,
+          data: null,
+          reason: 'no_slot',
+          ageSec: undefined,
+          lastMinuteAgeSec: 360,
+          availableMinutes: [
+            '2026-11-23T15:53:00.000Z',
+            '2026-11-23T15:54:00.000Z',
+          ],
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-11-23'),
+    );
+    await advance(0);
+    expect(result.current.timestamps).toEqual([
+      '2026-11-23T15:53:00.000Z',
+      '2026-11-23T15:54:00.000Z',
+    ]);
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.asOf).toBeNull();
+    expect(result.current.freshness).toMatchObject({
+      reason: 'no_slot',
+      serverMarketOpen: true,
+      lastCaptureAgeMsAtReceipt: 360_000,
+    });
+  });
+
+  it('keeps an in-session no_slot that lists no minutes yet', async () => {
+    fakeClock(MON_JUST_OPEN);
+    mockFetchSequence(
+      answerWith(
+        makeResponse({
+          marketOpen: true,
+          asOf: null,
+          data: null,
+          reason: 'no_slot',
+          ageSec: undefined,
+          availableMinutes: [],
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-11-23'),
+    );
+    await advance(0);
+    expect(result.current.freshness?.reason).toBe('no_slot');
+    expect(result.current.timestamps).toEqual([]);
+  });
+});
+
+describe('useGexLandscapeData — a scrub (at set) ignores the after-close rules', () => {
+  const SCRUB_AT = '2026-11-20T20:59:00.000Z';
+
+  it('keeps a scrubbed body from before today’s open, with no asOf', async () => {
+    fakeClock(MON_JUST_OPEN);
+    const spy = mockFetchSequence(answerWith(closedBody()));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-11-23', SCRUB_AT),
+    );
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.timestamps).toEqual(FRI_MINUTES);
+    expect(result.current.asOf).toBeNull();
+    expect(result.current.freshness).toBeNull();
+  });
+
+  it('arms no final fetch', async () => {
+    fakeClock(FRI_EVENING);
+    const spy = mockFetchSequence(answerWith(closedBody()));
+    renderHook(() => useGexLandscapeData(false, '2026-11-20', SCRUB_AT));
+    await advance(FINAL_FETCH_IN_MS + 10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a failed read, though the market is closed and a response is held, and does not retry it', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(answerWith(closedBody()), unavailable);
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20', SCRUB_AT),
+    );
+    await advance(0);
+    expect(result.current.strikes).toHaveLength(1);
+
+    act(() => result.current.refresh());
+    await advance(0);
+    expect(result.current.error).toBe('gex-landscape: HTTP 503');
+    expect(result.current.strikes).toHaveLength(1);
+
+    await advance(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a failed scrub read though a live response is held, and exposes no asOf while scrubbing', async () => {
+    fakeClock(FRI_LATER);
+    mockFetchSequence(answerWith(closedBody()), unavailable);
+    const { result, rerender } = renderHook(
+      ({ at }: { at: string | null }) =>
+        useGexLandscapeData(false, '2026-11-20', at),
+      { initialProps: { at: null as string | null } },
+    );
+    await advance(0);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+
+    // The user steps back: the scrub read fails over the held live response.
+    rerender({ at: SCRUB_AT });
+    await advance(0);
+    expect(result.current.error).toBe('gex-landscape: HTTP 503');
+    expect(result.current.asOf).toBeNull();
+    expect(result.current.strikes).toHaveLength(1);
+  });
+});
+
+describe('useGexLandscapeData — the final fetch', () => {
+  it('fires once at 16:03 ET, not before, and shows what it finds', async () => {
+    fakeClock(FRI_EVENING);
+    const spy = mockFetchSequence(
+      answerWith(closedBody()),
+      answerWith(
+        closedBody({
+          asOf: '2026-11-20T21:02:10.000Z',
+          data: {
+            spot: 6001,
+            strikes: [makeRow({ strike: 6000, gamma: 9999 })],
+          },
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(FINAL_FETCH_IN_MS - 1);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+
+    await advance(1);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenLastCalledWith(
+      '/api/gex-landscape',
+      expect.anything(),
+    );
+    expect(result.current.asOf).toBe('2026-11-20T21:02:10.000Z');
+    expect(result.current.strikes[0]?.netGamma).toBe(9999);
+  });
+
+  it('re-arms for the next trading day', async () => {
+    fakeClock(FRI_EVENING);
+    const spy = mockFetchSequence(answerWith(closedBody()));
+    renderHook(() => useGexLandscapeData(false, '2026-11-20'));
+    await advance(FINAL_FETCH_IN_MS);
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    // Mon 16:03 ET is 72 h after Fri 16:03 ET: the same EST offset.
+    await advance(72 * 3_600_000 - 1);
+    expect(spy).toHaveBeenCalledTimes(2);
+    await advance(1);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it('fires for a tab that stayed open through the close', async () => {
+    fakeClock('2026-11-20T20:59:50.000Z');
+    const spy = mockFetchSequence(
+      answerWith(liveBody('2026-11-20T20:59:20.000Z')),
+      answerWith(closedBody()),
+    );
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => useGexLandscapeData(open, '2026-11-20'),
+      { initialProps: { open: true } },
+    );
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // The close at 21:00:00: the session edge refetches, then 21:03:00 is the
+    // final fetch, 180 s after it.
+    await advance(10_000);
+    rerender({ open: false });
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+
+    await advance(179_999);
+    expect(spy).toHaveBeenCalledTimes(2);
+    await advance(1);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it('makes no request for a public visitor', async () => {
+    mockGetAccessMode.mockReturnValue('public');
+    fakeClock(FRI_EVENING);
+    const spy = mockFetchSequence(answerWith(closedBody()));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(FINAL_FETCH_IN_MS + 10 * 60_000);
+    expect(spy).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('stops when the hook unmounts', async () => {
+    fakeClock(FRI_EVENING);
+    const spy = mockFetchSequence(answerWith(closedBody()));
+    const { unmount } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    unmount();
+    await advance(FINAL_FETCH_IN_MS + 10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useGexLandscapeData — a failed fetch while the market is closed', () => {
+  it('keeps the held strikes with no error when the final fetch fails, and retries 30 s later', async () => {
+    fakeClock(FRI_EVENING);
+    const spy = mockFetchSequence(
+      answerWith(closedBody()),
+      unavailable,
+      answerWith(closedBody({ asOf: '2026-11-20T21:02:10.000Z' })),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(FINAL_FETCH_IN_MS);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+
+    await advance(29_999);
+    expect(spy).toHaveBeenCalledTimes(2);
+    await advance(1);
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(result.current.asOf).toBe('2026-11-20T21:02:10.000Z');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('keeps the held strikes through every retry of a final fetch, then stops after the fifth', async () => {
+    fakeClock(FRI_EVENING);
+    const spy = mockFetchSequence(answerWith(closedBody()), unavailable);
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(FINAL_FETCH_IN_MS);
+    for (let retry = 1; retry <= 5; retry += 1) {
+      await advance(30_000);
+      expect(spy).toHaveBeenCalledTimes(2 + retry);
+      expect(result.current.error).toBeNull();
+      expect(result.current.strikes).toHaveLength(1);
+    }
+    await advance(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(7);
+    expect(result.current.error).toBeNull();
+    expect(result.current.strikes).toHaveLength(1);
+  });
+
+  it('retries a failed refresh of a held response 5 times, 30 s apart, with no error', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(answerWith(closedBody()), unavailable);
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    act(() => result.current.refresh());
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.strikes).toHaveLength(1);
+    for (let retry = 1; retry <= 5; retry += 1) {
+      await advance(30_000);
+      expect(spy).toHaveBeenCalledTimes(2 + retry);
+    }
+    await advance(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(7);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('shows the error while it retries when nothing is held: 1 + 5 requests, then stops', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(unavailable);
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.current.error).toBe('gex-landscape: HTTP 503');
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.loading).toBe(false);
+
+    await advance(29_999);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(spy).toHaveBeenCalledTimes(2);
+    for (let retry = 2; retry <= 5; retry += 1) {
+      await advance(30_000);
+      expect(spy).toHaveBeenCalledTimes(1 + retry);
+    }
+    await advance(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(6);
+    expect(result.current.error).toBe('gex-landscape: HTTP 503');
+  });
+
+  it('makes the same 1 + 5 requests under StrictMode, whose first mount read is superseded', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(unavailable);
+    const { result } = renderHook(
+      () => useGexLandscapeData(false, '2026-11-20'),
+      { wrapper: StrictMode },
+    );
+    await advance(0);
+    // StrictMode mounts twice: two requests, the first one superseded.
+    expect(spy).toHaveBeenCalledTimes(2);
+    for (let retry = 1; retry <= 5; retry += 1) {
+      await advance(30_000);
+      expect(spy).toHaveBeenCalledTimes(2 + retry);
+    }
+    await advance(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(7);
+    expect(result.current.error).toBe('gex-landscape: HTTP 503');
+  });
+
+  it('shows the strikes and clears the error once a retry succeeds, then stops', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(unavailable, answerWith(closedBody()));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(result.current.error).toBe('gex-landscape: HTTP 503');
+
+    await advance(30_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.strikes).toHaveLength(1);
+
+    await advance(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a dropped connection, whose fetch rejects, as a transient failure', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(() => {
+      throw new TypeError('Failed to fetch');
+    }, answerWith(closedBody()));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(result.current.error).toBe('Failed to fetch');
+    await advance(30_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.strikes).toHaveLength(1);
+  });
+
+  it('retries a 2xx body that is not JSON, and names it', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(
+      () => new Response('<html>', { status: 200 }),
+      answerWith(closedBody()),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(result.current.error).toMatch(/JSON/);
+    await advance(30_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+  });
+
+  it.each([400, 403, 404])(
+    'does not retry a refused request (status %i), and shows it when nothing is held',
+    async (status) => {
+      fakeClock(FRI_LATER);
+      const spy = mockFetchSequence(refused(status));
+      const { result } = renderHook(() =>
+        useGexLandscapeData(false, '2026-11-20'),
+      );
+      await advance(0);
+      await advance(6 * 30_000);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(result.current.error).toBe(`gex-landscape: HTTP ${status}`);
+    },
+  );
+
+  it('does not retry a 401, which leaves the panel idle with no error (the public-visitor idiom)', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(refused(401));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    await advance(6 * 30_000);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.current.error).toBeNull();
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('does not retry a refused final fetch, and keeps the held strikes with no error', async () => {
+    fakeClock(FRI_EVENING);
+    const spy = mockFetchSequence(answerWith(closedBody()), refused(403));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(FINAL_FETCH_IN_MS);
+    await advance(6 * 30_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.strikes).toHaveLength(1);
+  });
+
+  it('shows a failed read when only a scrubbed response is held, not a live one', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(answerWith(closedBody()), unavailable);
+    const { result, rerender } = renderHook(
+      ({ at }: { at: string | null }) =>
+        useGexLandscapeData(false, '2026-11-20', at),
+      { initialProps: { at: FRI_MINUTES[0] as string | null } },
+    );
+    await advance(0);
+    expect(result.current.strikes).toHaveLength(1);
+
+    // Back to live: the stored response is still the scrubbed one.
+    rerender({ at: null });
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBe('gex-landscape: HTTP 503');
+  });
+
+  it('stops retrying when the hook unmounts', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(unavailable);
+    const { unmount } = renderHook(() =>
+      useGexLandscapeData(false, '2026-11-20'),
+    );
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+    unmount();
+    await advance(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a read that the close-edge refetch superseded, though it fails late', async () => {
+    fakeClock('2026-11-20T20:59:50.000Z');
+    let failLate: ((r: Response) => void) | undefined;
+    const spy = mockFetchSequence(
+      answerWith(liveBody('2026-11-20T20:59:20.000Z')),
+      () =>
+        new Promise<Response>((resolve) => {
+          failLate = resolve;
+        }),
+      answerWith(closedBody()),
+    );
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => useGexLandscapeData(open, '2026-11-20'),
+      { initialProps: { open: true } },
+    );
+    await advance(0);
+
+    // A re-read is out when the market closes; the close edge supersedes it.
+    act(() => result.current.refresh());
+    await advance(10_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+    rerender({ open: false });
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+
+    // The superseded read answers 503 late: no error, no retry series.
+    failLate?.(new Response('Unavailable', { status: 503 }));
+    await advance(0);
+    expect(result.current.error).toBeNull();
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+    await advance(60_000);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('useGexLandscapeData — a failed fetch while the market is open', () => {
+  it('shows the error over the held strikes and starts no retry series: the poll is the retry', async () => {
+    fakeClock(MON_10_CT);
+    const spy = mockFetchSequence(
+      answerWith(liveBody('2026-11-23T15:59:30.000Z')),
+      unavailable,
+      answerWith(liveBody('2026-11-23T16:01:30.000Z', 8000)),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-11-23'),
+    );
+    await advance(0);
+    expect(result.current.strikes).toHaveLength(1);
+
+    // The poll at +60 s fails: the error shows, the strikes stay.
+    await advance(60_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBe('gex-landscape: HTTP 503');
+    expect(result.current.strikes).toHaveLength(1);
+
+    // No retry 30 s later; the next poll is at +120 s.
+    await advance(30_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+    await advance(30_000);
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(result.current.error).toBeNull();
+    expect(result.current.strikes[0]?.netGamma).toBe(8000);
+  });
+});
+
+describe('useGexLandscapeData — the ET date rolling', () => {
+  it('refetches once when the date argument changes, and a rerender on the same date does not', async () => {
+    fakeClock(FRI_LATER);
+    const spy = mockFetchSequence(answerWith(closedBody()));
+    const { result, rerender } = renderHook(
+      ({ date }: { date: string }) => useGexLandscapeData(false, date),
+      { initialProps: { date: '2026-11-20' } },
+    );
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const before = result.current.timestamps;
+
+    // ET midnight: the panel clears its mirrored scrub list at the roll, and
+    // only a new response (a new `timestamps` array) refills it.
+    rerender({ date: '2026-11-21' });
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.timestamps).toEqual(FRI_MINUTES);
+    expect(result.current.timestamps).not.toBe(before);
+
+    rerender({ date: '2026-11-21' });
+    await advance(0);
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 });
