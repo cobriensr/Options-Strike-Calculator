@@ -64,9 +64,18 @@ const authedReq = () =>
     headers: { authorization: 'Bearer test-secret' },
   });
 
-/** Scripts the (yesterday, gate_cutoff) SELECT that follows each helper call. */
-const scriptDates = (yesterday: string, gate: string | null) =>
-  mockSql.mockResolvedValueOnce([{ yesterday, gate_cutoff: gate }]);
+/**
+ * Scripts the (yesterday, gate_cutoff, newest_cutoff) SELECT that follows each
+ * helper call. `newest` is NULL (an empty table) unless a case sets it.
+ */
+const scriptDates = (
+  yesterday: string,
+  gate: string | null,
+  newest: string | null = null,
+) =>
+  mockSql.mockResolvedValueOnce([
+    { yesterday, gate_cutoff: gate, newest_cutoff: newest },
+  ]);
 
 /** First interpolated value of every DELETE call, i.e. the cutoff. */
 const deleteCutoffs = (): unknown[] =>
@@ -185,6 +194,170 @@ describe('cleanup-gexbot handler', () => {
       '2026-03-23',
     ]);
     expect(deleteCutoffs()).toEqual(['2026-03-23', '2026-03-23']);
+  });
+
+  describe("the newest session's bound", () => {
+    // Every case runs both tables through the same scripted row. `gate` and
+    // `newest` are the SQL's gate_cutoff and newest_cutoff, already minus one
+    // day; the cutoff is the lowest of yesterday, gate and newest.
+    it.each([
+      {
+        label: 'Monday keeps Friday',
+        now: '2026-11-23T12:15:00.000Z',
+        yesterday: '2026-11-22',
+        gate: null,
+        newest: '2026-11-19',
+        cutoff: '2026-11-19',
+      },
+      {
+        label: 'Tuesday removes Friday',
+        now: '2026-11-24T12:15:00.000Z',
+        yesterday: '2026-11-23',
+        gate: '2026-11-22',
+        newest: '2026-11-22',
+        cutoff: '2026-11-22',
+      },
+      {
+        label: "an archived newest session that is yesterday's is still kept",
+        now: '2026-11-21T12:15:00.000Z',
+        yesterday: '2026-11-20',
+        gate: null,
+        newest: '2026-11-19',
+        cutoff: '2026-11-19',
+      },
+      {
+        label: 'the archive gate wins when it is lower',
+        now: '2026-11-23T12:15:00.000Z',
+        yesterday: '2026-11-22',
+        gate: '2026-11-17',
+        newest: '2026-11-19',
+        cutoff: '2026-11-17',
+      },
+      {
+        label: 'the Friday after Thanksgiving keeps Wednesday',
+        now: '2026-11-27T12:15:00.000Z',
+        yesterday: '2026-11-26',
+        gate: null,
+        newest: '2026-11-24',
+        cutoff: '2026-11-24',
+      },
+      {
+        label: 'a newest bound above yesterday never raises the cutoff',
+        now: '2026-11-24T12:15:00.000Z',
+        yesterday: '2026-11-23',
+        gate: null,
+        newest: '2026-11-30',
+        cutoff: '2026-11-23',
+      },
+      {
+        label: 'an empty table (NULL newest bound) falls back to yesterday',
+        now: '2026-11-24T12:15:00.000Z',
+        yesterday: '2026-11-23',
+        gate: null,
+        newest: null,
+        cutoff: '2026-11-23',
+      },
+    ])('$label', async ({ now, yesterday, gate, newest, cutoff }) => {
+      vi.setSystemTime(new Date(now));
+      scriptDates(yesterday, gate, newest);
+      mockSql.mockResolvedValueOnce([]); // snapshots DELETE
+      scriptDates(yesterday, gate, newest);
+      mockSql.mockResolvedValueOnce([]); // captures DELETE
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      const json = res._json as Json;
+      expect(json.results.map((r) => r.cutoff)).toEqual([cutoff, cutoff]);
+      expect(deleteCutoffs()).toEqual([cutoff, cutoff]);
+    });
+
+    it("reads each table's own newest row", async () => {
+      scriptDates('2026-03-23', null, '2026-03-20');
+      mockSql.mockResolvedValueOnce([]); // snapshots DELETE
+      scriptDates('2026-03-23', null, '2026-03-20');
+      mockSql.mockResolvedValueOnce([]); // captures DELETE
+
+      await handler(authedReq(), mockResponse());
+
+      const datesQueries = mockSql.mock.calls
+        .map(([strings]) => strings.join(''))
+        .filter((text) => text.includes('newest_cutoff'));
+      expect(datesQueries).toHaveLength(2);
+      expect(datesQueries[0]).toContain('FROM gexbot_snapshots');
+      expect(datesQueries[0]).not.toContain('gexbot_api_capture');
+      expect(datesQueries[1]).toContain('FROM gexbot_api_capture');
+      expect(datesQueries[1]).not.toContain('gexbot_snapshots');
+    });
+
+    // R4: a bound the SQL did not return as a date must stop that table's
+    // delete and surface by name. Falling back to yesterday's cutoff would
+    // delete the newest session, which is the bug this bound exists to stop.
+    it.each([
+      { label: 'missing', row: { yesterday: '2026-03-23', gate_cutoff: null } },
+      {
+        label: 'not a date',
+        row: {
+          yesterday: '2026-03-23',
+          gate_cutoff: null,
+          newest_cutoff: 'garbage',
+        },
+      },
+      {
+        label: 'an empty string',
+        row: { yesterday: '2026-03-23', gate_cutoff: null, newest_cutoff: '' },
+      },
+      {
+        label: 'a Date object',
+        row: {
+          yesterday: '2026-03-23',
+          gate_cutoff: null,
+          newest_cutoff: new Date('2026-03-20T00:00:00Z'),
+        },
+      },
+    ])(
+      'deletes nothing from the table and fails it by name when the bound is $label',
+      async ({ row }) => {
+        mockSql.mockResolvedValueOnce([row]); // snapshots dates
+        scriptDates('2026-03-23', null, '2026-03-20'); // captures dates
+        mockSql.mockResolvedValueOnce([]); // captures DELETE
+
+        const res = mockResponse();
+        await handler(authedReq(), res);
+
+        // Never reported as success.
+        expect(res._status).toBe(500);
+        // No DELETE for the failed table; the other table still ran.
+        expect(deleteCutoffs()).toEqual(['2026-03-20']);
+        expect(logger.error).toHaveBeenCalledWith(
+          expect.objectContaining({
+            results: [
+              expect.objectContaining({
+                table: 'gexbot_snapshots',
+                cutoff: null,
+                deleted: 0,
+                error: expect.stringContaining('newest_cutoff'),
+              }),
+              expect.objectContaining({
+                table: 'gexbot_api_capture',
+                cutoff: '2026-03-20',
+              }),
+            ],
+          }),
+          'cleanup-gexbot finished with failures',
+        );
+        const messages = vi
+          .mocked(Sentry.captureException)
+          .mock.calls.map(([e]) => String((e as Error).message));
+        expect(
+          messages.some(
+            (m) =>
+              m.includes('gexbot_snapshots') && m.includes('newest_cutoff'),
+          ),
+        ).toBe(true);
+      },
+    );
   });
 
   it('deletes nothing when every live day is pending (no audit rows)', async () => {

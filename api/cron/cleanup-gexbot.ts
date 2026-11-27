@@ -5,12 +5,17 @@
  * `gexbot_api_capture`. Audit-gated: only deletes rows on days that have
  * a `gexbot_archive_audit` row, so a missed archive run can never lose data.
  *
- * Cutoff per table: `LEAST(yesterday_et, first_unarchived_session - 1)`,
- * where the first un-archived session comes from `listUnarchivedDates`
+ * Cutoff per table: the lowest of `yesterday_et`,
+ * `first_unarchived_session - 1` and `newest_session - 1`. The first
+ * un-archived session comes from `listUnarchivedDates`
  * (api/_lib/gexbot-archive-dates.ts, which also documents the UTC-day ==
  * ET-session-date boundary). A missed archive day stalls deletion at that
  * day until it is archived, no matter how many later days succeed. With no
  * audit rows at all every live day is pending, so nothing is deleted.
+ * The newest session is the ET date of the table's newest row: the
+ * after-close panels show it until the next open, so it is never deleted,
+ * even when it is archived and older than yesterday (the Monday sweep, with
+ * Friday archived on Saturday). An empty table has no newest session.
  *
  * A table whose gate or DELETE fails is recorded by name (with the rows it
  * removed before failing); the other table is still processed, then the run
@@ -52,6 +57,8 @@ const BATCH_SIZE = 50_000;
  * report, response) = 255 s.
  */
 const WALL_BUDGET_MS = 255_000;
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 interface PerTableResult {
   table: GexbotArchiveTable;
@@ -102,21 +109,67 @@ async function runCleanup(
 
   // Date math in Postgres, returned as text, so no JS Date/timezone
   // conversion is involved. `gate_cutoff` is NULL when nothing is pending.
+  // `newest_cutoff` is the ET date of the table's newest row minus one day,
+  // NULL on an empty table. The tagged template binds values, not
+  // identifiers, so each table gets its own branch (same pattern as the
+  // DELETE below).
   const dateRows = (await withDbRetry(
-    () => sql`
-      SELECT to_char(${today}::date - 1, 'YYYY-MM-DD') AS yesterday,
-             to_char(${pending[0] ?? null}::date - 1, 'YYYY-MM-DD') AS gate_cutoff
-    `,
+    () =>
+      table === 'gexbot_snapshots'
+        ? sql`
+            SELECT to_char(${today}::date - 1, 'YYYY-MM-DD') AS yesterday,
+                   to_char(${pending[0] ?? null}::date - 1, 'YYYY-MM-DD') AS gate_cutoff,
+                   to_char(
+                     (
+                       (SELECT max(captured_at) FROM gexbot_snapshots)
+                         AT TIME ZONE 'America/New_York'
+                     )::date - 1,
+                     'YYYY-MM-DD'
+                   ) AS newest_cutoff
+          `
+        : sql`
+            SELECT to_char(${today}::date - 1, 'YYYY-MM-DD') AS yesterday,
+                   to_char(${pending[0] ?? null}::date - 1, 'YYYY-MM-DD') AS gate_cutoff,
+                   to_char(
+                     (
+                       (SELECT max(captured_at) FROM gexbot_api_capture)
+                         AT TIME ZONE 'America/New_York'
+                     )::date - 1,
+                     'YYYY-MM-DD'
+                   ) AS newest_cutoff
+          `,
     2,
     10_000,
-  )) as Array<{ yesterday: string; gate_cutoff: string | null }>;
+  )) as Array<{
+    yesterday: string;
+    gate_cutoff: string | null;
+    // Typed unknown: it is checked below, because a wrong value must stop the
+    // delete instead of widening it.
+    newest_cutoff: unknown;
+  }>;
   const dateRow = dateRows[0];
   if (!dateRow) {
     throw new Error(`cleanup-gexbot: no date row returned for ${table}`);
   }
-  const { yesterday, gate_cutoff: gateCutoff } = dateRow;
-  const cutoff =
-    gateCutoff != null && gateCutoff < yesterday ? gateCutoff : yesterday;
+  const { yesterday, gate_cutoff: gateCutoff, newest_cutoff: newest } = dateRow;
+  // NULL is an empty table, which has no session to keep. Anything else that
+  // is not a date means the query no longer returns what this code expects:
+  // fail this table by name, with nothing deleted, rather than fall back to
+  // yesterday's cutoff, which would delete the newest session.
+  if (
+    newest !== null &&
+    !(typeof newest === 'string' && ISO_DATE.test(newest))
+  ) {
+    throw new Error(
+      `cleanup-gexbot: invalid newest_cutoff for ${table}: ${String(newest)}`,
+    );
+  }
+  // The lowest of the three bounds, ignoring NULLs: yesterday, the day before
+  // the first un-archived session, and the day before the newest session.
+  const cutoff = [yesterday, gateCutoff, newest].reduce<string>(
+    (lowest, date) => (date !== null && date < lowest ? date : lowest),
+    yesterday,
+  );
   progress.cutoff = cutoff;
 
   while (true) {
