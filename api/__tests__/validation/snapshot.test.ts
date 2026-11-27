@@ -22,6 +22,7 @@ import {
   snapshotBodySchema,
   analysisResponseSchema,
 } from '../../_lib/validation/snapshot.js';
+import { asOfFrom } from '../../../src/utils/closed-session.js';
 
 const MB = 1024 * 1024;
 
@@ -232,6 +233,9 @@ describe('analyzeBodySchema', () => {
       ['a bare date', '2026-11-20'],
       ['a bare year', '2026'],
       ['a timestamp with no zone', '2026-11-20T21:00:49'],
+      ['a timestamp with no seconds', '2026-11-20T21:00Z'],
+      ['an offset with no colon', '2026-11-20T21:00:49+0000'],
+      ['a lower-case z', '2026-11-20T21:00:49.000z'],
       ['an impossible calendar date', '2026-02-30T21:00:49.000Z'],
       ['a number', 1_763_672_449_000],
       ['a boolean', true],
@@ -247,6 +251,27 @@ describe('analyzeBodySchema', () => {
       );
       expect(issue?.message).toBe(
         'context.gexLandscapeBiasClosedAsOf must be an ISO 8601 datetime',
+      );
+    });
+
+    // The client forwards the landscape hook's `asOf` as this marker, and that
+    // hook cleans it with `asOfFrom`. Both sides must run one rule: a string
+    // `asOfFrom` keeps but this schema refuses would 400 the whole analyze call.
+    it.each([
+      '2026-11-20T21:00:49.000Z',
+      '2026-11-20T21:00:49Z',
+      '2026-11-20T15:00:49-06:00',
+      '2026-11-20T21:00:49',
+      '2026-11-20T21:00Z',
+      '2026-11-20T21:00:49+0000',
+      '2026-11-20T21:00:49.000z',
+      '2026-11-20',
+      '2026',
+      'yesterday',
+      '2026-02-30T21:00:49.000Z',
+    ])('takes %s exactly when the client check keeps it', (value) => {
+      expect(parseWith({ [KEY]: value }).success).toBe(
+        asOfFrom(value) !== null,
       );
     });
 

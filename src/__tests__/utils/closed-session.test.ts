@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   asOfFrom,
   formatClosedLabel,
+  HttpStatusError,
   isCarriedOver,
+  isIsoDateTimeWithOffset,
   isTransientStatus,
   nextFinalFetchMs,
   sessionOpenMs,
@@ -261,6 +263,73 @@ describe('asOfFrom', () => {
     ['an array holding a timestamp', ['2026-11-20T21:00:50.036Z']],
   ])('returns null for %s', (_label, raw) => {
     expect(asOfFrom(raw)).toBeNull();
+  });
+
+  // Shapes `Date.parse` reads but `z.iso.datetime({ offset: true })` refuses.
+  // The analyze schema checks the forwarded `asOf` with that rule, so a looser
+  // client check would let one of these through and 400 the whole analyze call.
+  it.each([
+    ['no zone', '2026-11-20T21:00:49'],
+    ['no seconds', '2026-11-20T21:00Z'],
+    ['an offset with no colon', '2026-11-20T21:00:49+0000'],
+    ['a lower-case z', '2026-11-20T21:00:49.000z'],
+  ])('returns null for a timestamp with %s', (_label, raw) => {
+    expect(Number.isFinite(Date.parse(raw))).toBe(true);
+    expect(asOfFrom(raw)).toBeNull();
+  });
+});
+
+describe('isIsoDateTimeWithOffset', () => {
+  it.each([
+    '2026-11-20T21:00:50.036Z',
+    '2026-11-20T21:00:50Z',
+    '2026-11-20T16:00:50-05:00',
+    new Date('2026-11-20T21:00:50.036Z').toISOString(),
+  ])('accepts %s', (raw) => {
+    expect(isIsoDateTimeWithOffset(raw)).toBe(true);
+  });
+
+  it.each([
+    '2026-11-20T21:00:49',
+    '2026-11-20T21:00Z',
+    '2026-11-20T21:00:49+0000',
+    '2026-11-20T21:00:49.000z',
+    '2026-11-20',
+    '',
+    1_764_000_000,
+    null,
+    undefined,
+    ['2026-11-20T21:00:50.036Z'],
+  ])('rejects %j', (raw) => {
+    expect(isIsoDateTimeWithOffset(raw)).toBe(false);
+  });
+});
+
+describe('HttpStatusError', () => {
+  it('carries the status and reads "HTTP <status>"', () => {
+    const err = new HttpStatusError(503);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.status).toBe(503);
+    expect(err.message).toBe('HTTP 503');
+    expect(err.name).toBe('HttpStatusError');
+  });
+
+  it('puts the source in front of the message when it has one', () => {
+    const err = new HttpStatusError(500, 'gex-landscape');
+    expect(err.status).toBe(500);
+    expect(err.message).toBe('gex-landscape: HTTP 500');
+  });
+
+  // The hooks tell "another try can help" from "refused" by the carried status.
+  it.each([
+    [503, true],
+    [429, true],
+    [401, false],
+    [404, false],
+  ])('hands a %i to isTransientStatus as %s', (status, transient) => {
+    expect(isTransientStatus(new HttpStatusError(status).status)).toBe(
+      transient,
+    );
   });
 });
 

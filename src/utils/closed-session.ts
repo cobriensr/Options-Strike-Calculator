@@ -3,10 +3,12 @@
  * session opens and closes, when the one final fetch of a session is due, and
  * how a carried-over capture is labelled.
  *
- * Imported by `api/` too (this folder is in `API_COMPILED_SRC`), so relative
- * imports carry explicit `.js` extensions.
+ * Imported by `api/` too: the analyze schema takes its date-time rule from
+ * `isIsoDateTimeWithOffset` here (this folder is in `API_COMPILED_SRC`), so
+ * relative imports carry explicit `.js` extensions.
  */
 
+import { z } from 'zod';
 import {
   CASH_OPEN_MIN_ET,
   CLOSED_FINAL_FETCH_OFFSET_MIN,
@@ -68,21 +70,31 @@ export function isCarriedOver(
   return Date.parse(newestCapture) < openMs;
 }
 
-/** An ISO 8601 date-time starts like this: a date, then `T`. */
-const ISO_DATE_TIME_PREFIX = /^\d{4}-\d{2}-\d{2}T/;
+/**
+ * An ISO 8601 date-time with a zone: seconds present, and a `Z` or a
+ * `+hh:mm` offset. The analyze schema (`api/_lib/validation/snapshot.ts`)
+ * checks the forwarded closed capture time with this same rule, so `asOfFrom`
+ * can't keep a string the schema would refuse and 400 the whole analyze call.
+ */
+const ISO_DATETIME_WITH_OFFSET = z.iso.datetime({ offset: true });
+
+/** True when `raw` is a string `ISO_DATETIME_WITH_OFFSET` accepts. */
+export function isIsoDateTimeWithOffset(raw: unknown): raw is string {
+  return ISO_DATETIME_WITH_OFFSET.safeParse(raw).success;
+}
 
 /**
- * `raw` when it is an ISO 8601 date-time string that parses, else null. The
- * GEXBot hooks run an unchecked response body's `asOf` through it before the
- * closed label and `isCarriedOver` read it. A bare `Date.parse` is too loose
- * for that: it reads "2026" as a year and "5" as a month, so the string must
- * also have the shape of a date-time. Anything but a string (a number, an array
- * holding a timestamp) is rejected before it is parsed.
+ * `raw` when it is an ISO 8601 date-time with a zone that parses, else null.
+ * The GEXBot hooks run an unchecked response body's `asOf` through it before
+ * the closed label and `isCarriedOver` read it, and the landscape's value is
+ * forwarded to the analyze call. A bare `Date.parse` is too loose for that: it
+ * reads "2026" as a year and "5" as a month, and takes a zone-less time, one
+ * with no seconds, a `+0000` offset or a lower-case `z`, none of which the
+ * analyze schema accepts. Anything but a string (a number, an array holding a
+ * timestamp) is rejected before it is parsed.
  */
 export function asOfFrom(raw: unknown): string | null {
-  return typeof raw === 'string' &&
-    ISO_DATE_TIME_PREFIX.test(raw) &&
-    Number.isFinite(Date.parse(raw))
+  return isIsoDateTimeWithOffset(raw) && Number.isFinite(Date.parse(raw))
     ? raw
     : null;
 }
@@ -140,4 +152,20 @@ export function formatClosedLabel(asOf: string, now: Date): string {
  */
 export function isTransientStatus(status: number): boolean {
   return status === 0 || status === 408 || status === 429 || status >= 500;
+}
+
+/**
+ * A non-2xx answer. It carries the status so a failure handler can tell a
+ * retryable failure (`isTransientStatus`) from a refused request, instead of
+ * matching the message. The message is `HTTP <status>`, or
+ * `<source>: HTTP <status>` when the caller names its source.
+ */
+export class HttpStatusError extends Error {
+  constructor(
+    public readonly status: number,
+    source?: string,
+  ) {
+    super(source == null ? `HTTP ${status}` : `${source}: HTTP ${status}`);
+    this.name = 'HttpStatusError';
+  }
 }

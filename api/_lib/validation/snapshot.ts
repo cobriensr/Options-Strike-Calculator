@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { isIsoDateTimeWithOffset } from '../../../src/utils/closed-session.js';
 import { num, str, bool } from './common.js';
 
 // ============================================================
@@ -44,9 +45,9 @@ export const MAX_CONTEXT_KEYS = 200;
 // rather than formatted. Absent or null means live. The offset is required
 // because /api/gex-landscape stamps its asOf with toISOString, which always
 // carries one; a zone-less time would read as the server's zone, not the
-// capture's.
+// capture's. The client cleans the value with `asOfFrom` from the same module
+// as `isIsoDateTimeWithOffset`, so what it forwards passes this check.
 const CLOSED_BIAS_KEY = 'gexLandscapeBiasClosedAsOf';
-const closedBiasAsOfSchema = z.iso.datetime({ offset: true });
 
 export const analyzeImageSchema = z.object({
   data: z
@@ -87,10 +88,7 @@ export const analyzeBodySchema = z.object({
         }
       }
       const closedAsOf = ctx[CLOSED_BIAS_KEY];
-      if (
-        closedAsOf != null &&
-        !closedBiasAsOfSchema.safeParse(closedAsOf).success
-      ) {
+      if (closedAsOf != null && !isIsoDateTimeWithOffset(closedAsOf)) {
         refinementCtx.addIssue({
           code: 'custom',
           path: [CLOSED_BIAS_KEY],
