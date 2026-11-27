@@ -216,12 +216,11 @@ export interface LadderVolatility {
 }
 
 /**
- * Which price the odds came from: `spread`, the market's priced chance (a
+ * Which price the odds came from: `priced`, the market's priced chance (a
  * vertical spread at the strike, narrowed to nothing) from the strike's own
- * IV and the smile's slope; `atm`, the ATM σ fallback. The name is kept from
- * the rule's first form, a 10-wide spread.
+ * IV and the smile's slope; `atm`, the ATM σ fallback.
  */
-export type OddsSource = 'spread' | 'atm';
+export type OddsSource = 'priced' | 'atm';
 
 /** The word every status pill carries, so colour is never the only signal. */
 export const STATUS_PILL_LABEL: Record<StrikeStatus, string> = {

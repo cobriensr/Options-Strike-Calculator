@@ -88,7 +88,7 @@ const call = (strike: number): LadderStrikeInput => ({ side: 'call', strike });
 const put = (strike: number): LadderStrikeInput => ({ side: 'put', strike });
 
 /**
- * Strike IVs around the sample's two candidates, skewed so the spread price
+ * Strike IVs around the sample's two candidates, skewed so the priced chance
  * reads both as `watch` where the ATM σ reads them `clear`.
  */
 const SAMPLE_IVS: LadderStrikeIv[] = [
@@ -563,10 +563,10 @@ describe('usability precedence', () => {
 });
 
 describe('strike IVs', () => {
-  it("with strikeIvs a short strike's odds come from the spread price", () => {
+  it("with strikeIvs a short strike's odds come from the priced chance", () => {
     const l = build({ strikeIvs: SAMPLE_IVS });
-    expect(rowAt(l, 7620).odds?.oddsSource).toBe('spread');
-    expect(rowAt(l, 7555).odds?.oddsSource).toBe('spread');
+    expect(rowAt(l, 7620).odds?.oddsSource).toBe('priced');
+    expect(rowAt(l, 7555).odds?.oddsSource).toBe('priced');
     expect(lines(l)[0]).toBe(
       '7,620 [CANDIDATE · 10Δ CALL] [WATCH] 1.19σ · touch 23% · finish beyond 12%',
     );

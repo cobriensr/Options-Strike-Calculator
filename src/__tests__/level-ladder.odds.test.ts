@@ -205,7 +205,7 @@ describe('strikeOdds from the priced chance (the skew-adjusted digital)', () => 
         ...vol,
         strikeIvs: null,
       })!;
-      expect(priced.oddsSource).toBe('spread');
+      expect(priced.oddsSource).toBe('priced');
       expect(fallback.oddsSource).toBe('atm');
       expect(
         Math.abs(priced.finishBeyond! - fallback.finishBeyond!),
@@ -217,7 +217,7 @@ describe('strikeOdds from the priced chance (the skew-adjusted digital)', () => 
 
   it("a real smile: short put 6,905 prices 9.80%, below its own IV's 12.57%", () => {
     const odds = strikeOdds('put', 6905, SMILE_SPOT, smile(SMILE_IVS))!;
-    expect(odds.oddsSource).toBe('spread');
+    expect(odds.oddsSource).toBe('priced');
     expect(Math.abs(odds.finishBeyond! * 100 - 9.8)).toBeLessThan(0.05);
     // The strike's own put IV (0.518) in the ATM formula reads much riskier.
     const ownIv = finishBeyondProbability(
@@ -228,7 +228,7 @@ describe('strikeOdds from the priced chance (the skew-adjusted digital)', () => 
 
   it('a real smile: short call 7,100 prices 9.80%', () => {
     const odds = strikeOdds('call', 7100, SMILE_SPOT, smile(SMILE_IVS))!;
-    expect(odds.oddsSource).toBe('spread');
+    expect(odds.oddsSource).toBe('priced');
     expect(Math.abs(odds.finishBeyond! * 100 - 9.8)).toBeLessThan(0.05);
   });
 
@@ -269,7 +269,7 @@ describe('strikeOdds from the priced chance (the skew-adjusted digital)', () => 
     };
     const call = strikeOdds('call', 7080, 7002.5, vol)!;
     const put = strikeOdds('put', 6925, 7002.5, vol)!;
-    expect(call.oddsSource).toBe('spread');
+    expect(call.oddsSource).toBe('priced');
     expect(put.finishBeyond).toBeCloseTo(call.finishBeyond!, 12);
     expect(put.sigmaAway).toBeCloseTo(call.sigmaAway, 9);
   });
@@ -437,7 +437,7 @@ describe('strikeStatus', () => {
         { strike: 7010, callIv: 0.45, putIv: 0.45 },
       ],
     })!;
-    expect(odds.oddsSource).toBe('spread');
+    expect(odds.oddsSource).toBe('priced');
     expect(odds.finishBeyond).toBeGreaterThan(0.5);
     expect(odds.sigmaAway).toBeLessThan(0);
     expect(odds.status).toBe('tested');

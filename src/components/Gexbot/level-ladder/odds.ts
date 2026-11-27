@@ -194,9 +194,9 @@ function pricedFinishBeyond(
 /**
  * The odds for one short strike, or null with no usable volatility (none,
  * or `E` not finite and above 0). The priced chance when the strike IVs can
- * price it (`oddsSource: 'spread'`), else the ATM σ (`'atm'`). A breached
- * strike has been touched, so it
- * carries how far past it spot is instead of a touch and a finish beyond.
+ * price it (`oddsSource: 'priced'`), else the ATM σ (`'atm'`). A breached
+ * strike has been touched, so it carries how far past it spot is instead of
+ * a touch and a finish beyond.
  */
 export function strikeOdds(
   side: ShortSide,
@@ -219,7 +219,7 @@ export function strikeOdds(
     sigmaAway = distance / vol.expectedMove;
     finishBeyond = finishBeyondProbability(sigmaAway);
   } else {
-    oddsSource = 'spread';
+    oddsSource = 'priced';
     finishBeyond = priced;
     sigmaAway = -inverseNormalCDF(priced);
   }
