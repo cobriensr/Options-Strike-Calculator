@@ -23,15 +23,16 @@ export const LADDER_SHORT_DELTA: DeltaTarget = 10;
  * `LADDER_TESTED_SIGMA` up to here it is `watch`.
  *
  * Unmeasured: a first guess with nothing measured behind it, kept by the
- * owner on 2026-11-26 (spec, open question 1). The ladder measures in
- * GEXBot's ATM σ, while the calculator skews its own σ, so a fresh 10Δ call
- * candidate can start at `watch` by this measure.
+ * owner on 2026-11-26 (spec, open question 1). The ladder's σ is the normal
+ * tail matching the strike's priced chance (from GEXBot's IVs), not the
+ * calculator's own skewed σ, so a fresh 10Δ candidate can start at `watch`
+ * by this measure.
  */
 export const LADDER_CLEAR_SIGMA = 1.2;
 
 /**
  * A short strike closer to spot than this many σ (but not past it) is
- * `tested`: it sits inside the ±1σ band.
+ * `tested`: it is priced inside ±1σ.
  *
  * Unmeasured: a first guess with nothing measured behind it, kept by the
  * owner on 2026-11-26 (spec, open question 1).
@@ -186,8 +187,39 @@ export interface LadderStrikeInput {
 /** Where a short strike came from; open legs hide the candidates. */
 export type ShortSource = 'candidate' | 'open';
 
-/** How exposed a short strike is, by its distance from spot in σ. */
+/**
+ * How exposed a short strike is: by its priced σ while spot has not reached
+ * it, `breached` once spot is at or past it.
+ */
 export type StrikeStatus = 'clear' | 'watch' | 'tested' | 'breached';
+
+/**
+ * One strike's call and put IV from the expected-move capture (fractions,
+ * 0.11 = 11%); null where GEXBot sent none on that side.
+ */
+export interface LadderStrikeIv {
+  strike: number;
+  callIv: number | null;
+  putIv: number | null;
+}
+
+/**
+ * Everything a short strike's odds are priced from: `E` and the time left,
+ * both carried forward to now, and the strike IVs (null when there are none).
+ */
+export interface LadderVolatility {
+  /** One ATM standard deviation to expiry, in points (> 0). */
+  expectedMove: number;
+  /** Time left to expiry, in days (> 0). */
+  daysLeft: number;
+  strikeIvs: readonly LadderStrikeIv[] | null;
+}
+
+/**
+ * Which price the odds came from: `spread`, a narrow vertical at the strike
+ * from its neighbours' own IVs; `atm`, the ATM σ fallback.
+ */
+export type OddsSource = 'spread' | 'atm';
 
 /** The word every status pill carries, so colour is never the only signal. */
 export const STATUS_PILL_LABEL: Record<StrikeStatus, string> = {
@@ -198,13 +230,18 @@ export const STATUS_PILL_LABEL: Record<StrikeStatus, string> = {
 };
 
 /**
- * A short strike's priced odds against the ladder's spot and `E`. A breached
- * strike has been touched: it carries how far past it spot is instead of a
- * touch and a finish beyond.
+ * A short strike's priced odds against the ladder's spot. `sigmaAway` is the
+ * σ whose normal tail equals the priced chance of finishing beyond, so the
+ * printed σ and odds always agree. A breached strike has been touched: it
+ * carries how far past it spot is instead of a touch and a finish beyond.
  */
 export type StrikeOdds =
   | {
-      /** Distance from spot toward the money, in σ (> 0 here). */
+      /**
+       * Distance from spot toward the money, in σ. Can be ≤ 0 for a strike
+       * spot has not reached when it is priced at 50% or more (a skew a
+       * point or two from spot); it prints as "0.00σ".
+       */
       sigmaAway: number;
       status: Exclude<StrikeStatus, 'breached'>;
       /** Priced chance of finishing beyond the strike. */
@@ -212,15 +249,16 @@ export type StrikeOdds =
       /** Priced chance of a touch before expiry. */
       touch: number;
       pointsPast: null;
+      oddsSource: OddsSource;
     }
   | {
-      /** ≤ 0: spot is at or past the strike. */
       sigmaAway: number;
       status: 'breached';
       finishBeyond: null;
       touch: null;
       /** How far spot is past the strike, in points (≥ 0). */
       pointsPast: number;
+      oddsSource: OddsSource;
     };
 
 // ────────────────────────────────────────────────────────────
@@ -243,6 +281,11 @@ export interface LevelLadderInput {
   snapshot: SnapshotsLatestRow | null;
   /** The SPX row of `expected-move`, or null when the view has none. */
   expectedMove: ExpectedMoveRow | null;
+  /**
+   * The same capture's per-strike IVs, which price each short strike; null
+   * when there are none, and the odds fall back to the ATM σ.
+   */
+  strikeIvs: readonly LadderStrikeIv[] | null;
   /** The levels view failed: an error with no rows held (`isViewFailed`). */
   levelsFailed: boolean;
   /** The expected-move view failed: an error with no rows held. */

@@ -11,14 +11,11 @@
  */
 
 import { DEFAULTS } from '../../../constants';
-import type {
-  ExpectedMoveRow,
-  SnapshotsLatestRow,
-} from '../../../hooks/useGexbotData';
+import type { SnapshotsLatestRow } from '../../../hooks/useGexbotData';
 import type { DeltaRow, DeltaRowError } from '../../../types';
 import { getCTTime } from '../../../utils/timezone';
 import {
-  carryForwardExpectedMove,
+  carryForwardMove,
   formatOddsLine,
   formatOneDecimal,
   formatPercent,
@@ -47,6 +44,7 @@ import {
   type LadderSpot,
   type LadderStrikeInput,
   type LadderStrikeRow,
+  type LadderVolatility,
   type LevelLadder,
   type LevelLadderInput,
   type ShortSide,
@@ -247,22 +245,25 @@ function judgeLevels(
 }
 
 /**
- * `E` while it is usable: the market open, the view not failed, a row with
- * no `unavailable` reason whose `asOf` is within the age limit, carried
- * forward to now and above 0.
+ * What the odds are priced from, while the expected move is usable: the
+ * market open, the view not failed, a row with no `unavailable` reason whose
+ * `asOf` is within the age limit, carried forward to now with `E` above 0.
+ * The strike IVs ride along; without a usable move there are no odds at all.
  */
-function usableExpectedMove(
-  row: ExpectedMoveRow | null,
-  failed: boolean,
-  nowMs: number,
-  marketOpen: boolean,
-): number | null {
-  if (!marketOpen || failed || row == null || row.unavailable != null) {
+function usableVolatility(input: LevelLadderInput): LadderVolatility | null {
+  const row = input.expectedMove;
+  if (
+    !input.marketOpen ||
+    input.expectedMoveFailed ||
+    row == null ||
+    row.unavailable != null
+  ) {
     return null;
   }
-  const ageSeconds = (nowMs - Date.parse(row.asOf)) / 1000;
+  const ageSeconds = (input.nowMs - Date.parse(row.asOf)) / 1000;
   if (ageSeconds > LADDER_MAX_LEVEL_AGE_SECONDS) return null;
-  return carryForwardExpectedMove(row, nowMs);
+  const carried = carryForwardMove(row, input.nowMs);
+  return carried == null ? null : { ...carried, strikeIvs: input.strikeIvs };
 }
 
 // ────────────────────────────────────────────────────────────
@@ -278,7 +279,7 @@ interface ShortView {
   /** Points from spot toward the money; ≤ 0 means at or past the strike. */
   toward: number;
   odds: StrikeOdds | null;
-  /** The second column: the odds line, or the signed distance without E. */
+  /** The second column: the odds line, or the signed distance without odds. */
   detail: string;
 }
 
@@ -286,25 +287,28 @@ type RatedShort = ShortView & { odds: StrikeOdds };
 
 const isRated = (v: ShortView | undefined): v is RatedShort => v?.odds != null;
 
-/** Most exposed first: the worse status, then the smaller distance. */
+/**
+ * Most exposed first: the worse status, then the smaller σ (the spec's tie
+ * rule; the spread price can rank two strikes apart from their distance),
+ * or the smaller distance when there are no odds.
+ */
 function byExposure(a: ShortView, b: ShortView): number {
-  const severity =
-    (b.odds ? SEVERITY[b.odds.status] : 0) -
-    (a.odds ? SEVERITY[a.odds.status] : 0);
-  return severity !== 0 ? severity : a.toward - b.toward;
+  if (a.odds == null || b.odds == null) return a.toward - b.toward;
+  const severity = SEVERITY[b.odds.status] - SEVERITY[a.odds.status];
+  return severity !== 0 ? severity : a.odds.sigmaAway - b.odds.sigmaAway;
 }
 
 function shortViews(
   input: LevelLadderInput,
   spot: number,
-  expectedMove: number | null,
+  vol: LadderVolatility | null,
 ): ShortView[] {
   const open = usableStrikes(input.openShortStrikes);
   // While any open short leg exists, the candidates are hidden.
   const source: ShortSource = open.length > 0 ? 'open' : 'candidate';
   const strikes = open.length > 0 ? open : usableStrikes(input.candidates);
   return strikes.map(({ side, strike }) => {
-    const odds = strikeOdds(side, strike, spot, expectedMove);
+    const odds = strikeOdds(side, strike, spot, vol);
     return {
       side,
       strike,
@@ -710,21 +714,17 @@ export function buildLevelLadder(input: LevelLadderInput): LevelLadder {
     };
   }
   const spot = input.spot;
-  const expectedMove = usableExpectedMove(
-    input.expectedMove,
-    input.expectedMoveFailed,
-    input.nowMs,
-    input.marketOpen,
-  );
+  const vol = usableVolatility(input);
+  // The band is the ATM move whatever prices the odds.
   const band: LadderBand | null =
-    expectedMove == null
+    vol == null
       ? null
       : {
-          expectedMove,
-          upper: spot + expectedMove,
-          lower: spot - expectedMove,
+          expectedMove: vol.expectedMove,
+          upper: spot + vol.expectedMove,
+          lower: spot - vol.expectedMove,
         };
-  const views = shortViews(input, spot, expectedMove);
+  const views = shortViews(input, spot, vol);
   const lead = { call: sideLead(views, 'call'), put: sideLead(views, 'put') };
   const { rows, above, below } = layOut(spot, band, views, shown);
 

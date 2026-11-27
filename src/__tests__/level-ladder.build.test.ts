@@ -6,10 +6,12 @@ import {
   isViewFailed,
   pickLadderSpot,
 } from '../components/Gexbot/level-ladder/build';
+import { strikeOdds } from '../components/Gexbot/level-ladder/odds';
 import {
   STATUS_PILL_LABEL,
   type LadderMarkerRow,
   type LadderStrikeInput,
+  type LadderStrikeIv,
   type LadderStrikeRow,
   type LevelLadder,
   type LevelLadderInput,
@@ -85,11 +87,24 @@ function expectedMove(over: Partial<ExpectedMoveRow> = {}): ExpectedMoveRow {
 const call = (strike: number): LadderStrikeInput => ({ side: 'call', strike });
 const put = (strike: number): LadderStrikeInput => ({ side: 'put', strike });
 
+/**
+ * Strike IVs around the sample's two candidates, skewed so the spread price
+ * reads both as `watch` where the ATM σ reads them `clear`.
+ */
+const SAMPLE_IVS: LadderStrikeIv[] = [
+  { strike: 7615, callIv: 0.13, putIv: 0.13 },
+  { strike: 7625, callIv: 0.128, putIv: 0.128 },
+  { strike: 7550, callIv: 0.16, putIv: 0.16 },
+  { strike: 7560, callIv: 0.156, putIv: 0.156 },
+];
+
+/** No strike IVs by default, so the odds take the ATM σ as in the sketch. */
 function input(over: Partial<LevelLadderInput> = {}): LevelLadderInput {
   return {
     spot: SPOT,
     snapshot: snapshot(),
     expectedMove: expectedMove(),
+    strikeIvs: null,
     levelsFailed: false,
     expectedMoveFailed: false,
     candidates: [call(7620), put(7555)],
@@ -542,6 +557,62 @@ describe('usability precedence', () => {
       line: null,
       asOfText: null,
     });
+  });
+});
+
+describe('strike IVs', () => {
+  it("with strikeIvs a short strike's odds come from the spread price", () => {
+    const l = build({ strikeIvs: SAMPLE_IVS });
+    expect(rowAt(l, 7620).odds?.oddsSource).toBe('spread');
+    expect(rowAt(l, 7555).odds?.oddsSource).toBe('spread');
+    expect(lines(l)[0]).toBe(
+      '7,620 [CANDIDATE · 10Δ CALL] [WATCH] 1.19σ · touch 24% · finish beyond 12%',
+    );
+    expect(lines(l).at(-1)).toBe(
+      '7,555 [CANDIDATE · 10Δ PUT] [WATCH] 1.14σ · touch 25% · finish beyond 13%',
+    );
+    // Both on watch: the smaller σ is named first.
+    expect(l.result).toEqual({
+      kind: 'status',
+      pill: 'watch',
+      text: 'Put 7,555 is on watch: 1.14σ away, a 25% priced chance of a touch and 13% of finishing beyond. Call is on watch.',
+    });
+  });
+
+  it('with strikeIvs null the odds come from the ATM σ', () => {
+    const l = build({ strikeIvs: null });
+    expect(rowAt(l, 7620).odds?.oddsSource).toBe('atm');
+    expect(rowAt(l, 7620).detail).toBe('1.37σ · touch 17% · finish beyond 8%');
+  });
+
+  it('the band is the ATM move either way', () => {
+    const withIvs = build({ strikeIvs: SAMPLE_IVS });
+    const without = build({ strikeIvs: null });
+    expect(withIvs.band).toEqual(without.band);
+    expect(markerRows(withIvs)).toEqual(markerRows(without));
+    // The summaries measure against that band too.
+    expect(withIvs.summary).toEqual(without.summary);
+  });
+
+  it('prices with the time left carried forward to now', () => {
+    const asOf = new Date(NOW - 200 * SEC).toISOString();
+    const l = build({
+      strikeIvs: SAMPLE_IVS,
+      expectedMove: expectedMove({ asOf }),
+    });
+    const daysLeft = 0.25 - 200 / 86_400;
+    const expected = strikeOdds('call', 7620, SPOT, {
+      expectedMove: 23 * Math.sqrt(daysLeft / 0.25),
+      daysLeft,
+      strikeIvs: SAMPLE_IVS,
+    });
+    expect(rowAt(l, 7620).odds).toEqual(expected);
+  });
+
+  it('no usable expected move means no odds, whatever the strike IVs', () => {
+    const l = build({ strikeIvs: SAMPLE_IVS, expectedMove: null });
+    expect(rowAt(l, 7620)).toMatchObject({ status: null, odds: null });
+    expect(l.result.kind).toBe('no_expected_move');
   });
 });
 
@@ -1071,6 +1142,19 @@ describe('degrading', () => {
     expect(l.result.text).toBe('Expected move unavailable. Distances only.');
     // The sample's six on-grid levels (zero gamma is a marker).
     expect(levelChipCount(l)).toBe(6);
+  });
+
+  it.each([
+    ['E 0', { expectedMove: 0 }],
+    ['no time left', { dteFraction: 0 }],
+  ])('a fresh row with no usable move (%s) gives distances only', (_, over) => {
+    const l = build({
+      expectedMove: expectedMove(over),
+      strikeIvs: SAMPLE_IVS,
+    });
+    expect(l.band).toBeNull();
+    expect(rowAt(l, 7620).odds).toBeNull();
+    expect(l.result.text).toBe('Expected move unavailable. Distances only.');
   });
 
   it('snapshots-latest failed gives unavailable and no chips, with band and short strikes kept', () => {
