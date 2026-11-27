@@ -417,7 +417,8 @@ def test_object_exists_takes_only_a_404_for_missing_and_raises_every_other_failu
 # --- the two sources ------------------------------------------------------------------------------
 
 # The replay export's schema, export_row and write_export are in _ba_test_support (shared with the
-# analyze scripts' tests). test_export_columns_match_the_tool holds the schema copy to the tool's.
+# analyze scripts' tests). test_export_columns_match_the_replay_module holds the schema copy to
+# the replay module's EXPORT_COLUMNS.
 
 TABLE_COLUMNS = (
     'id',
@@ -1023,12 +1024,14 @@ def test_an_export_without_the_columns_the_script_reads_names_them(run, missing)
         mod.main(['--source', 'export', '--export-end', DAY_ISO])
 
 
-def test_export_columns_match_the_tool():
-    """The script copies the export's schema instead of importing the tool (a production run
-    hashes the tool's files). This holds the copies, here and in the script, to the tool's."""
+def test_export_columns_match_the_replay_module():
+    """The script copies the export's column names instead of importing the replay module (a
+    production run hashes the tool's files, and the module sits in nightly/src). This holds the
+    copies, here and in the script, to the module's EXPORT_COLUMNS, and the key prefix to the
+    tool's."""
     import interval_ba_tape as tool
 
-    wanted = [(name, str(kind)) for name, kind in tool._EXPORT_COLUMNS]
+    wanted = [(name, str(kind)) for name, kind in tool.ibr.EXPORT_COLUMNS]
     assert [(f.name, str(f.type)) for f in EXPORT_SCHEMA] == wanted
     assert set(mod.EXPORT_COLUMNS) <= {name for name, _ in wanted}
     assert mod.EXPORT_PREFIX == tool.EXPORT_PREFIX

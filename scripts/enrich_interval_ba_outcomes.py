@@ -106,9 +106,10 @@ CRITICAL_THRESHOLD = 500_000
 OCC_SUFFIX_LEN = 15
 
 # The tool's export (scripts/interval_ba_tape.py, spec 6.5): one object per --end date, in the
-# tape's bucket. These are the columns this script reads, in the tool's order, with the types
-# the tool writes. This file imports nothing from the tool: a production run hashes its files.
-# test_export_columns_match_the_tool holds this copy to the tool's own.
+# tape's bucket. These are the columns this script reads, in the export's order, with the types
+# the replay module writes (nightly/src/interval_ba_replay.py EXPORT_COLUMNS). This file imports
+# nothing from the tool or the module: a production run hashes the tool's files.
+# test_export_columns_match_the_replay_module holds this copy to the module's own.
 #   option_chain string, ticker string, option_type string, strike decimal(10,3), expiry date,
 #   bucket_start timestamp(us, UTC), fired_at timestamp(us, UTC), ratio_pct decimal(5,2),
 #   total_premium decimal(14,2), trade_count int32, top_trade_is_sweep bool,

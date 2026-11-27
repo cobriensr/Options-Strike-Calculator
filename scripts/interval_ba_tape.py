@@ -34,7 +34,9 @@ Modes:
   UTC TIMESTAMPTZ from epoch microseconds) to the run folder and to R2 at
   research/interval-ba/replay-<to>.parquet, put once and verified. It never overwrites an
   object. The file's metadata and the object's hold the module's blob hash and the rule
-  constants; the object's also sha256 and rows.
+  (the constants and the replay version, `ibr.rule()`); the object's also sha256 and rows. The
+  table is built by the replay module (`ibr.export_table`), as the nightly step builds each
+  session's day file.
 - `undo --run <folder>`: puts a rebuild or heal run's days back to its backup: the days marked
   `.applied`, and those whose rows equal the plan's end state. A rebuild day's replay rows
   become the backup's, ids and all. A heal day's inserts are deleted (only rows the backup never
@@ -123,7 +125,7 @@ import sys
 import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -131,7 +133,6 @@ from typing import Any
 import duckdb
 import psycopg2
 import psycopg2.extras
-import pyarrow as pa
 import pyarrow.parquet as pq
 
 # The shared machinery sits beside this file; -I keeps this folder off sys.path. Appended, so
@@ -1345,71 +1346,10 @@ HEAL = runs.ApplyMode(
 # --- export: the full-year replay for studies -------------------------------------------------
 
 EXPORT_PREFIX = "research/interval-ba/"
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-_UTC_US = pa.timestamp("us", tz="UTC")
-# The TapeAlert fields in order, as the export writes them (spec 6.5 and Task 8).
-_EXPORT_COLUMNS: tuple[tuple[str, pa.DataType], ...] = (
-    ("option_chain", pa.string()),
-    ("ticker", pa.string()),
-    ("option_type", pa.string()),
-    ("strike", pa.decimal128(10, 3)),
-    ("expiry", pa.date32()),
-    ("bucket_start", _UTC_US),
-    ("bucket_end", _UTC_US),
-    ("fired_at", _UTC_US),
-    ("ratio_pct", pa.decimal128(5, 2)),
-    ("ask_premium", pa.decimal128(14, 2)),
-    ("total_premium", pa.decimal128(14, 2)),
-    ("trade_count", pa.int32()),
-    ("top_trade_premium", pa.decimal128(14, 2)),
-    ("top_trade_size", pa.int32()),
-    ("top_trade_executed_at", _UTC_US),
-    ("top_trade_is_sweep", pa.bool_()),
-    ("top_trade_is_floor", pa.bool_()),
-    ("underlying_price", pa.decimal128(10, 2)),
-    ("confluence_tickers", pa.list_(pa.string())),
-)
-_EXPORT_NULLABLE = frozenset({"underlying_price"})  # an SPXW crossing with no spot to give
 
 
 def export_key(end: date) -> str:
     return f"{EXPORT_PREFIX}replay-{end.isoformat()}.parquet"
-
-
-def _rule() -> dict[str, str]:
-    """The replay module's rule constants, as ASCII strings (they go in R2 user metadata)."""
-    return {
-        "tickers": ",".join(ibr.TICKERS),
-        "ratio-threshold": str(ibr.RATIO_THRESHOLD),
-        "premium-floor-dollars": str(ibr.PREMIUM_FLOOR_DOLLARS),
-        "window-sec": str(ibr.WINDOW_SEC),
-        "multi-leg-share-max": str(ibr.MULTI_LEG_SHARE_MAX),
-        "multi-leg-codes": ",".join(sorted(ibr.MULTI_LEG_CODES)),
-        "confluence-window-sec": str(ibr.CONFLUENCE_WINDOW_SEC),
-    }
-
-
-def _epoch_us(at: datetime) -> int:
-    return (at - _EPOCH) // timedelta(microseconds=1)
-
-
-def _export_column(name: str, kind: pa.DataType, alerts: Sequence[Any]) -> pa.Array:
-    values = [getattr(alert, name) for alert in alerts]
-    if kind == _UTC_US:  # written from epoch microseconds, so no time zone conversion runs
-        return pa.array([_epoch_us(at) for at in values], pa.int64()).cast(_UTC_US)
-    if name == "confluence_tickers":
-        return pa.array([list(tags) for tags in values], kind)
-    return pa.array(values, kind)
-
-
-def _export_table(alerts: Sequence[Any], meta: dict[str, Any]) -> pa.Table:
-    schema = pa.schema(
-        [pa.field(name, kind, nullable=name in _EXPORT_NULLABLE) for name, kind in _EXPORT_COLUMNS],
-        metadata={b"interval_ba": json.dumps(meta, sort_keys=True).encode("utf-8")},
-    )
-    return pa.Table.from_arrays(
-        [_export_column(name, kind, alerts) for name, kind in _EXPORT_COLUMNS], schema=schema
-    )
 
 
 def _refuse_overwrite(r2: runs.R2Bucket, key: str) -> None:
@@ -1457,11 +1397,11 @@ def _export(args: argparse.Namespace, out: runs.Output) -> int:
         "rows": len(alerts),
         "module_blob": blobs["module_blob"],
         "tool_blobs": blobs["tool_blobs"],
-        "rule": _rule(),
+        "rule": ibr.rule(),
         "created_at": runs.utc_now().isoformat(),
     }
     path = run / f"replay-{args.end}.parquet"
-    pq.write_table(_export_table(alerts, meta), path)
+    pq.write_table(ibr.export_table(alerts, meta), path)
     body = path.read_bytes()  # what is hashed is what is put
     sha256 = hashlib.sha256(body).hexdigest()
     rows = len(alerts)
@@ -1476,7 +1416,7 @@ def _export(args: argparse.Namespace, out: runs.Output) -> int:
             "module-blob": blobs["module_blob"],
             "from": meta["from"],
             "to": meta["to"],
-            **_rule(),
+            **ibr.rule(),
         },
         content_type="application/vnd.apache.parquet",
         what="export",

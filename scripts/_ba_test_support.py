@@ -4,9 +4,9 @@ Used by test_enrich_interval_ba_outcomes.py, test_analyze_interval_ba_cuts.py an
 test_analyze_confluence_vs_solo.py, so the export's schema and the fake bucket exist once.
 Nothing here runs on its own (pytest collects only test_*.py).
 
-- `EXPORT_SCHEMA`, `export_row` and `write_export` build a replay export with the tool's columns
-  (scripts/interval_ba_tape.py `_EXPORT_COLUMNS`; test_export_columns_match_the_tool holds the copy
-  to the tool's own).
+- `EXPORT_SCHEMA`, `export_row` and `write_export` build a replay export with the export's columns
+  (nightly/src/interval_ba_replay.py `EXPORT_COLUMNS`; test_export_columns_match_the_replay_module
+  holds the copy to the module's own).
 - `FakeS3` is a bucket on 127.0.0.1 for DuckDB's httpfs, started by the `fake_s3` fixture for one
   test and shut down in its teardown. `s3_connection` points a DuckDB connection at it and skips
   the test where httpfs is not installed.

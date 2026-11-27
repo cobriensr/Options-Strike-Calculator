@@ -2131,6 +2131,8 @@ RULE = {
     "multi-leg-share-max": "0.5",
     "multi-leg-codes": "cbmo,masl,mctp,mesl,mfsl,mlat,mlct,mlet,mlft",
     "confluence-window-sec": "90",
+    # The module's own pin (nightly/tests/test_interval_ba_replay.py) owns the value.
+    "replay-version": ibr.REPLAY_VERSION,
 }
 
 
