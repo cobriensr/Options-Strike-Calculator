@@ -2,6 +2,7 @@ export { SectionBox } from './SectionBox';
 export { Chip } from './Chip';
 export { ScrollHint } from './ScrollHint';
 export { StatusBadge } from './StatusBadge';
+export { ClosedBadge } from './ClosedBadge';
 export { ErrorMsg } from './ErrorMsg';
 export { Tooltip } from './Tooltip';
 export { DateInput } from './DateInput';

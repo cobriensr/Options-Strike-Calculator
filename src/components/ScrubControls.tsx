@@ -9,6 +9,7 @@
 import { theme } from '../themes';
 import { formatClosedLabel } from '../utils/closed-session';
 import { tint } from '../utils/ui-utils';
+import { ClosedBadge } from './ui/ClosedBadge';
 import { DateInput } from './ui/DateInput';
 import { SrHint } from './ui/SrHint';
 
@@ -95,15 +96,14 @@ export function ScrubControls({
   hideDatePicker = false,
   closedAsOf,
 }: ScrubControlsProps) {
-  // The clock is read at render and only decides whether the label carries a
-  // date (a capture more than 6 days old). An empty label (a capture time that
-  // does not parse) shows no closed pill, so a bare "CLOSED · as of" never
-  // dangles; the LIVE / DELAYED badge shows as it does without `closedAsOf`.
-  const closedLabel =
-    closedAsOf != null && !isScrubbed
-      ? formatClosedLabel(closedAsOf, new Date())
-      : '';
-  const showClosed = closedLabel !== '';
+  // `ClosedBadge` draws the pill; this decides whether it takes the badge slot.
+  // An empty label (a capture time that does not parse) shows no closed pill,
+  // so a bare "CLOSED · as of" never dangles; the LIVE / DELAYED badge shows as
+  // it does without `closedAsOf`.
+  const showClosed =
+    closedAsOf != null &&
+    !isScrubbed &&
+    formatClosedLabel(closedAsOf, new Date()) !== '';
   const isStale =
     isLive && lastDataAgeMs != null && lastDataAgeMs >= staleThresholdMs;
   const staleMinutes =
@@ -194,21 +194,9 @@ export function ScrubControls({
       )}
 
       {/* Status badge. The closed pill takes the LIVE / DELAYED slot, so
-          neither shows beside it. Its text is its accessible name, as the
-          LIVE badge's is; it is not hidden from assistive tech. The 9% tint
-          is the header CLOSED badge's (StatusBadge): the muted text on it
-          measures 5.06:1 in the light theme and 4.53:1 in the dark. */}
+          neither shows beside it. */}
       {showClosed && (
-        <span
-          data-testid="scrub-closed-badge"
-          className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold whitespace-nowrap"
-          style={{
-            background: tint(theme.textMuted, '17'),
-            color: theme.textMuted,
-          }}
-        >
-          CLOSED · as of {closedLabel}
-        </span>
+        <ClosedBadge asOf={closedAsOf} testId="scrub-closed-badge" />
       )}
       {!showClosed && isLive && !isStale && (
         <span
