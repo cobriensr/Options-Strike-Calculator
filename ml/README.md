@@ -110,11 +110,26 @@ Market Tide, SPX/SPY/QQQ net flow, ETF Tide, 0DTE flow, delta flow at T1-T2 (and
 
 Source: `dark_pool_prints` (SPY and QQQ off-lit prints from the uw-stream `off_lit_trades` channel; SPX levels are scaled from SPY), read through `api/_lib/dark-pool-query.ts` and aggregated daily by `build-features.ts`.
 
-### Options Volume & Premium (15 features)
+### Options Volume & Premium (two groups, by when each figure is known)
 
-`opt_call_volume`, `opt_put_volume`, `opt_call_oi`, `opt_put_oi`, `opt_call_premium`, `opt_put_premium`, `opt_bullish_premium`, `opt_bearish_premium`, `opt_call_vol_ask`, `opt_put_vol_bid`, `opt_vol_pcr`, `opt_oi_pcr`, `opt_premium_ratio`, `opt_call_vol_vs_avg30`, `opt_put_vol_vs_avg30`
+The same 15 figures are stored for the day itself (`opt_*`) and for the previous trading day (`prev_day_opt_*`). The models predict at 10:00 CT, so the question is when a figure is known.
 
-Source: Unusual Whales options activity API via `build-features.ts`.
+**Morning-safe: `OPTIONS_VOLUME_FEATURES` (15, known at 10:00 CT).** The only options-volume features the models (`phase2_early.py`, `clustering.py`) read:
+
+- today's open interest, as of today's open: `opt_call_oi`, `opt_put_oi`, `opt_oi_pcr`
+- the previous trading day's final figures: `prev_day_opt_call_volume`, `prev_day_opt_put_volume`, `prev_day_opt_call_premium`, `prev_day_opt_put_premium`, `prev_day_opt_bullish_premium`, `prev_day_opt_bearish_premium`, `prev_day_opt_call_vol_ask`, `prev_day_opt_put_vol_bid`, `prev_day_opt_vol_pcr`, `prev_day_opt_premium_ratio`, `prev_day_opt_call_vol_vs_avg30`, `prev_day_opt_put_vol_vs_avg30`
+
+**End of day: `OPTIONS_VOLUME_EOD_FEATURES` (12, known only after the close).** The same day's totals: `opt_call_volume`, `opt_put_volume`, `opt_call_premium`, `opt_put_premium`, `opt_bullish_premium`, `opt_bearish_premium`, `opt_call_vol_ask`, `opt_put_vol_bid`, `opt_vol_pcr`, `opt_premium_ratio`, `opt_call_vol_vs_avg30`, `opt_put_vol_vs_avg30`. No model reads them. After-the-fact research may compare a day's totals with that day's outcome (`eda.py` analysis 8 and the correlation and stationarity plots in `visualize.py`), and it labels them end of day.
+
+`ml/tests/test_options_volume_groups.py` fails if an end-of-day column reaches either model's feature list or one of `clustering.py`'s name reads.
+
+Notes:
+
+- `opt_premium_ratio` and `prev_day_opt_premium_ratio` are bullish / (bullish + bearish) premium, a value between 0 and 1. They are not call premium / put premium.
+- The previous day's open interest (`prev_day_opt_call_oi`, `prev_day_opt_put_oi`, `prev_day_opt_oi_pcr`) is stored but is in neither group: today's open interest is already known at the open.
+- `avg_30_day_*`, behind the `vs_avg30` ratios, leaves out the day itself.
+
+Source: Unusual Whales `/stock/SPX/options-volume` via `build-features.ts`, which writes both groups from one reply (the day's row and the previous trading day's). Spec: `docs/superpowers/specs/2026-11-26-options-volume-prev-day-design.md`.
 
 ### IV & PCR Dynamics (12 features)
 
@@ -169,7 +184,7 @@ Nine analysis sections:
 5. **Charm Pattern Deep Dive** -- charm x GEX interaction effects
 6. **Flow Source Reliability** -- per-source direction prediction accuracy with Wilson CIs
 7. **Dark Pool Signal** -- support/resistance ratio vs range, concentration analysis
-8. **Options Volume & Premium** -- PCR vs settlement, bullish/bearish premium splits, unusual volume detection
+8. **Options Volume & Premium (end of day)** -- the same day's end-of-day totals: PCR vs settlement, bullish/bearish premium splits, unusual volume detection. After-the-fact research; these totals are not known at 10:00 CT
 9. **IV & PCR Dynamics** -- IV crush rate vs correctness, spike count vs range, PCR trend vs settlement
 
 ### clustering.py

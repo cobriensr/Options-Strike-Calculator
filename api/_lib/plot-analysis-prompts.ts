@@ -13,7 +13,7 @@
 
 import { PLOT_CALIBRATIONS } from './plot-analysis-calibration.js';
 
-// ── Feature Group Definitions (from ml/src/utils.py) ─────────
+// ── Feature Group Definitions (from ml/src/utils/__init__.py) ─
 
 const FEATURE_GROUPS = `
 <feature_groups>
@@ -43,16 +43,26 @@ DARK_POOL_FEATURES:
   dp_support_resistance_ratio — Support / Resistance premium ratio. Values > 1 = more support than resistance (bullish structure).
   dp_concentration — Fraction of total dark pool premium in the top cluster. High concentration = single dominant institutional level.
 
-OPTIONS_VOLUME_FEATURES:
-  opt_call_volume, opt_put_volume — Raw call/put option volume.
-  opt_call_oi, opt_put_oi — Open interest for calls and puts.
-  opt_call_premium, opt_put_premium — Dollar premium traded.
-  opt_bullish_premium, opt_bearish_premium — Premium classified by trade direction (ask-side vs bid-side).
-  opt_call_vol_ask, opt_put_vol_bid — Volume at ask (bullish) and bid (bearish).
-  opt_vol_pcr — Volume put/call ratio. Values > 1 = more puts than calls being traded.
-  opt_oi_pcr — OI put/call ratio. Structural positioning bias.
-  opt_premium_ratio — Call premium / put premium ratio. Values > 1 = more capital flowing to calls.
-  opt_call_vol_vs_avg30, opt_put_vol_vs_avg30 — Volume relative to 30-day average. Values > 2 = unusually heavy activity.
+OPTIONS_VOLUME_FEATURES (morning-safe, all known at 10:00 CT; the only options-volume features the ML models read):
+  opt_call_oi, opt_put_oi — Today's open interest for calls and puts, as of today's open.
+  opt_oi_pcr — Today's open-interest put/call ratio, as of the open. Structural positioning bias.
+  prev_day_opt_call_volume, prev_day_opt_put_volume — The previous trading day's final call/put option volume.
+  prev_day_opt_call_premium, prev_day_opt_put_premium — The previous trading day's dollar premium traded.
+  prev_day_opt_bullish_premium, prev_day_opt_bearish_premium — The previous trading day's premium classified by trade direction (ask-side vs bid-side).
+  prev_day_opt_call_vol_ask, prev_day_opt_put_vol_bid — The previous trading day's volume at ask (bullish) and bid (bearish).
+  prev_day_opt_vol_pcr — The previous trading day's volume put/call ratio. Values > 1 = more puts than calls were traded.
+  prev_day_opt_premium_ratio — The previous trading day's bullish / (bullish + bearish) premium, between 0 and 1. Values > 0.5 = more of the classified premium was bullish. It is not a call premium / put premium ratio.
+  prev_day_opt_call_vol_vs_avg30, prev_day_opt_put_vol_vs_avg30 — The previous trading day's volume relative to its 30-day average (the average leaves out the day itself). Values > 2 = unusually heavy activity.
+
+OPTIONS_VOLUME_EOD_FEATURES (the SAME day's end-of-day totals, known only after the close, so no ML model reads them; after-the-fact research only):
+  opt_call_volume, opt_put_volume — The day's total call/put option volume.
+  opt_call_premium, opt_put_premium — The day's dollar premium traded.
+  opt_bullish_premium, opt_bearish_premium — The day's premium classified by trade direction (ask-side vs bid-side).
+  opt_call_vol_ask, opt_put_vol_bid — The day's volume at ask (bullish) and bid (bearish).
+  opt_vol_pcr — The day's volume put/call ratio. Values > 1 = more puts than calls were traded.
+  opt_premium_ratio — The day's bullish / (bullish + bearish) premium, between 0 and 1. Values > 0.5 = more of the classified premium was bullish. It is not a call premium / put premium ratio.
+  opt_call_vol_vs_avg30, opt_put_vol_vs_avg30 — The day's volume relative to its 30-day average. Values > 2 = unusually heavy activity.
+  A plot that sets one of these against the same day's outcome compares that day's own totals with how it ended. That describes the day after the fact. It is not a signal anyone had at 10:00 CT, so do not present it as one.
 
 IV_PCR_FEATURES:
   iv_open — Implied volatility at market open.
@@ -90,6 +100,16 @@ VOL_SURFACE_FEATURES:
 `;
 
 // ── Source Code Blocks (extracted from Python scripts) ────────
+//
+// DRIFT RISK: these blocks are hand-abridged copies of functions in
+// ml/src/visualize.py and ml/src/clustering.py (mostly; also backtest.py,
+// phase2_early.py, flow_eda.py, nope_eda.py and pin_analysis.py), and nothing
+// checks them against those files. When a plot changes there, change its block
+// here too, or the analysis reads code that no longer produced the picture.
+// Last synced for the options-volume features (phase 3a/3b, 2026-11-26): the
+// cluster heatmap reads prev_day_opt_vol_pcr; the same-day PCR is labeled end
+// of day in both the correlation heatmap and the stationarity plot, and the
+// same-day premium ratio only in the correlation heatmap.
 
 const SRC_CORRELATIONS = `def plot_correlation_heatmap(df: pd.DataFrame) -> None:
     features = [
@@ -120,7 +140,7 @@ const SRC_CORRELATIONS = `def plot_correlation_heatmap(df: pd.DataFrame) -> None
         "dp_total_premium": "DP Premium",
         "dp_support_resistance_ratio": "DP S/R Ratio",
         "dp_concentration": "DP Conc.",
-        "opt_vol_pcr": "Opt PCR", "opt_premium_ratio": "Prem Ratio",
+        "opt_vol_pcr": "Opt PCR (EOD)", "opt_premium_ratio": "Prem Ratio (EOD)",
         "iv_open": "IV Open", "iv_crush_rate": "IV Crush",
         "max_pain_dist": "Max Pain Dist", "day_range_pts": "Day Range",
     }
@@ -134,7 +154,7 @@ const SRC_CORRELATIONS = `def plot_correlation_heatmap(df: pd.DataFrame) -> None
                 center=0, vmin=-1, vmax=1, square=True, ax=ax,
                 linewidths=0.5, annot_kws={"size": 8},
                 cbar_kws={"shrink": 0.8})
-    ax.set_title("Feature Correlations (incl. Dark Pool, Options, IV)")`;
+    ax.set_title("Feature Correlations (incl. Dark Pool, End-of-Day Options, IV)")`;
 
 const SRC_RANGE_BY_REGIME = `def plot_range_by_regime(df: pd.DataFrame) -> None:
     has_range = df[df["day_range_pts"].notna()].copy()
@@ -286,7 +306,7 @@ const SRC_STATIONARITY = `def plot_stationarity(df: pd.DataFrame) -> None:
         "day_range_pts": ("Day Range (pts)", blue),
         "flow_agreement_t1": ("Flow Agreement", orange),
         "dp_total_premium": ("DP Premium", purple), # scaled /1e6
-        "opt_vol_pcr": ("Options PCR", cyan),
+        "opt_vol_pcr": ("Options PCR (end of day)", cyan),
         "iv_open": ("IV Open", pink),
     }
 
@@ -295,6 +315,8 @@ const SRC_STATIONARITY = `def plot_stationarity(df: pd.DataFrame) -> None:
     #   - Raw values (light, with dots)
     #   - Rolling mean (bold line, window=min(10, n//3))
     #   - Overall mean reference (dotted horizontal)
+    #   - For a column in OPTIONS_VOLUME_EOD_FEATURES (here opt_vol_pcr), a
+    #     panel title: "End-of-day total: not known at 10:00 CT"
     # X-axis: date labels
 
     fig.suptitle("Feature Stationarity Check (Rolling Means)")`;
@@ -473,7 +495,7 @@ const SRC_CLUSTERS_HEATMAP = `def save_plots(X_pca, labels, k, df) -> None:
     summary_features = [
         "vix", "vix1d_vix_ratio", "gex_oi_t1",
         "flow_agreement_t1", "charm_slope", "agg_net_gamma",
-        "dp_support_resistance_ratio", "opt_vol_pcr", "iv_open",
+        "dp_support_resistance_ratio", "prev_day_opt_vol_pcr", "iv_open",
     ]
 
     means = df_c.groupby("cluster")[available].mean().astype(float)
@@ -867,7 +889,7 @@ ${FEATURE_GROUPS}
 ${plotRefBlock(
   'correlations',
   SRC_CORRELATIONS,
-  'Pearson correlation matrix of 24 key ML features selected to represent each feature group. Features are renamed to short labels for readability. The lower triangle is shown (upper masked). High within-group correlation is expected (e.g., gex_oi_t1 and gex_vol_t1 measure related gamma dynamics). Cross-group correlations reveal hidden relationships between market microstructure dimensions — for instance, if VIX correlates strongly with dark pool premium, institutional hedging behavior may be vol-driven.',
+  'Pearson correlation matrix of 24 key ML features selected to represent each feature group. Features are renamed to short labels for readability. The lower triangle is shown (upper masked). High within-group correlation is expected (e.g., gex_oi_t1 and gex_vol_t1 measure related gamma dynamics). Cross-group correlations reveal hidden relationships between market microstructure dimensions — for instance, if VIX correlates strongly with dark pool premium, institutional hedging behavior may be vol-driven. Of the 24 columns, 21 are model features, day_range_pts is the outcome, and opt_vol_pcr and opt_premium_ratio (labeled EOD) are same-day end-of-day totals that no ML model reads: they are research columns. Their correlation with day_range_pts compares the totals of a day with how that same day ended. That is hindsight, not a relationship a model or a 10:00 CT trade can exploit.',
   'Focus on: (1) cross-group correlations above |0.5| — these reveal structural relationships the ML model can exploit, (2) features with LOW correlation to everything — these are independent signals and candidates for ensemble diversification, (3) surprising decorrelations within groups (e.g., if two GEX features are uncorrelated, they carry distinct information), (4) multicollinearity clusters that might cause instability in the Phase 2 classifiers — groups of 3+ features with r > 0.8 should be reduced. Note: day_range_pts is the outcome variable — its correlations with features are the most directly actionable.',
 )}
 
@@ -916,7 +938,7 @@ ${plotRefBlock(
 ${plotRefBlock(
   'stationarity',
   SRC_STATIONARITY,
-  'Multi-panel time series showing raw values (light dots) and rolling means (bold lines) for 7 key features: VIX, GEX OI (billions), Day Range (pts), Flow Agreement, DP Premium ($M), Options PCR, and IV Open. Each panel includes an overall mean reference line (dotted). The rolling window is min(10, n//3) days.',
+  "Multi-panel time series showing raw values (light dots) and rolling means (bold lines) for 7 key features: VIX, GEX OI (billions), Day Range (pts), Flow Agreement, DP Premium ($M), Options PCR (end of day), and IV Open. The Options PCR panel is the same day's end-of-day total, so it carries its own title saying it is not known at 10:00 CT. Each panel includes an overall mean reference line (dotted). The rolling window is min(10, n//3) days.",
   'Focus on: (1) which features show drift (rolling mean departing from overall mean) — drifting features mean the training data is non-stationary and ML models trained on early data may not generalize to recent data, (2) regime shifts — does any feature show a clear level change mid-dataset? (3) mean reversion — does the rolling mean oscillate around the overall mean (stationary) or trend away from it? (4) implications for ML model validity — if VIX drifts significantly, models trained during low-VIX periods may fail during high-VIX periods. With only 39 days, a 10-day rolling window smooths heavily — note this limitation.',
 )}
 
@@ -979,7 +1001,7 @@ ${plotRefBlock(
 ${plotRefBlock(
   'clusters_heatmap',
   SRC_CLUSTERS_HEATMAP,
-  'Z-scored heatmap of mean feature values per cluster for 9 interpretive features: VIX, VIX1D/VIX ratio, GEX OI, Flow Agreement, Charm Slope, Aggregate Net Gamma, DP Support/Resistance Ratio, Options PCR, and IV Open. Values are z-scored within each feature column, displayed on a RdBu_r colormap from -2 (blue) to +2 (red). This enables visual identification of what makes each cluster distinctive.',
+  'Z-scored heatmap of mean feature values per cluster for 9 interpretive features: VIX, VIX1D/VIX ratio, GEX OI, Flow Agreement, Charm Slope, Aggregate Net Gamma, DP Support/Resistance Ratio, previous-day Options PCR (prev_day_opt_vol_pcr, the PCR known at 10:00 CT), and IV Open. Values are z-scored within each feature column, displayed on a RdBu_r colormap from -2 (blue) to +2 (red). This enables visual identification of what makes each cluster distinctive.',
   'Focus on: (1) the defining features of each cluster — which features show extreme z-scores (> |1.5|)? These are the cluster signatures, (2) whether clusters map to interpretable trading regimes — e.g., one cluster with high VIX + negative GEX = "stress regime," another with low VIX + positive GEX = "calm regime," (3) whether flow agreement and charm slope co-vary with VIX/GEX — this reveals whether microstructure features carry independent information beyond the volatility regime, (4) clusters with mixed signals (e.g., high VIX but positive GEX) — these edge cases may be where the trading system struggles most.',
 )}
 

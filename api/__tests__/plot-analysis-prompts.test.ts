@@ -114,6 +114,252 @@ describe('plot-analysis-prompts.ts', () => {
   });
 
   // ============================================================
+  // Options-volume feature groups: what a 10:00 CT model may read
+  // ============================================================
+  describe('options-volume feature groups', () => {
+    const MORNING_SAFE = [
+      'opt_call_oi',
+      'opt_put_oi',
+      'opt_oi_pcr',
+      'prev_day_opt_call_volume',
+      'prev_day_opt_put_volume',
+      'prev_day_opt_call_premium',
+      'prev_day_opt_put_premium',
+      'prev_day_opt_bullish_premium',
+      'prev_day_opt_bearish_premium',
+      'prev_day_opt_call_vol_ask',
+      'prev_day_opt_put_vol_bid',
+      'prev_day_opt_vol_pcr',
+      'prev_day_opt_premium_ratio',
+      'prev_day_opt_call_vol_vs_avg30',
+      'prev_day_opt_put_vol_vs_avg30',
+    ];
+    const END_OF_DAY = [
+      'opt_call_volume',
+      'opt_put_volume',
+      'opt_call_premium',
+      'opt_put_premium',
+      'opt_bullish_premium',
+      'opt_bearish_premium',
+      'opt_call_vol_ask',
+      'opt_put_vol_bid',
+      'opt_vol_pcr',
+      'opt_premium_ratio',
+      'opt_call_vol_vs_avg30',
+      'opt_put_vol_vs_avg30',
+    ];
+
+    /** One feature group's text: its heading line to the blank line after it. */
+    function featureGroup(name: string): string {
+      const start = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf(`\n${name} (`);
+      expect(start).toBeGreaterThan(-1);
+      const end = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf('\n\n', start + 1);
+      expect(end).toBeGreaterThan(start);
+      return PLOT_ANALYSIS_SYSTEM_PROMPT.slice(start, end);
+    }
+
+    /** Whether `column` is named in `text`, not just as the tail of another name. */
+    function names(text: string, column: string): boolean {
+      return new RegExp(`(?<![A-Za-z0-9_])${column}(?![A-Za-z0-9_])`).test(
+        text,
+      );
+    }
+
+    function plotBlock(name: string): string {
+      const start = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf(
+        `<plot_reference name="${name}">`,
+      );
+      expect(start).toBeGreaterThan(-1);
+      const end = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf(
+        '</plot_reference>',
+        start,
+      );
+      return PLOT_ANALYSIS_SYSTEM_PROMPT.slice(start, end);
+    }
+
+    it('names both groups, each once as a heading', () => {
+      for (const group of [
+        'OPTIONS_VOLUME_FEATURES',
+        'OPTIONS_VOLUME_EOD_FEATURES',
+      ]) {
+        expect(PLOT_ANALYSIS_SYSTEM_PROMPT.split(`\n${group} (`)).toHaveLength(
+          2,
+        );
+      }
+    });
+
+    /** Every options-volume column named in a group's text, in order. */
+    function optionsVolumeTokens(group: string): string[] {
+      return group.match(/(?<!\w)(?:prev_day_)?opt_[a-z0-9_]+/g) ?? [];
+    }
+
+    it('names exactly the 15 morning-safe columns in their group and exactly the 12 end-of-day columns in theirs, each once', () => {
+      expect(
+        optionsVolumeTokens(featureGroup('OPTIONS_VOLUME_FEATURES')).sort(),
+      ).toEqual([...MORNING_SAFE].sort());
+      expect(
+        optionsVolumeTokens(featureGroup('OPTIONS_VOLUME_EOD_FEATURES')).sort(),
+      ).toEqual([...END_OF_DAY].sort());
+    });
+
+    it('leaves the previous day’s open interest out of both groups', () => {
+      for (const group of [
+        featureGroup('OPTIONS_VOLUME_FEATURES'),
+        featureGroup('OPTIONS_VOLUME_EOD_FEATURES'),
+      ]) {
+        for (const column of [
+          'prev_day_opt_call_oi',
+          'prev_day_opt_put_oi',
+          'prev_day_opt_oi_pcr',
+        ]) {
+          expect(names(group, column), column).toBe(false);
+        }
+      }
+    });
+
+    it('puts today’s open interest and the previous day’s twelve in the morning-safe group, known at 10:00 CT', () => {
+      const group = featureGroup('OPTIONS_VOLUME_FEATURES');
+
+      expect(group).toContain('all known at 10:00 CT');
+      expect(group).toContain(
+        'the only options-volume features the ML models read',
+      );
+      for (const column of MORNING_SAFE) {
+        expect(names(group, column), column).toBe(true);
+      }
+      for (const column of END_OF_DAY) {
+        expect(names(group, column), column).toBe(false);
+      }
+    });
+
+    it('puts the same-day totals in the end-of-day group, known only after the close and for research only', () => {
+      const group = featureGroup('OPTIONS_VOLUME_EOD_FEATURES');
+
+      expect(group).toContain('known only after the close');
+      expect(group).toContain('no ML model reads them');
+      expect(group).toContain('after-the-fact research only');
+      for (const column of END_OF_DAY) {
+        expect(names(group, column), column).toBe(true);
+      }
+      for (const column of MORNING_SAFE) {
+        expect(names(group, column), column).toBe(false);
+      }
+    });
+
+    it('tells the analysis not to present an end-of-day total as a morning signal', () => {
+      expect(featureGroup('OPTIONS_VOLUME_EOD_FEATURES')).toContain(
+        'not a signal anyone had at 10:00 CT',
+      );
+    });
+
+    it('describes both premium ratios as bullish / (bullish + bearish), not call / put premium', () => {
+      for (const group of [
+        featureGroup('OPTIONS_VOLUME_FEATURES'),
+        featureGroup('OPTIONS_VOLUME_EOD_FEATURES'),
+      ]) {
+        const line = group.split('\n').find((l) => /premium_ratio —/.test(l));
+        expect(line).toBeDefined();
+        expect(line).toContain('bullish / (bullish + bearish) premium');
+        expect(line).toContain('not a call premium / put premium ratio');
+      }
+      expect(PLOT_ANALYSIS_SYSTEM_PROMPT).not.toContain(
+        'Call premium / put premium ratio. Values > 1',
+      );
+    });
+
+    it('lists the feature groups in order, with the other groups’ headings as they were', () => {
+      const start = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf('<feature_groups>');
+      const end = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf('</feature_groups>');
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const headings = PLOT_ANALYSIS_SYSTEM_PROMPT.slice(start, end)
+        .split('\n')
+        .filter((line) => /^[A-Z][A-Z0-9_]*[ :]/.test(line));
+
+      expect(
+        headings.map((line) => /^[A-Z][A-Z0-9_]*/.exec(line)?.[0]),
+      ).toEqual([
+        'VOLATILITY_FEATURES',
+        'GEX_FEATURES_T1T2',
+        'GREEK_FEATURES_CORE',
+        'DARK_POOL_FEATURES',
+        'OPTIONS_VOLUME_FEATURES',
+        'OPTIONS_VOLUME_EOD_FEATURES',
+        'IV_PCR_FEATURES',
+        'MAX_PAIN_FEATURES',
+        'OI_CHANGE_FEATURES',
+        'VOL_SURFACE_FEATURES',
+      ]);
+      // Every heading but the two options-volume ones, word for word.
+      expect(
+        headings.filter((line) => !line.startsWith('OPTIONS_VOLUME')),
+      ).toEqual([
+        'VOLATILITY_FEATURES:',
+        'GEX_FEATURES_T1T2 (Gamma Exposure at checkpoint 1 and 2):',
+        'GREEK_FEATURES_CORE:',
+        'DARK_POOL_FEATURES:',
+        'IV_PCR_FEATURES:',
+        'MAX_PAIN_FEATURES:',
+        'OI_CHANGE_FEATURES:',
+        'VOL_SURFACE_FEATURES:',
+      ]);
+    });
+
+    // The plot source blocks are hand-copied from ml/src/visualize.py and
+    // clustering.py (see the drift note in plot-analysis-prompts.ts). These
+    // pin the lines the phase 3a and 3b changes touched.
+    describe('plot source blocks track the Python they copy', () => {
+      it('clusters_heatmap reads the previous day’s PCR, as clustering.py does', () => {
+        const block = plotBlock('clusters_heatmap');
+        const summary = block.slice(
+          block.indexOf('summary_features = ['),
+          block.indexOf(']', block.indexOf('summary_features = [')),
+        );
+
+        expect(summary).toContain('"prev_day_opt_vol_pcr"');
+        expect(summary).not.toContain('"opt_vol_pcr"');
+        expect(block).toContain(
+          'previous-day Options PCR (prev_day_opt_vol_pcr',
+        );
+      });
+
+      it('correlations labels the two same-day columns EOD, as visualize.py does', () => {
+        const block = plotBlock('correlations');
+
+        expect(block).toContain('"opt_vol_pcr": "Opt PCR (EOD)"');
+        expect(block).toContain('"opt_premium_ratio": "Prem Ratio (EOD)"');
+        expect(block).not.toContain('"Opt PCR"');
+        expect(block).not.toContain('"Prem Ratio"');
+        expect(block).toContain('End-of-Day Options');
+      });
+
+      it('correlations says the two same-day columns are research columns and their correlation with the range is hindsight', () => {
+        const block = plotBlock('correlations');
+
+        expect(block).toContain('Of the 24 columns, 21 are model features');
+        expect(block).toContain('day_range_pts is the outcome');
+        expect(block).toContain(
+          'opt_vol_pcr and opt_premium_ratio (labeled EOD) are same-day end-of-day totals that no ML model reads',
+        );
+        expect(block).toContain(
+          'That is hindsight, not a relationship a model or a 10:00 CT trade can exploit.',
+        );
+      });
+
+      it('stationarity labels the PCR panel end of day and titles it, as visualize.py does', () => {
+        const block = plotBlock('stationarity');
+
+        expect(block).toContain('"opt_vol_pcr": ("Options PCR (end of day)"');
+        expect(block).toContain('End-of-day total: not known at 10:00 CT');
+        // The description sentence, in the plot's feature_context.
+        expect(block).toContain(
+          'end-of-day total, so it carries its own title saying it is not known at 10:00 CT',
+        );
+      });
+    });
+  });
+
+  // ============================================================
   // Plot reference blocks — all 21 must be present
   // ============================================================
   describe('plot reference blocks', () => {

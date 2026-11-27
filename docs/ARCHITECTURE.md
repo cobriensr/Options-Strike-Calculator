@@ -624,7 +624,7 @@ Runs 5 stages after market close:
 
 1. **Flow checkpoints** — NCP/NPP agreement at T1–T8 intervals across 6 sources
 2. **GEX features** — Gamma OI/vol/dir at checkpoints, slopes, Greek exposure, per-strike gamma walls + charm slopes
-3. **Phase 2 temporal** — Previous day metrics, realized vol, max pain, dark pool, options volume/premium/PCR
+3. **Phase 2 temporal** — Previous day metrics, realized vol, max pain, dark pool, options volume/premium/PCR. Options volume is stored in two groups: `prev_day_opt_*` is the previous trading day's final totals (the prior-day group, known at the open), and `opt_*` is the day's own row: end-of-day totals, except open interest (`opt_call_oi`, `opt_put_oi`, `opt_oi_pcr`), which is as of the open. The ML models read the day's open interest plus 12 prior-day figures (not the prior day's open interest); the other same-day `opt_*` columns are for after-the-fact research. See `ml/README.md`.
 4. **Monitor dynamics** — IV crush rate, spike counts, flow ratio trends from minute-level data
 5. **NOPE** — SPY NOPE features from `nope_ticks`
 
