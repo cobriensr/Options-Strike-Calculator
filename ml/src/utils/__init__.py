@@ -81,11 +81,40 @@ DARK_POOL_FEATURES: list[str] = [
     "dp_concentration",
 ]
 
+# Options volume (UW /stock/SPX/options-volume), in two groups by when each
+# figure is known. The models predict at 10:00 CT, so they read only the first.
+#
+# OPTIONS_VOLUME_FEATURES, morning-safe (owner decision (i), 2026-11-26):
+#   - today's open interest. UW reports it as of the day's open, so it is known
+#     before the model runs;
+#   - the previous trading day's other 12 figures, `prev_day_opt_*`, which are
+#     final by then. (The previous day's open interest is left out: today's is
+#     known and is the better figure.)
+# OPTIONS_VOLUME_EOD_FEATURES: the same 12 figures for the day itself. They are
+# end-of-day totals (the daily build stores them at about 4:45 PM ET), so they
+# are for after-the-fact research only and must never reach a model's feature
+# list. ml/tests/test_options_volume_groups.py fails if one does.
 OPTIONS_VOLUME_FEATURES: list[str] = [
-    "opt_call_volume",
-    "opt_put_volume",
     "opt_call_oi",
     "opt_put_oi",
+    "opt_oi_pcr",
+    "prev_day_opt_call_volume",
+    "prev_day_opt_put_volume",
+    "prev_day_opt_call_premium",
+    "prev_day_opt_put_premium",
+    "prev_day_opt_bullish_premium",
+    "prev_day_opt_bearish_premium",
+    "prev_day_opt_call_vol_ask",
+    "prev_day_opt_put_vol_bid",
+    "prev_day_opt_vol_pcr",
+    "prev_day_opt_premium_ratio",
+    "prev_day_opt_call_vol_vs_avg30",
+    "prev_day_opt_put_vol_vs_avg30",
+]
+
+OPTIONS_VOLUME_EOD_FEATURES: list[str] = [
+    "opt_call_volume",
+    "opt_put_volume",
     "opt_call_premium",
     "opt_put_premium",
     "opt_bullish_premium",
@@ -93,7 +122,6 @@ OPTIONS_VOLUME_FEATURES: list[str] = [
     "opt_call_vol_ask",
     "opt_put_vol_bid",
     "opt_vol_pcr",
-    "opt_oi_pcr",
     "opt_premium_ratio",
     "opt_call_vol_vs_avg30",
     "opt_put_vol_vs_avg30",

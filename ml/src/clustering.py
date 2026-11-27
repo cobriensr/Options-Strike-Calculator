@@ -148,7 +148,7 @@ ALL_NUMERIC_FEATURES = (
     + GEX_FEATURES_T1T2
     + GREEK_FEATURES
     + DARK_POOL_FEATURES
-    + OPTIONS_VOLUME_FEATURES
+    + OPTIONS_VOLUME_FEATURES  # morning-safe group only (see utils)
     + IV_PCR_FEATURES
     + MAX_PAIN_FEATURES
     + OI_CHANGE_FEATURES
@@ -456,11 +456,13 @@ def characterize_clusters(
             sr = cluster["dp_support_resistance_ratio"].dropna().astype(float)
             if len(sr) > 0:
                 print(f"  DP Support/Resistance: {sr.mean():.2f} avg")
-        # Options volume profile
-        if "opt_vol_pcr" in cluster.columns:
-            pcr = cluster["opt_vol_pcr"].dropna().astype(float)
+        # Options volume profile: the previous day's PCR, which is what was
+        # known that morning. The same day's `opt_vol_pcr` is an end-of-day
+        # total and would describe a morning cluster with hindsight.
+        if "prev_day_opt_vol_pcr" in cluster.columns:
+            pcr = cluster["prev_day_opt_vol_pcr"].dropna().astype(float)
             if len(pcr) > 0:
-                print(f"  Options PCR: {pcr.mean():.2f} avg")
+                print(f"  Options PCR (prev day): {pcr.mean():.2f} avg")
 
         # IV profile
         if "iv_open" in cluster.columns:
@@ -882,7 +884,7 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
         "charm_slope",
         "agg_net_gamma",
         "dp_support_resistance_ratio",
-        "opt_vol_pcr",
+        "prev_day_opt_vol_pcr",  # not `opt_vol_pcr`: that is an end-of-day total
         "iv_open",
     ]
     available = [f for f in summary_features if f in df_c.columns]
