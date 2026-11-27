@@ -5,10 +5,16 @@ import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+  isMarketOpen: vi.fn().mockReturnValue(true),
   setCacheHeaders: vi.fn(),
 }));
 
+vi.mock('../_lib/live-read-cache.js', () => ({
+  setClosedReadCache: vi.fn(),
+}));
+
 const {
+  mockGetAnchors,
   mockGetExpectedMove,
   mockGetLatest,
   mockGetTrend,
@@ -16,6 +22,7 @@ const {
   mockGetSibling,
   mockGetVelocity,
 } = vi.hoisted(() => ({
+  mockGetAnchors: vi.fn(),
   mockGetExpectedMove: vi.fn(),
   mockGetLatest: vi.fn(),
   mockGetTrend: vi.fn(),
@@ -25,6 +32,7 @@ const {
 }));
 
 vi.mock('../_lib/gexbot-queries.js', () => ({
+  getClosedAnchors: mockGetAnchors,
   getExpectedMove: mockGetExpectedMove,
   getVelocityTape: mockGetVelocity,
   getLatestSnapshots: mockGetLatest,
@@ -43,13 +51,28 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../gexbot.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import {
+  guardOwnerOrGuestEndpoint,
+  isMarketOpen,
+  setCacheHeaders,
+} from '../_lib/api-helpers.js';
+import { setClosedReadCache } from '../_lib/live-read-cache.js';
 import { Sentry } from '../_lib/sentry.js';
+
+/** GET one view with no other query and return the response. */
+async function get(view: string) {
+  const res = mockResponse();
+  await handler(mockRequest({ method: 'GET', query: { view } }), res);
+  return res;
+}
 
 describe('GET /api/gexbot', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    // resetAllMocks wipes the factory value, and undefined would read as closed.
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    mockGetAnchors.mockResolvedValue(null);
     mockGetLatest.mockResolvedValue([]);
     mockGetTrend.mockResolvedValue([]);
     mockGetMax.mockResolvedValue([]);
@@ -127,6 +150,7 @@ describe('GET /api/gexbot', () => {
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
       rows: [{ ticker: 'HYG', capturedAt: '2026-05-19T14:00:00Z', minDte: 2 }],
+      asOf: '2026-05-19T14:00:00Z',
     });
     expect(mockGetLatest).toHaveBeenCalledTimes(1);
   });
@@ -231,6 +255,10 @@ describe('GET /api/gexbot', () => {
       res,
     );
     expect(res._status).toBe(200);
+    expect(res._json).toEqual({
+      rows: [{ ticker: 'SPX', series: [['2026-05-19T13:00:00Z', 1.1]] }],
+      asOf: '2026-05-19T13:00:00Z',
+    });
     expect(mockGetTrend).toHaveBeenCalledTimes(1);
   });
 
@@ -242,6 +270,7 @@ describe('GET /api/gexbot', () => {
       res,
     );
     expect(res._status).toBe(200);
+    expect(res._json).toEqual({ rows: [], asOf: null });
     expect(mockGetMax).toHaveBeenCalledTimes(1);
   });
 
@@ -326,5 +355,248 @@ describe('GET /api/gexbot', () => {
     );
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });
+  });
+
+  // ── live (market open): today's behavior, plus asOf ─────────────
+
+  describe('while the market is open', () => {
+    it.each([
+      ['snapshots-latest', mockGetLatest],
+      ['convexity-trend', mockGetTrend],
+      ['maxchange-winners', mockGetMax],
+    ])(
+      'reads %s from the clock: no anchor probe, no anchors',
+      async (view, reader) => {
+        await get(view);
+        expect(mockGetAnchors).not.toHaveBeenCalled();
+        expect(reader).toHaveBeenCalledTimes(1);
+        expect(reader).toHaveBeenCalledWith();
+      },
+    );
+
+    it.each(['snapshots-latest', 'convexity-trend', 'maxchange-winners'])(
+      'caches %s for 15 s and never uses the closed rule',
+      async (view) => {
+        const res = await get(view);
+        expect(setCacheHeaders).toHaveBeenCalledWith(res, 15);
+        expect(setClosedReadCache).not.toHaveBeenCalled();
+      },
+    );
+
+    it('sets asOf to the newest capture time among the rows, whatever their order', async () => {
+      mockGetLatest.mockResolvedValue([
+        { ticker: 'SPX', capturedAt: '2026-11-20T20:59:49.000Z' },
+        { ticker: 'NDX', capturedAt: '2026-11-20T21:00:50.000Z' },
+        { ticker: 'IWM', capturedAt: '2026-11-20T21:00:30.000Z' },
+      ]);
+      const res = await get('snapshots-latest');
+      expect(res._json).toMatchObject({ asOf: '2026-11-20T21:00:50.000Z' });
+    });
+
+    it('sets asOf for maxchange-winners from capturedAt', async () => {
+      mockGetMax.mockResolvedValue([
+        { ticker: 'SPX', capturedAt: '2026-11-20T21:00:49.000Z' },
+        { ticker: 'NDX', capturedAt: '2026-11-20T20:58:10.000Z' },
+      ]);
+      const res = await get('maxchange-winners');
+      expect(res._json).toMatchObject({ asOf: '2026-11-20T21:00:49.000Z' });
+    });
+
+    it('sets asOf for convexity-trend to the newest series point of any ticker', async () => {
+      mockGetTrend.mockResolvedValue([
+        {
+          ticker: 'SPX',
+          series: [
+            ['2026-11-20T20:59:49.000Z', 1],
+            ['2026-11-20T21:00:49.000Z', 2],
+          ],
+        },
+        {
+          ticker: 'NDX',
+          series: [['2026-11-20T21:00:50.000Z', 3]],
+        },
+        { ticker: 'IWM', series: [] },
+      ]);
+      const res = await get('convexity-trend');
+      expect(res._json).toMatchObject({ asOf: '2026-11-20T21:00:50.000Z' });
+    });
+
+    it('compares capture times as instants, not as text', async () => {
+      // 14:00 at -05:00 is 19:00Z, later than 18:30Z although "14" < "18".
+      mockGetLatest.mockResolvedValue([
+        { ticker: 'SPX', capturedAt: '2026-11-20T18:30:00.000Z' },
+        { ticker: 'NDX', capturedAt: '2026-11-20T14:00:00.000-05:00' },
+      ]);
+      const res = await get('snapshots-latest');
+      expect(res._json).toMatchObject({
+        asOf: '2026-11-20T14:00:00.000-05:00',
+      });
+    });
+
+    it('sets asOf to null when the payload is empty', async () => {
+      const res = await get('snapshots-latest');
+      expect(res._json).toEqual({ rows: [], asOf: null });
+    });
+
+    it('adds no asOf to the other views', async () => {
+      mockGetVelocity.mockResolvedValue([
+        { ticker: 'SPX', capturedAt: '2026-11-20T21:00:49.000Z' },
+      ]);
+      const res = await get('velocity');
+      expect(res._json).not.toHaveProperty('asOf');
+    });
+  });
+
+  // ── closed (market closed): anchored on each ticker's last capture ──
+
+  describe('while the market is closed', () => {
+    const ANCHORS = {
+      sessionDate: '2026-11-20',
+      byTicker: new Map([['SPX', '2026-11-20T21:00:49.000Z']]),
+    };
+    const CLOSED_NOW = new Date('2026-11-20T22:00:00.000Z');
+
+    beforeEach(() => {
+      vi.mocked(isMarketOpen).mockReturnValue(false);
+      mockGetAnchors.mockResolvedValue(ANCHORS);
+    });
+
+    it('anchors snapshots-latest on the snapshots table and passes the anchors through', async () => {
+      mockGetLatest.mockResolvedValue([
+        { ticker: 'SPX', capturedAt: '2026-11-20T21:00:49.000Z' },
+      ]);
+      const res = await get('snapshots-latest');
+      expect(mockGetAnchors).toHaveBeenCalledTimes(1);
+      expect(mockGetAnchors).toHaveBeenCalledWith('gexbot_snapshots');
+      expect(mockGetLatest).toHaveBeenCalledWith(ANCHORS);
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        rows: [{ ticker: 'SPX', capturedAt: '2026-11-20T21:00:49.000Z' }],
+        asOf: '2026-11-20T21:00:49.000Z',
+      });
+    });
+
+    it('anchors convexity-trend on the snapshots table, with the default window', async () => {
+      mockGetTrend.mockResolvedValue([
+        { ticker: 'SPX', series: [['2026-11-20T21:00:49.000Z', 1.5]] },
+      ]);
+      const res = await get('convexity-trend');
+      expect(mockGetAnchors).toHaveBeenCalledWith('gexbot_snapshots');
+      expect(mockGetTrend).toHaveBeenCalledWith(undefined, ANCHORS);
+      expect(res._json).toMatchObject({ asOf: '2026-11-20T21:00:49.000Z' });
+    });
+
+    it('anchors maxchange-winners on the capture table', async () => {
+      mockGetMax.mockResolvedValue([
+        { ticker: 'SPX', capturedAt: '2026-11-20T21:00:49.000Z' },
+      ]);
+      const res = await get('maxchange-winners');
+      expect(mockGetAnchors).toHaveBeenCalledTimes(1);
+      expect(mockGetAnchors).toHaveBeenCalledWith('gexbot_api_capture');
+      expect(mockGetMax).toHaveBeenCalledWith(ANCHORS);
+      expect(res._json).toMatchObject({ asOf: '2026-11-20T21:00:49.000Z' });
+    });
+
+    it.each([
+      ['snapshots-latest', mockGetLatest],
+      ['convexity-trend', mockGetTrend],
+      ['maxchange-winners', mockGetMax],
+    ])(
+      'answers %s with no rows and a null asOf when the table is empty',
+      async (view, reader) => {
+        mockGetAnchors.mockResolvedValue(null);
+        const res = await get(view);
+        expect(res._status).toBe(200);
+        expect(res._json).toEqual({ rows: [], asOf: null });
+        expect(reader).not.toHaveBeenCalled();
+        expect(setClosedReadCache).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('sets asOf to null when the anchored read returns nothing', async () => {
+      const res = await get('snapshots-latest');
+      expect(res._json).toEqual({ rows: [], asOf: null });
+    });
+
+    it.each([
+      'snapshots-latest',
+      'convexity-trend',
+      'maxchange-winners',
+      'expected-move',
+    ])(
+      'caches %s with the closed rule, built from one clock reading',
+      async (view) => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(CLOSED_NOW);
+        try {
+          const res = await get(view);
+          expect(setClosedReadCache).toHaveBeenCalledTimes(1);
+          expect(setClosedReadCache).toHaveBeenCalledWith(res, CLOSED_NOW);
+          expect(setCacheHeaders).not.toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it('leaves expected-move and sibling-confirm unanchored', async () => {
+      await get('expected-move');
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: {
+            view: 'sibling-confirm',
+            ticker: 'SPY',
+            side: 'call',
+            at: '2026-11-20T20:59:00.000Z',
+          },
+        }),
+        mockResponse(),
+      );
+      expect(mockGetAnchors).not.toHaveBeenCalled();
+      expect(mockGetExpectedMove).toHaveBeenCalledWith();
+      expect(mockGetSibling).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['snapshots-latest', mockGetLatest],
+      ['convexity-trend', mockGetTrend],
+      ['maxchange-winners', mockGetMax],
+    ])(
+      'surfaces an anchor-probe failure on %s as 500 and a Sentry capture',
+      async (view, reader) => {
+        mockGetAnchors.mockRejectedValue(new Error('connection lost'));
+        const res = await get(view);
+        expect(res._status).toBe(500);
+        expect(res._json).toEqual({ error: 'Internal error' });
+        expect(Sentry.captureException).toHaveBeenCalledWith(
+          expect.objectContaining({ message: 'connection lost' }),
+          expect.objectContaining({ tags: { route: '/api/gexbot', view } }),
+        );
+        expect(reader).not.toHaveBeenCalled();
+        expect(setClosedReadCache).not.toHaveBeenCalled();
+        expect(setCacheHeaders).not.toHaveBeenCalled();
+      },
+    );
+
+    it('surfaces an anchored-read failure as 500 and a Sentry capture', async () => {
+      mockGetLatest.mockRejectedValue(new Error('db down'));
+      const res = await get('snapshots-latest');
+      expect(res._status).toBe(500);
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'db down' }),
+        expect.objectContaining({
+          tags: { route: '/api/gexbot', view: 'snapshots-latest' },
+        }),
+      );
+      expect(setClosedReadCache).not.toHaveBeenCalled();
+    });
+
+    it('keeps the anchored views behind the owner-or-guest guard', async () => {
+      vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(true);
+      await get('snapshots-latest');
+      expect(mockGetAnchors).not.toHaveBeenCalled();
+      expect(mockGetLatest).not.toHaveBeenCalled();
+    });
   });
 });

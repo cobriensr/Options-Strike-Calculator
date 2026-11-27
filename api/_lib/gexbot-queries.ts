@@ -15,6 +15,14 @@
  * one row naming the reason when there is a capture but no move can be
  * computed from it. A DB failure propagates from every helper (after
  * `withDbRetry`); `api/gexbot.ts` turns it into a 500 plus a Sentry capture.
+ *
+ * After the cash close the views stop measuring their windows from "now"
+ * (which would be empty minutes later) and end each ticker's window at its
+ * anchor, the ticker's last real capture of the session (`getClosedAnchors`).
+ * `getLatestSnapshots`, `getConvexityTrend` and `getMaxchangeWinners` take
+ * those anchors as an optional last argument; without them their SQL is the
+ * in-session clock-anchored read, unchanged. Spec:
+ * docs/superpowers/specs/2026-11-20-gexbot-after-close-design.md
  */
 
 import { getDb, withDbRetry } from './db.js';
@@ -194,6 +202,147 @@ function toIso(v: unknown): string {
 }
 
 // ────────────────────────────────────────────────────────────
+// Closed-market anchors: each ticker's last real capture of the session
+// ────────────────────────────────────────────────────────────
+
+/** The two capture tables an anchor can be taken from. */
+export type GexbotAnchorTable = 'gexbot_snapshots' | 'gexbot_api_capture';
+
+export interface ClosedAnchors {
+  /** ET date (YYYY-MM-DD) of the table's newest row. */
+  sessionDate: string;
+  /** ticker → ISO capture time of that ticker's anchor row. */
+  byTicker: ReadonlyMap<string, string>;
+}
+
+interface RawAnchorRow {
+  session_date: string;
+  ticker: string | null;
+  captured_at: string | Date | null;
+}
+
+/**
+ * Each ticker's anchor, for serving a closed market: the ticker's last real
+ * capture of the session. Two steps, in one statement:
+ *
+ * 1. The table's newest row (`max(captured_at)`, on the `captured_at DESC`
+ *    index). Its ET date is the session date, so a weekend, a holiday or the
+ *    pre-open hours all read the last session with no calendar math.
+ * 2. Per ticker, the newest row in the 15 minutes up to that row whose
+ *    `source_timestamp` is not NULL. A ticker with no such row is absent, as
+ *    the in-session 15-minute rule would have dropped it at the close.
+ *
+ * On `gexbot_snapshots` the row must also differ in `source_timestamp` from
+ * the ticker's previous row. The vendor freezes at the close and the next
+ * capture repeats the last row (same stamp, same values); anchoring on it
+ * would null every velocity delta and label the panels a minute late. The
+ * previous row is looked up with a `LATERAL` index probe, so it may lie
+ * outside the 15 minutes, and a ticker with no previous row counts as new.
+ * `gexbot_api_capture` never stores the repeat (migration #192's partial
+ * unique index plus `ON CONFLICT DO NOTHING`), so there the newest stamped
+ * row is the anchor.
+ *
+ * Returns `null` when the table is empty. A table that holds rows but none
+ * usable (every stamp NULL) returns its session date with no tickers.
+ */
+export async function getClosedAnchors(
+  table: GexbotAnchorTable,
+): Promise<ClosedAnchors | null> {
+  const sql = getDb();
+  const rows = (await withDbRetry(
+    () =>
+      table === 'gexbot_snapshots'
+        ? sql`
+      WITH newest AS (
+        SELECT max(captured_at) AS ts FROM gexbot_snapshots
+      ),
+      candidates AS (
+        SELECT s.ticker, s.captured_at
+        FROM newest n
+        JOIN gexbot_snapshots s
+          ON s.captured_at >= n.ts - INTERVAL '15 minutes'
+         AND s.captured_at <= n.ts
+        LEFT JOIN LATERAL (
+          SELECT p.source_timestamp
+          FROM gexbot_snapshots p
+          WHERE p.ticker = s.ticker
+            AND p.captured_at < s.captured_at
+          ORDER BY p.captured_at DESC
+          LIMIT 1
+        ) prev ON true
+        WHERE s.source_timestamp IS NOT NULL
+          AND s.source_timestamp IS DISTINCT FROM prev.source_timestamp
+      ),
+      anchors AS (
+        SELECT DISTINCT ON (ticker) ticker, captured_at
+        FROM candidates
+        ORDER BY ticker, captured_at DESC
+      )
+      SELECT
+        to_char(n.ts AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS session_date,
+        a.ticker, a.captured_at
+      FROM newest n
+      LEFT JOIN anchors a ON true
+      WHERE n.ts IS NOT NULL
+      ORDER BY a.ticker
+    `
+        : sql`
+      WITH newest AS (
+        SELECT max(captured_at) AS ts FROM gexbot_api_capture
+      ),
+      anchors AS (
+        SELECT c.ticker, max(c.captured_at) AS captured_at
+        FROM newest n
+        JOIN gexbot_api_capture c
+          ON c.captured_at >= n.ts - INTERVAL '15 minutes'
+         AND c.captured_at <= n.ts
+        WHERE c.source_timestamp IS NOT NULL
+        GROUP BY c.ticker
+      )
+      SELECT
+        to_char(n.ts AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS session_date,
+        a.ticker, a.captured_at
+      FROM newest n
+      LEFT JOIN anchors a ON true
+      WHERE n.ts IS NOT NULL
+      ORDER BY a.ticker
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as RawAnchorRow[];
+
+  const first = rows[0];
+  if (!first) return null;
+  const byTicker = new Map<string, string>();
+  for (const r of rows) {
+    if (r.ticker !== null && r.captured_at !== null) {
+      byTicker.set(r.ticker, toIso(r.captured_at));
+    }
+  }
+  return { sessionDate: first.session_date, byTicker };
+}
+
+/**
+ * The anchors as two parallel arrays, for an
+ * `unnest(${tickers}::text[], ${times}::timestamptz[])` join.
+ *
+ * An anchored read ends each window with `captured_at < anchor + 1 ms`, not
+ * `<= anchor`: `captured_at` defaults to `now()` and keeps microseconds, while
+ * an anchor travels as a millisecond ISO string, so a plain `<=` would drop
+ * the very row the anchor names.
+ */
+function anchorArrays(anchors: ClosedAnchors): {
+  tickers: string[];
+  times: string[];
+} {
+  const entries = [...anchors.byTicker];
+  return {
+    tickers: entries.map(([ticker]) => ticker),
+    times: entries.map(([, anchor]) => anchor),
+  };
+}
+
+// ────────────────────────────────────────────────────────────
 // Query: latest snapshots (one row per ticker)
 // ────────────────────────────────────────────────────────────
 
@@ -247,12 +396,56 @@ interface RawSnapshotsRow {
  *
  * "Now" is a bound JS clock reading rather than SQL `now()`, so the whole
  * statement is evaluated against one instant.
+ *
+ * With `anchors` (a closed market) each ticker's window is `anchor − 15 min`
+ * to its anchor instead, and the session start is the ET midnight of
+ * `anchors.sessionDate`; a ticker with no anchor has no row. The stale-stamp
+ * rule is the same, so an anchor row carrying the prior close's stamp is
+ * skipped and the ticker falls back to an older row of the window.
  */
-export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
+export async function getLatestSnapshots(
+  anchors?: ClosedAnchors,
+): Promise<SnapshotsLatestRow[]> {
   const sql = getDb();
-  const nowIso = new Date().toISOString();
-  const rows = (await withDbRetry(
-    () => sql`
+  let rows: RawSnapshotsRow[];
+  if (anchors) {
+    const { tickers, times } = anchorArrays(anchors);
+    rows = (await withDbRetry(
+      () => sql`
+        WITH a AS (
+          SELECT t.ticker, t.anchor
+          FROM unnest(${tickers}::text[], ${times}::timestamptz[])
+            AS t(ticker, anchor)
+        ),
+        bounds AS (
+          SELECT (${anchors.sessionDate}::date::timestamp
+                  AT TIME ZONE 'America/New_York') AS day_start
+        )
+        SELECT DISTINCT ON (s.ticker)
+          s.ticker, s.captured_at,
+          s.spot, s.zero_gamma,
+          s.z_mlgamma, s.z_msgamma, s.zcvr, s.zgr, s.zvanna, s.zcharm,
+          s.o_mlgamma, s.o_msgamma, s.ocvr, s.ogr, s.ovanna, s.ocharm,
+          s.one_dexoflow, s.one_gexoflow, s.one_cvroflow,
+          s.zero_mcall, s.zero_mput,
+          s.major_pos_vol, s.major_pos_oi, s.major_neg_vol, s.major_neg_oi,
+          s.min_dte
+        FROM gexbot_snapshots s
+        JOIN a ON a.ticker = s.ticker
+        CROSS JOIN bounds b
+        WHERE s.captured_at >= a.anchor - INTERVAL '15 minutes'
+          AND s.captured_at < a.anchor + INTERVAL '1 millisecond'
+          AND (s.source_timestamp IS NULL
+               OR s.source_timestamp >= extract(epoch FROM b.day_start))
+        ORDER BY s.ticker, s.captured_at DESC
+      `,
+      READ_RETRIES,
+      READ_TIMEOUT_MS,
+    )) as RawSnapshotsRow[];
+  } else {
+    const nowIso = new Date().toISOString();
+    rows = (await withDbRetry(
+      () => sql`
       WITH bounds AS (
         SELECT
           ${nowIso}::timestamptz AS now_ts,
@@ -274,9 +467,10 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
              OR s.source_timestamp >= extract(epoch FROM b.day_start))
       ORDER BY s.ticker, s.captured_at DESC
     `,
-    READ_RETRIES,
-    READ_TIMEOUT_MS,
-  )) as RawSnapshotsRow[];
+      READ_RETRIES,
+      READ_TIMEOUT_MS,
+    )) as RawSnapshotsRow[];
+  }
 
   return rows.map((r) => ({
     ticker: r.ticker,
@@ -441,21 +635,51 @@ interface RawConvexityPoint {
   min_dte?: unknown;
 }
 
+/**
+ * Per-ticker `zcvr` series for the last `windowMinutes` (60 by default), oldest
+ * first. With `anchors` (a closed market) each ticker's window is
+ * `anchor − windowMinutes` to its anchor instead of `now() − windowMinutes`
+ * to now, and a ticker with no anchor has no series.
+ */
 export async function getConvexityTrend(
   windowMinutes = 60,
+  anchors?: ClosedAnchors,
 ): Promise<ConvexityTrendRow[]> {
   const sql = getDb();
-  const rows = (await withDbRetry(
-    () => sql`
+  let rows: RawConvexityPoint[];
+  if (anchors) {
+    const { tickers, times } = anchorArrays(anchors);
+    rows = (await withDbRetry(
+      () => sql`
+        WITH a AS (
+          SELECT t.ticker, t.anchor
+          FROM unnest(${tickers}::text[], ${times}::timestamptz[])
+            AS t(ticker, anchor)
+        )
+        SELECT s.ticker, s.captured_at, s.zcvr, s.min_dte
+        FROM gexbot_snapshots s
+        JOIN a ON a.ticker = s.ticker
+        WHERE s.captured_at >= a.anchor - (${windowMinutes}::int * INTERVAL '1 minute')
+          AND s.captured_at < a.anchor + INTERVAL '1 millisecond'
+          AND s.zcvr IS NOT NULL
+        ORDER BY s.ticker, s.captured_at ASC
+      `,
+      READ_RETRIES,
+      READ_TIMEOUT_MS,
+    )) as RawConvexityPoint[];
+  } else {
+    rows = (await withDbRetry(
+      () => sql`
       SELECT ticker, captured_at, zcvr, min_dte
       FROM gexbot_snapshots
       WHERE captured_at >= now() - (${windowMinutes}::int * INTERVAL '1 minute')
         AND zcvr IS NOT NULL
       ORDER BY ticker, captured_at ASC
     `,
-    READ_RETRIES,
-    READ_TIMEOUT_MS,
-  )) as RawConvexityPoint[];
+      READ_RETRIES,
+      READ_TIMEOUT_MS,
+    )) as RawConvexityPoint[];
+  }
 
   const byTicker = new Map<
     string,
@@ -509,7 +733,15 @@ function pickWindowTuple(raw: unknown, key: string): [number, number] | null {
   return [strike, change];
 }
 
-export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
+/**
+ * The newest maxchange capture per (ticker, endpoint, category). With
+ * `anchors` (a closed market) each ticker's window is `anchor − 5 min` to its
+ * anchor instead of the last 5 minutes before now; a ticker with no anchor has
+ * no row.
+ */
+export async function getMaxchangeWinners(
+  anchors?: ClosedAnchors,
+): Promise<MaxchangeWinnerRow[]> {
   const sql = getDb();
   // 5-min freshness window: fetch-gexbot-fast writes 1/min for every
   // (ticker, endpoint, category) tuple, so anything older than 5 min
@@ -519,8 +751,31 @@ export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
   // enough under Neon load to blow past the client's 10s fetch
   // timeout and surface as "Request timed out (HTTP 0)". With the
   // bound the scan is ~16 × 11 ≈ 175 rows.
-  const rows = (await withDbRetry(
-    () => sql`
+  let rows: RawCaptureRow[];
+  if (anchors) {
+    const { tickers, times } = anchorArrays(anchors);
+    rows = (await withDbRetry(
+      () => sql`
+        WITH a AS (
+          SELECT t.ticker, t.anchor
+          FROM unnest(${tickers}::text[], ${times}::timestamptz[])
+            AS t(ticker, anchor)
+        )
+        SELECT DISTINCT ON (c.ticker, c.endpoint, c.category)
+          c.ticker, c.endpoint, c.category, c.captured_at, c.raw_response
+        FROM gexbot_api_capture c
+        JOIN a ON a.ticker = c.ticker
+        WHERE c.category LIKE '%/maxchange'
+          AND c.captured_at >= a.anchor - INTERVAL '5 minutes'
+          AND c.captured_at < a.anchor + INTERVAL '1 millisecond'
+        ORDER BY c.ticker, c.endpoint, c.category, c.captured_at DESC
+      `,
+      READ_RETRIES,
+      READ_TIMEOUT_MS,
+    )) as RawCaptureRow[];
+  } else {
+    rows = (await withDbRetry(
+      () => sql`
       SELECT DISTINCT ON (ticker, endpoint, category)
         ticker, endpoint, category, captured_at, raw_response
       FROM gexbot_api_capture
@@ -528,9 +783,10 @@ export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
         AND captured_at >= now() - INTERVAL '5 minutes'
       ORDER BY ticker, endpoint, category, captured_at DESC
     `,
-    READ_RETRIES,
-    READ_TIMEOUT_MS,
-  )) as RawCaptureRow[];
+      READ_RETRIES,
+      READ_TIMEOUT_MS,
+    )) as RawCaptureRow[];
+  }
 
   return rows.map((r) => ({
     ticker: r.ticker,

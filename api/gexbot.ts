@@ -17,27 +17,70 @@
  *   ?view=sibling-confirm      → requires &ticker=AAPL&side=call|put&at=<ISO
  *                                fire time>: sibling taker-flow direction then
  *
+ * While the market is closed, `snapshots-latest`, `convexity-trend` and
+ * `maxchange-winners` end each ticker's window at its anchor (its last real
+ * capture of the session) instead of at now, so they keep showing the
+ * session after the close; an empty table gives no rows. Those three bodies
+ * are `{ rows, asOf }`, where `asOf` is the latest capture time in the
+ * payload, or null when it is empty. A closed response takes the closed-market
+ * edge cache, a live one 15 s.
+ *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md (sibling-confirm
- * superseded by P12a: docs/superpowers/specs/gexbot-refresh-2026-10-28.md)
+ * superseded by P12a: docs/superpowers/specs/gexbot-refresh-2026-10-28.md);
+ * closed mode: docs/superpowers/specs/2026-11-20-gexbot-after-close-design.md
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import {
   guardOwnerOrGuestEndpoint,
+  isMarketOpen,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import {
+  getClosedAnchors,
   getConvexityTrend,
   getExpectedMove,
   getLatestSnapshots,
   getMaxchangeWinners,
   getSiblingConfirmation,
   getVelocityTape,
+  type ClosedAnchors,
+  type GexbotAnchorTable,
 } from './_lib/gexbot-queries.js';
+import { setClosedReadCache } from './_lib/live-read-cache.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { gexbotQuerySchema } from './_lib/validation.js';
+
+/**
+ * Read one anchored view. While the market is open it is the plain read from
+ * the clock. When closed it reads from each ticker's anchor in `table`, and an
+ * empty table gives no rows without touching the reader.
+ */
+async function readView<T>(
+  closed: boolean,
+  table: GexbotAnchorTable,
+  read: (anchors?: ClosedAnchors) => Promise<T[]>,
+): Promise<T[]> {
+  if (!closed) return read();
+  const anchors = await getClosedAnchors(table);
+  return anchors ? read(anchors) : [];
+}
+
+/** The latest of some capture times, as the original string; null if none. */
+function latestCapture(times: Iterable<string>): string | null {
+  let latest: string | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const time of times) {
+    const ms = Date.parse(time);
+    if (ms > latestMs) {
+      latest = time;
+      latestMs = ms;
+    }
+  }
+  return latest;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/gexbot');
@@ -61,21 +104,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { view, ticker, side, at } = parsed.data;
 
+  // One clock reading per request, handed to the closed cache rule so its
+  // close and open checks read a single instant. `isMarketOpen()` takes no
+  // date and reads its own clock a moment later.
+  const now = new Date();
+  const closed = !isMarketOpen();
+
   try {
     let body: unknown;
     switch (view) {
-      case 'snapshots-latest':
-        body = { rows: await getLatestSnapshots() };
+      case 'snapshots-latest': {
+        const rows = await readView(
+          closed,
+          'gexbot_snapshots',
+          getLatestSnapshots,
+        );
+        body = {
+          rows,
+          asOf: latestCapture(rows.map((r) => r.capturedAt)),
+        };
         break;
+      }
       case 'velocity':
         body = { rows: await getVelocityTape() };
         break;
-      case 'convexity-trend':
-        body = { rows: await getConvexityTrend() };
+      case 'convexity-trend': {
+        const rows = await readView(closed, 'gexbot_snapshots', (anchors) =>
+          anchors ? getConvexityTrend(undefined, anchors) : getConvexityTrend(),
+        );
+        body = {
+          rows,
+          asOf: latestCapture(rows.flatMap((r) => r.series.map(([t]) => t))),
+        };
         break;
-      case 'maxchange-winners':
-        body = { rows: await getMaxchangeWinners() };
+      }
+      case 'maxchange-winners': {
+        const rows = await readView(
+          closed,
+          'gexbot_api_capture',
+          getMaxchangeWinners,
+        );
+        body = {
+          rows,
+          asOf: latestCapture(rows.map((r) => r.capturedAt)),
+        };
         break;
+      }
       case 'expected-move':
         body = { rows: await getExpectedMove() };
         break;
@@ -97,10 +171,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // Tight cache — 15s — lets the 30s frontend poll get a fresh read
-    // on alternating ticks while shielding the DB from repeated tab
-    // refreshes.
-    setCacheHeaders(res, 15);
+    if (closed) {
+      // Nothing new lands after the close, so cache for as long as is safe:
+      // the rule ends the cache life before the final fetch and the next open.
+      setClosedReadCache(res, now);
+    } else {
+      // Tight cache — 15s — lets the 30s frontend poll get a fresh read
+      // on alternating ticks while shielding the DB from repeated tab
+      // refreshes.
+      setCacheHeaders(res, 15);
+    }
     done({ status: 200 });
     res.status(200).json(body);
   } catch (err) {
