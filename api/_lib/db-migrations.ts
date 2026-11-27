@@ -6228,4 +6228,42 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 214,
+    description:
+      "Add the 23 morning-safe columns to training_features (spec: docs/superpowers/specs/2026-11-26-ml-morning-features-design.md, phase 1; plan: docs/superpowers/plans/2026-11-27-ml-morning-features.md, Task 1). The 10:00 CT models read PCR, strike-ladder, realized-vol, dark-pool and IV-rank features that the nightly build computes from full-day data, which are known only after the close. Each new column holds the value known by 10:00 CT (a _10ct column, cut at 10:00 CT) or the previous trading day's value (prev_day_*), beside its end-of-day twin and of the same type: 4 PCR, 8 strike-ladder, 3 realized-vol, 7 dark-pool columns and prev_day_iv_rank. Nullable, no default, no backfill: NULL means not written yet. Nothing writes them until the build tasks of the plan, which must ship after this migration is applied, because the upsert names all 23 on every call.",
+    statements: (sql) => [
+      sql`SET LOCAL lock_timeout = '5s'`,
+      // Each type is its twin's, from the migration that created the twin
+      // (#26 PCR, #9 strike ladder, #11 realized vol, #21 and #29 dark pool,
+      // #33 iv_rank), and none is changed since. Adding a nullable column with
+      // no default only touches the catalog.
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS pcr_max_10ct                      DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_min_10ct                      DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_range_10ct                    DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_spike_count_10ct              INTEGER,
+          ADD COLUMN IF NOT EXISTS charm_slope_10ct                  DECIMAL(20,4),
+          ADD COLUMN IF NOT EXISTS gamma_wall_above_dist_10ct        DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS gamma_wall_below_dist_10ct        DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS neg_gamma_nearest_dist_10ct       DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS gamma_asymmetry_10ct              DECIMAL(10,4),
+          ADD COLUMN IF NOT EXISTS charm_max_pos_dist_10ct           DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS charm_max_neg_dist_10ct           DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS charm_pattern_10ct                TEXT,
+          ADD COLUMN IF NOT EXISTS prev_day_realized_vol_5d          DECIMAL(10,6),
+          ADD COLUMN IF NOT EXISTS prev_day_realized_vol_10d         DECIMAL(10,6),
+          ADD COLUMN IF NOT EXISTS rv_iv_ratio_10ct                  DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS dp_total_premium_10ct             DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS dp_cluster_count_10ct             INTEGER,
+          ADD COLUMN IF NOT EXISTS dp_top_cluster_dist_10ct          DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS dp_support_premium_10ct           DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS dp_resistance_premium_10ct        DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS dp_support_resistance_ratio_10ct  DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS dp_concentration_10ct             DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS prev_day_iv_rank                  DECIMAL(6,2)
+      `,
+    ],
+  },
 ];
