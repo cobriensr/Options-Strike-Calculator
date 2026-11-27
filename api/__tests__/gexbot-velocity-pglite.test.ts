@@ -609,23 +609,37 @@ describe('getVelocityTape against real SQL', () => {
       // changed in one and not the other would split them. In-session data
       // with no replay rows, read at 10:05 ET, must come out identical.
       vi.setSystemTime(NOW);
-      await seed({ at: '2026-10-28T19:59:00Z', agg: 9_000_000, src: null });
       await seed({ at: '2026-10-29T14:02:00Z', agg: 100, zgr: 1, zcvr: 5 });
       await seed({ at: '2026-10-29T14:03:00Z', agg: 130, zgr: 1.25, zcvr: 4 });
       await seed({ at: '2026-10-29T14:04:00Z', agg: 170, zgr: 1, zcvr: 6 });
-      // A gap (null deltas) and a prior-session prior (null deltas).
+      // A gap (null deltas).
       await seed({ ticker: 'HYG', at: '2026-10-29T13:59:30Z', agg: 5, dte: 2 });
       await seed({ ticker: 'HYG', at: '2026-10-29T14:04:00Z', agg: 9, dte: 2 });
+      // Both sides of the session start, 00:00 ET = 04:00Z on this EDT day, read
+      // through the prior row's vendor stamp (a replayed feed). Inside the
+      // window, so a `day_start` that is wrong in either direction changes a
+      // delta: a fixed EST offset (05:00Z) would null IWM's, and UTC midnight
+      // (00:00Z) would keep VIX's.
+      await seed({
+        ticker: 'IWM',
+        at: '2026-10-29T14:03:00Z',
+        src: epoch('2026-10-29T04:30:00Z'),
+        agg: 10,
+      });
+      await seed({ ticker: 'IWM', at: '2026-10-29T14:04:00Z', agg: 25 });
       await seed({
         ticker: 'VIX',
         at: '2026-10-29T14:03:00Z',
-        src: epoch('2026-10-28T20:00:00Z'),
+        src: epoch('2026-10-29T03:59:00Z'),
         agg: -1.24,
       });
       await seed({ ticker: 'VIX', at: '2026-10-29T14:04:00Z', agg: 0 });
       const live = await getVelocityTape();
       const anchored = await getVelocityTape(await anchorsOfSnapshots());
-      expect(live).toHaveLength(3);
+      expect(live.map((r) => r.ticker)).toEqual(['HYG', 'IWM', 'SPX', 'VIX']);
+      // Pin the values the session start decides, not only that both agree.
+      const dAgg = Object.fromEntries(live.map((r) => [r.ticker, r.dAggDex]));
+      expect(dAgg).toEqual({ HYG: null, IWM: 15, SPX: 40, VIX: null });
       expect(anchored).toEqual(live);
     });
   });
