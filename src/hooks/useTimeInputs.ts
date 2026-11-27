@@ -7,8 +7,9 @@
  *   - timeAmPm ('AM' | 'PM')
  *   - timezone ('CT' | 'ET')
  *
- * Seeds from the current CT clock during regular trading hours
- * (9:30 AM ET – 4:00 PM ET), or 10:00 AM CT outside those hours so the
+ * Seeds from the current CT clock during the cash session (9:30 AM ET to the
+ * day's close: 4:00 PM ET, or 1:00 PM ET on an early-close day), or 10:00 AM CT
+ * outside it (including weekends and market holidays) so the
  * calculator produces results immediately on first paint. The
  * seed-from-clock-OR-default mechanism matters because useAutoFill's
  * deferred time-setting checks for the legacy '10'/'00' sentinel —
@@ -20,24 +21,25 @@
 
 import { useState, type Dispatch, type SetStateAction } from 'react';
 
+import { isCashSessionOpen } from '../lib/sw-update-policy.js';
 import type { AmPm, Timezone } from '../types/index.js';
-import { getCTTime, getETTime } from '../utils/timezone.js';
+import { getCTTime } from '../utils/timezone.js';
 
 /**
  * Returns a CT time that is valid for the calculator.
- * If the current time is outside market hours (9:30 AM – 4:00 PM ET),
- * falls back to 10:00 AM CT so the calculator produces results
- * immediately on first paint.
+ * If the cash session is not open (before 9:30 AM ET, at or after the day's
+ * close, or all day on a weekend or market holiday), falls back to 10:00 AM CT
+ * so the calculator produces results immediately on first paint.
+ *
+ * The close comes from the market calendar through `isCashSessionOpen`, so an
+ * early-close day ends at 1:00 PM ET rather than 4:00 PM ET. A fixed 4:00 PM
+ * close seeded an after-close time on those days and the calculator showed
+ * "After market close".
  */
 function getInitialCTTime(): { hour: number; minute: number } {
   const now = new Date();
-  const et = getETTime(now);
-  const etMinutes = et.hour * 60 + et.minute;
-  // Market hours: 9:30 AM ET (570) to 4:00 PM ET (960)
-  if (etMinutes >= 570 && etMinutes < 960) {
-    return getCTTime(now);
-  }
-  // Outside market hours: default to 10:00 AM CT (11:00 AM ET)
+  if (isCashSessionOpen(now)) return getCTTime(now);
+  // Outside the session: default to 10:00 AM CT (11:00 AM ET)
   return { hour: 10, minute: 0 };
 }
 

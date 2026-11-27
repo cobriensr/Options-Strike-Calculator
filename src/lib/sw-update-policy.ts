@@ -27,7 +27,8 @@ export interface SafeMomentContext {
  * weekends, so the weekday is checked here. Holidays outside the years listed
  * in marketHours.ts read as trading days, which errs toward not reloading.
  * Exported for `live-session-signal.ts`, whose open signal gates on the same
- * window.
+ * window, and for `useTimeInputs.ts`, which seeds the calculator's entry time
+ * from the clock only while this is true.
  */
 export function isCashSessionOpen(now: Date): boolean {
   const weekday = getETDayOfWeek(now);
