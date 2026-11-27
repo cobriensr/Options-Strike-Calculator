@@ -14,10 +14,9 @@ afterEach(() => {
 describe('useTimeInputs', () => {
   describe('outside market hours (default fallback)', () => {
     beforeEach(() => {
-      // Use a Saturday so we're guaranteed outside the 9:30 AM ET –
-      // 4:00 PM ET market-hours window (the seed function checks ET
-      // wall-clock; a weekend just makes the test stable regardless
-      // of what time zone the host machine is in).
+      // Friday 2026-05-22, 10 PM ET: after the close, so outside the cash
+      // session the seed checks (calendar-aware, ET wall clock), whatever
+      // time zone the host machine is in.
       vi.setSystemTime(new Date('2026-05-23T02:00:00Z'));
     });
 

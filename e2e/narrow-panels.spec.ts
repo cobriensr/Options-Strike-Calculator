@@ -92,8 +92,8 @@ test.describe('Panels on a phone', () => {
   test('the hedge calculator chips stay in the strike results card at 320px', async ({
     page,
   }) => {
-    // The entry time seeds from the wall clock, so after a half day's 1 PM ET
-    // close no results render (see the constant).
+    // Pinned to a full session so the run doesn't depend on the day CI runs
+    // it (see the constant).
     await page.clock.setFixedTime(new Date(FULL_SESSION_NOW));
     await page.setViewportSize({ width: 320, height: 640 }); // iPhone SE
     await page.goto('/');

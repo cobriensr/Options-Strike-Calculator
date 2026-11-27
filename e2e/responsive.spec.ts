@@ -93,8 +93,8 @@ test.describe('Responsive Layout', () => {
   });
 
   test('calculation works on mobile viewport', async ({ page }) => {
-    // The entry time seeds from the wall clock, so after a half day's 1 PM ET
-    // close no results render (see the constant).
+    // Pinned to a full session so the run doesn't depend on the day CI runs
+    // it (see the constant).
     await page.clock.setFixedTime(new Date(FULL_SESSION_NOW));
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto('/');
