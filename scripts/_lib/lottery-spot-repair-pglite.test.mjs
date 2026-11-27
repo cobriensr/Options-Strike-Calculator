@@ -289,20 +289,58 @@ const GAP_FULL_DAYS = [
   '2026-10-15',
 ];
 
+/**
+ * The summer days after 07-22: the 32 trading days 07-23 -> 09-04 (no holiday
+ * falls in the range; Labor Day, 09-07, is after it). A literal list, like the
+ * gap's, so the assertions below do not read the list the scope is built from.
+ */
+const SUMMER_FULL_DAYS = [
+  '2026-07-23',
+  '2026-07-24',
+  '2026-07-27',
+  '2026-07-28',
+  '2026-07-29',
+  '2026-07-30',
+  '2026-07-31',
+  '2026-08-03',
+  '2026-08-04',
+  '2026-08-05',
+  '2026-08-06',
+  '2026-08-07',
+  '2026-08-10',
+  '2026-08-11',
+  '2026-08-12',
+  '2026-08-13',
+  '2026-08-14',
+  '2026-08-17',
+  '2026-08-18',
+  '2026-08-19',
+  '2026-08-20',
+  '2026-08-21',
+  '2026-08-24',
+  '2026-08-25',
+  '2026-08-26',
+  '2026-08-27',
+  '2026-08-28',
+  '2026-08-31',
+  '2026-09-01',
+  '2026-09-02',
+  '2026-09-03',
+  '2026-09-04',
+];
+
 describe('LOTTERY_SPOT_SCOPE', () => {
   it('holds the 13 gap days after 09-21 and the 32 summer days after 07-22', () => {
-    const summerFullDays = REPAIR_LISTS.summer.filter(
-      (d) => d !== '2026-07-22',
-    );
     expect(GAP_FULL_DAYS).toEqual(
       REPAIR_LISTS.gap.filter((d) => d !== '2026-09-21'),
     );
-    expect(summerFullDays).toHaveLength(32);
-    expect(summerFullDays.at(0)).toBe('2026-07-23');
-    expect(summerFullDays.at(-1)).toBe('2026-09-04');
+    expect(SUMMER_FULL_DAYS).toHaveLength(32);
+    expect(SUMMER_FULL_DAYS).toEqual(
+      REPAIR_LISTS.summer.filter((d) => d !== '2026-07-22'),
+    );
     expect(LOTTERY_SPOT_SCOPE.dates).toEqual([
       ...GAP_FULL_DAYS,
-      ...summerFullDays,
+      ...SUMMER_FULL_DAYS,
     ]);
     // 09-08, the first day the live feed was back, is not a summer day.
     expect(LOTTERY_SPOT_SCOPE.dates).not.toContain('2026-09-08');
