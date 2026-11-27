@@ -477,6 +477,22 @@ describe('getVelocityTape against real SQL', () => {
       expect(row?.dAggDex).toBe(30);
     });
 
+    it('keeps a replay inside the session out of the median', async () => {
+      // 20:58:49 repeats the 20:57:49 stamp (the vendor replaying its last
+      // value), so its +100 is an artifact: null delta, out of the median.
+      // The real changes are +10 and +1, so the median is 5.5, not 10.
+      const a = epoch(`${D}T20:57:00Z`);
+      await seed({ ticker: 'VIX', at: `${D}T20:57:49Z`, src: a, agg: 0 });
+      await seed({ ticker: 'VIX', at: `${D}T20:58:49Z`, src: a, agg: 100 });
+      await seed({ ticker: 'VIX', at: `${D}T20:59:49Z`, agg: 110 });
+      await seed({ ticker: 'VIX', at: `${D}T21:00:49Z`, agg: 111 });
+      const anchors = await anchorsOfSnapshots();
+      expect(anchors.byTicker.get('VIX')).toBe('2026-11-20T21:00:49.000Z');
+      const [vix] = await getVelocityTape(anchors);
+      expect(vix?.dAggDex).toBe(1);
+      expect(vix?.typicalAbsDAggDex).toBe(5.5);
+    });
+
     it('nulls the anchor delta when its prior row carries the prior session stamp', async () => {
       // VIX's open row replays the prior close's stamp. Seen from the close,
       // the same rule nulls a prior whose stamp predates the session.
