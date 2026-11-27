@@ -42,7 +42,11 @@ const SPEC = { view: 'snapshots-latest' as const };
 const SESSION_HOURS = 6.5;
 /** Minimum bar fill % so a tiny-but-nonzero value still produces a visible nub. */
 const MIN_BAR_PCT = 4;
-/** The panel frame, shared by the table and the closed line. */
+/**
+ * The panel frame, shared by the table, the closed line and the loading and
+ * empty notes. The error note keeps its own amber border and background: this
+ * frame's neutral ones would fight them.
+ */
 const FRAME_CLASS = 'rounded-md border border-white/5 bg-white/[0.02]';
 const CLOSED_LINE = 'Charm Clock: closed. By-close drift resumes at the open.';
 
@@ -80,8 +84,7 @@ function toneClass(byClose: number): string {
 
 function CharmClockInner({ marketOpen }: CharmClockProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
-  // 0 while the market is closed. The closed branch below never reads it; the
-  // hook runs on every render all the same.
+  // 0 while the market is closed. Hooks run before the closed early return.
   const hoursRemaining = useHoursToClose(marketOpen);
 
   const charmRows = useMemo<CharmRow[]>(() => {
@@ -129,7 +132,7 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
         role="status"
         aria-live="polite"
         data-testid="charm-clock-loading"
-        className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
+        className={`text-tertiary px-3 py-2 text-xs ${FRAME_CLASS}`}
       >
         Charm Clock — loading…
       </div>
@@ -155,7 +158,7 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
         role="status"
         aria-live="polite"
         data-testid="charm-clock-empty"
-        className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
+        className={`text-tertiary px-3 py-2 text-xs ${FRAME_CLASS}`}
       >
         Charm Clock — awaiting first GEXBot tick
       </div>

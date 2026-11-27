@@ -310,6 +310,8 @@ describe('<CharmClock>', () => {
     });
     render(<CharmClock marketOpen={false} />);
     expect(screen.getByText(CLOSED_LINE)).toBeInTheDocument();
+    // A live region, so a screen reader hears the table go.
+    expect(screen.getByRole('status')).toHaveTextContent(CLOSED_LINE);
     expect(screen.queryByTestId(/^charm-by-close-/)).toBeNull();
     expect(screen.queryByTestId(/^charm-bias-/)).toBeNull();
     expect(screen.queryByRole('table')).toBeNull();
