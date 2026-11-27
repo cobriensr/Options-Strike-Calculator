@@ -127,8 +127,13 @@ async function fetchCandidates(
     spot_lookup AS (
       SELECT c.captured_at, c.strike, c.greek_post, c.greek_prior,
              c.greek_delta, c.lvl_rank, c.chg_rank,
+             -- Same ET session only: a hole in the day's candles yields no
+             -- spot (no fire), not an earlier day's close. No age cap within
+             -- the day (owner decision, 2026-11-25).
              (SELECT close::numeric FROM index_candles_1m
-              WHERE symbol = 'SPX' AND timestamp <= c.captured_at
+              WHERE symbol = 'SPX'
+                AND date = (c.captured_at AT TIME ZONE 'America/New_York')::date
+                AND timestamp <= c.captured_at
               ORDER BY timestamp DESC LIMIT 1) AS spot_at_event
       FROM candidates c
     )
@@ -505,8 +510,13 @@ async function fetchAllCandidatesForExpiry(
       SELECT
         c.captured_at, c.strike, c.greek_post, c.greek_prior,
         c.greek_delta, c.lvl_rank, c.chg_rank,
+        -- Same ET session only: a hole in the day's candles yields no spot
+        -- (no fire), not an earlier day's close. No age cap within the day
+        -- (owner decision, 2026-11-25).
         (SELECT close::numeric FROM index_candles_1m
-         WHERE symbol = 'SPX' AND timestamp <= c.captured_at
+         WHERE symbol = 'SPX'
+           AND date = (c.captured_at AT TIME ZONE 'America/New_York')::date
+           AND timestamp <= c.captured_at
          ORDER BY timestamp DESC LIMIT 1) AS spot_at_event
       FROM candidates c
     )

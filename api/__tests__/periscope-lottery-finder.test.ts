@@ -499,6 +499,48 @@ describe('detectPutLotteryAllForDate — historical backfill variant', () => {
   });
 });
 
+describe('SPX spot lookup — bounded to the event ET session date', () => {
+  // The behavior is proven on real SQL in
+  // periscope-lottery-spot-session-pglite.test.ts; these pin that every
+  // variant carries the bound and that a candidate with no spot reaches no
+  // downstream lookup.
+  const variants = [
+    ['live call', detectCallLottery],
+    ['live put', detectPutLottery],
+    ['backfill call', detectCallLotteryAllForDate],
+    ['backfill put', detectPutLotteryAllForDate],
+  ] as const;
+
+  it.each(variants)(
+    "%s reads the spot from the event's own ET date only",
+    async (_name, detect) => {
+      mockSql.mockResolvedValueOnce([]);
+      await detect('2026-05-18');
+      const sqlText = (mockSql.mock.calls[0]![0] as string[])
+        .join('?')
+        .replace(/\s+/g, ' ');
+      expect(sqlText).toContain(
+        "FROM index_candles_1m WHERE symbol = 'SPX' " +
+          "AND date = (c.captured_at AT TIME ZONE 'America/New_York')::date " +
+          'AND timestamp <= c.captured_at ' +
+          'ORDER BY timestamp DESC LIMIT 1',
+      );
+    },
+  );
+
+  it.each(variants)(
+    '%s fires nothing, and looks nothing else up, when no candidate has a same-day spot',
+    async (_name, detect) => {
+      // The query drops a candidate whose spot_at_event is NULL, so a day
+      // with no bar before the event comes back as an empty candidate set.
+      mockSql.mockResolvedValueOnce([]);
+      const fires = await detect('2026-05-18');
+      expect(fires).toEqual([]);
+      expect(mockSql).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
 describe('backfill variants — GEXBot-era rows are opt-in', () => {
   const CUTOVER = '2026-05-26T17:20:00Z';
   // mockSql is a tagged template: calls are (strings, ...values).
