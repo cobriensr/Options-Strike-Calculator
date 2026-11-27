@@ -114,11 +114,13 @@ describe('closedCacheSeconds', () => {
     expect(closedCacheSeconds(new Date(iso))).toEqual({ edgeSec: edge, swr });
   });
 
-  // The open race. A handler decides the market is closed, then reads the
-  // database; if that read runs past 09:30 ET, `now` (taken after it) lands in
-  // the session. A closed response must not be cached there: it would answer
-  // live polls from the edge for up to 300 s. Nothing is cached from the cash
-  // open to the close on a trading day, the half day's 13:00 close included.
+  // The in-session guard. A handler takes `now` before `isMarketOpen()` and
+  // before its reads, and `isMarketOpen()` reads its own clock a moment later.
+  // A `now` inside the session that the handler still decided was closed is
+  // possible (15:59:59.999 against an `isMarketOpen()` read at 16:00). A closed
+  // response must not be cached there: it would answer live polls from the
+  // edge for up to 360 s. Nothing is cached from the cash open to the close on
+  // a trading day, the half day's 13:00 close included.
   it.each([
     ['2026-11-23T14:30:00.000Z', 0, 0], // the open instant
     ['2026-11-23T14:30:00.001Z', 0, 0], // 1 ms into the session

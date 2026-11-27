@@ -71,17 +71,21 @@ function etInstantMs(etDate: string, etMinutes: number): number | null {
  *   is 300 s + 60 s, cut short so that it still ends by then. A weekend day
  *   counts as having a 09:30: that can only shorten a life, never lengthen it.
  *
- * At the open instant itself the open has happened, so the next one is the
- * following day's. Every instant comes from the ET wall clock, so the rule
- * stays right across a DST change. If a conversion ever yields no instant (an
- * ET date that does not parse, which the formatter cannot produce), nothing is
- * cached.
+ * At the open instant itself on a weekend or a holiday the open has happened,
+ * so the next one is the following day's. (On a trading day that instant is
+ * inside the session, which the in-session rule below handles.) Every instant
+ * comes from the ET wall clock, so the rule stays right across a DST change.
+ * If a conversion ever yields no instant (an ET date that does not parse,
+ * which the formatter cannot produce), nothing is cached.
  *
- * A closed response answered inside the session itself, from the cash open up
- * to the close on a trading day, is cached `0` + `0` as well. A handler decides
- * the market is closed, then reads the database; if that read runs past 09:30
- * ET, `now` (taken after it) is already in the session, and the next-open rule
- * above would give the response a life of up to 360 s, answering live polls
+ * A closed response whose `now` lies inside the session itself, from the cash
+ * open up to the close on a trading day, is cached `0` + `0` as well. The
+ * handlers take `now` before `isMarketOpen()` and before every read, so that
+ * `now` is the instant the request started, and `isMarketOpen()` reads its own
+ * clock a moment later. A `now` inside the session that the handler still
+ * decided was closed is therefore possible: `now` at 15:59:59.999 against an
+ * `isMarketOpen()` read at 16:00. Without this rule the next-open arithmetic
+ * above would give that response a life of up to 360 s, answering live polls
  * with the closed body. Even so, a closed response can outlive 09:30 by up to
  * one query's duration: the edge counts a response's life from when it was
  * sent, and one sent at 09:29:59.9 is good until it expires. The client's
@@ -130,8 +134,9 @@ export function closedCacheSeconds(now: Date): ClosedCache {
  * Edge-cache headers for a closed-market response (the live route's data
  * served after the cash close): see `closedCacheSeconds`. `setLiveReadCache`
  * keeps its own rule for the readers that call it. `now` is the instant the
- * handler took after its reads, so a response that ran into the session is
- * seen as one.
+ * handler took before `isMarketOpen()` and before its reads, so a `now` that
+ * falls inside the session, while the handler still decided the market was
+ * closed, is seen as one and cached for nothing.
  */
 export function setClosedReadCache(res: VercelResponse, now: Date): void {
   const { edgeSec, swr } = closedCacheSeconds(now);
