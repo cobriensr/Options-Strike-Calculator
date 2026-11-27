@@ -37,6 +37,17 @@ const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB in base64 chars
 export const MAX_CONTEXT_STRING_LEN = 8000;
 export const MAX_CONTEXT_KEYS = 200;
 
+// The one context key the bag validates by name. When the GEX Landscape panel
+// is closed, the client sends the capture time of the bias it forwards, and
+// the prompt labels the block as the last session's close at that time. The
+// time feeds the prompt label, so a malformed value is refused here (400)
+// rather than formatted. Absent or null means live. The offset is required
+// because /api/gex-landscape stamps its asOf with toISOString, which always
+// carries one; a zone-less time would read as the server's zone, not the
+// capture's.
+const CLOSED_BIAS_KEY = 'gexLandscapeBiasClosedAsOf';
+const closedBiasAsOfSchema = z.iso.datetime({ offset: true });
+
 export const analyzeImageSchema = z.object({
   data: z
     .string()
@@ -74,6 +85,17 @@ export const analyzeBodySchema = z.object({
             message: `context.${key} exceeds ${String(MAX_CONTEXT_STRING_LEN)} chars`,
           });
         }
+      }
+      const closedAsOf = ctx[CLOSED_BIAS_KEY];
+      if (
+        closedAsOf != null &&
+        !closedBiasAsOfSchema.safeParse(closedAsOf).success
+      ) {
+        refinementCtx.addIssue({
+          code: 'custom',
+          path: [CLOSED_BIAS_KEY],
+          message: `context.${CLOSED_BIAS_KEY} must be an ISO 8601 datetime`,
+        });
       }
     }),
 });

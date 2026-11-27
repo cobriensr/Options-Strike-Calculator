@@ -1261,6 +1261,107 @@ describe('buildAnalysisContext', () => {
     vi.unstubAllGlobals();
   });
 
+  // The block's text from "using GEXBot's 1-minute capture" on. Both variants
+  // carry it unchanged, so the live variant stays byte-for-byte and the closed
+  // one differs only in its heading and first sentence.
+  const GEX_BIAS_TAIL =
+    "using GEXBot's 1-minute capture in GEXBot's taker-side sign (positive = traders net long gamma at the strike). It summarizes where the largest-|γ| strike sits relative to spot, the sign of the summed taker-side gamma within ±50 pts, and the 5m/15m/30m gamma changes above and below spot. It describes taker positioning; it is not a forecast. Treat it as context only, like the GEXBot Taker-Flow Greeks block: do not apply the UW-calibrated Periscope or gamma/charm rules to it.";
+  const LIVE_GEX_BIAS_BLOCK = `\n## GEX Landscape Structural Bias (from live GEX panel)\nThis is the real-time structural bias verdict computed from the per-strike GEX panel, ${GEX_BIAS_TAIL}\n\nBIAS-BODY\n`;
+  const closedGexBiasBlock = (label: string): string =>
+    `\n## GEX Landscape Structural Bias (last session's close, as of ${label})\nThis is the structural bias verdict from the last session's close as of ${label}, not live. It was computed from the per-strike GEX panel, ${GEX_BIAS_TAIL}\n\nBIAS-BODY\n`;
+
+  async function contextTextWith(
+    extra: Record<string, unknown>,
+  ): Promise<string> {
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-11-21',
+      ...extra,
+    });
+    vi.unstubAllGlobals();
+    return result.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('\n');
+  }
+
+  it("labels a closed GEX Landscape bias as the last session's close with its capture time", async () => {
+    const text = await contextTextWith({
+      gexLandscapeBias: 'BIAS-BODY',
+      gexLandscapeBiasClosedAsOf: '2026-11-20T21:00:49.000Z',
+    });
+
+    expect(text).toContain(closedGexBiasBlock('Fri 3:00 PM CT, 2026-11-20'));
+    expect(text).toContain(
+      "## GEX Landscape Structural Bias (last session's close, as of Fri 3:00 PM CT, 2026-11-20)",
+    );
+    expect(text).toContain('not live');
+    expect(text).toContain("GEXBot's 1-minute capture");
+    expect(text).toContain('taker-side sign');
+    // Neither live claim survives into the closed block.
+    expect(text).not.toContain('from live GEX panel');
+    expect(text).not.toContain('real-time structural bias verdict');
+  });
+
+  it.each([
+    // 9:30 PM CT on Nov 20 is already Nov 21 in UTC: the date is the CT date.
+    ['2026-11-21T03:30:00.000Z', 'Fri 9:30 PM CT, 2026-11-20'],
+    // Summer: CDT, not CST.
+    ['2026-07-02T19:00:00.000Z', 'Thu 2:00 PM CT, 2026-07-02'],
+    // An explicit offset is the same instant.
+    ['2026-11-20T15:00:49-06:00', 'Fri 3:00 PM CT, 2026-11-20'],
+  ])('gives the closed label in Central time for %s', async (asOf, label) => {
+    const text = await contextTextWith({
+      gexLandscapeBias: 'BIAS-BODY',
+      gexLandscapeBiasClosedAsOf: asOf,
+    });
+
+    expect(text).toContain(closedGexBiasBlock(label));
+  });
+
+  it('keeps the GEX Landscape bias block unchanged without the closed marker', async () => {
+    const text = await contextTextWith({ gexLandscapeBias: 'BIAS-BODY' });
+
+    expect(text).toContain(LIVE_GEX_BIAS_BLOCK);
+    expect(text).not.toContain('not live');
+    expect(text).not.toContain("last session's close");
+  });
+
+  it('treats a null closed marker as absent', async () => {
+    const text = await contextTextWith({
+      gexLandscapeBias: 'BIAS-BODY',
+      gexLandscapeBiasClosedAsOf: null,
+    });
+
+    expect(text).toContain(LIVE_GEX_BIAS_BLOCK);
+  });
+
+  it.each([
+    ['an unparseable string', 'yesterday'],
+    ['an empty string', ''],
+    ['a number', 1_763_672_449_000],
+    // String([...]) is the timestamp, so a bare Date.parse would accept it.
+    ['an array holding a timestamp', ['2026-11-20T21:00:49.000Z']],
+  ])(
+    'ignores %s as the closed marker instead of throwing (the schema rejects it first)',
+    async (_name, marker) => {
+      const text = await contextTextWith({
+        gexLandscapeBias: 'BIAS-BODY',
+        gexLandscapeBiasClosedAsOf: marker,
+      });
+
+      expect(text).toContain(LIVE_GEX_BIAS_BLOCK);
+    },
+  );
+
+  it('emits no GEX Landscape block for a closed marker alone', async () => {
+    const text = await contextTextWith({
+      gexLandscapeBiasClosedAsOf: '2026-11-20T21:00:49.000Z',
+    });
+
+    expect(text).not.toContain('## GEX Landscape Structural Bias');
+    expect(text).not.toContain('BIAS-BODY');
+  });
+
   it('returns null darkPoolClusters when no dark pool data', async () => {
     const result = await buildAnalysisContext([], {
       mode: 'entry',

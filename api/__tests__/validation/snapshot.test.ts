@@ -200,6 +200,68 @@ describe('analyzeBodySchema', () => {
     if (!result.success) return;
     expect(result.data.context).toEqual(context);
   });
+
+  describe('context.gexLandscapeBiasClosedAsOf', () => {
+    const KEY = 'gexLandscapeBiasClosedAsOf';
+    const parseWith = (context: Record<string, unknown>) =>
+      analyzeBodySchema.safeParse({ images: [baseImage], context });
+
+    it.each([
+      ['a Z timestamp', '2026-11-20T21:00:49.000Z'],
+      ['a Z timestamp without milliseconds', '2026-11-20T21:00:49Z'],
+      ['a timestamp with a UTC offset', '2026-11-20T15:00:49-06:00'],
+    ])('accepts %s and passes it through unchanged', (_name, value) => {
+      const result = parseWith({ [KEY]: value, gexLandscapeBias: 'BIAS' });
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data.context[KEY]).toBe(value);
+    });
+
+    it.each([
+      ['absent', {}],
+      ['undefined', { [KEY]: undefined }],
+      ['null', { [KEY]: null }],
+    ])('accepts the marker %s', (_name, context) => {
+      expect(parseWith(context).success).toBe(true);
+    });
+
+    it.each([
+      ['an unparseable string', 'yesterday'],
+      ['an empty string', ''],
+      ['a bare date', '2026-11-20'],
+      ['a bare year', '2026'],
+      ['a timestamp with no zone', '2026-11-20T21:00:49'],
+      ['an impossible calendar date', '2026-02-30T21:00:49.000Z'],
+      ['a number', 1_763_672_449_000],
+      ['a boolean', true],
+      ['an object', { asOf: '2026-11-20T21:00:49.000Z' }],
+      ['an array holding a timestamp', ['2026-11-20T21:00:49.000Z']],
+    ])('rejects %s, naming the key', (_name, value) => {
+      const result = parseWith({ [KEY]: value });
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      const issue = result.error.issues.find(
+        (i) => i.path.join('.') === `context.${KEY}`,
+      );
+      expect(issue?.message).toBe(
+        'context.gexLandscapeBiasClosedAsOf must be an ISO 8601 datetime',
+      );
+    });
+
+    it('still applies the per-field length cap to the marker', () => {
+      const result = parseWith({
+        [KEY]: 'x'.repeat(MAX_CONTEXT_STRING_LEN + 1),
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(
+        result.error.issues.some((i) => i.message.includes('exceeds')),
+      ).toBe(true);
+    });
+  });
 });
 
 // ── preMarketBodySchema ──────────────────────────────────────

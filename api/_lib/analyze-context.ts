@@ -36,7 +36,8 @@ import {
   findSimilarAnalyses,
   formatSimilarAnalysesBlock,
 } from './embeddings.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
+import { getCTDateStr, getETDateStr } from '../../src/utils/timezone.js';
+import { formatSchwabExpiryCt } from '../../src/utils/schwab-expiry.js';
 import { metrics, Sentry } from './sentry.js';
 import type { ImageMediaType } from './analyze-prompts.js';
 import logger from './logger.js';
@@ -137,6 +138,35 @@ function formatPeriscopeSection(block: PeriscopeContextBlock): string {
       ? `## GEXBot Taker-Flow Greeks — 0DTE (latest 10-min slice; context only)\nThis block carries GEXBot Gamma / Charm / Vanna per strike for today's 0DTE expiry, the sign changes since the prior GEXBot slice, and the straddle cone bounds + any breach events. The Greek values are GEXBot's classified taker flow in its taker-side sign: positive = traders (takers) are net long that Greek at the strike, negative = net short. They are not market-maker positions, and they do not replace UW Periscope screenshots.`
       : `## Per-Strike Greeks — source unknown (latest 10-min slice; context only)\nThis block carries Gamma / Charm / Vanna per strike for today's 0DTE expiry, but the slice's source could not be determined, so it may not be UW market-maker data.`;
   return `\n${intro}\n\n${PERISCOPE_CONTEXT_ONLY_NOTE}\n\n${block.text}\n`;
+}
+
+/**
+ * The GEX Landscape bias's description from "using GEXBot's 1-minute capture"
+ * on. Live and closed sections share it; only their heading and first
+ * sentence differ.
+ */
+const GEX_LANDSCAPE_BIAS_NOTE =
+  "using GEXBot's 1-minute capture in GEXBot's taker-side sign (positive = traders net long gamma at the strike). It summarizes where the largest-|γ| strike sits relative to spot, the sign of the summed taker-side gamma within ±50 pts, and the 5m/15m/30m gamma changes above and below spot. It describes taker positioning; it is not a forecast. Treat it as context only, like the GEXBot Taker-Flow Greeks block: do not apply the UW-calibrated Periscope or gamma/charm rules to it.";
+
+/**
+ * The GEX Landscape structural-bias section. With no usable
+ * `gexLandscapeBiasClosedAsOf` it is the live block, unchanged. With one (the
+ * panel is closed, so the bias is the last session's capture) the heading and
+ * first sentence say it is the last session's close as of that time, not
+ * live, with the time in Central. A marker that is not a parseable timestamp
+ * reads as absent here: `analyzeBodySchema` refuses one before it arrives.
+ */
+function formatGexLandscapeBiasSection(
+  bias: string,
+  closedAsOf: unknown,
+): string {
+  const asOfMs =
+    typeof closedAsOf === 'string' ? Date.parse(closedAsOf) : Number.NaN;
+  if (!Number.isFinite(asOfMs)) {
+    return `\n## GEX Landscape Structural Bias (from live GEX panel)\nThis is the real-time structural bias verdict computed from the per-strike GEX panel, ${GEX_LANDSCAPE_BIAS_NOTE}\n\n${bias}\n`;
+  }
+  const label = `${formatSchwabExpiryCt(asOfMs)}, ${getCTDateStr(new Date(asOfMs))}`;
+  return `\n## GEX Landscape Structural Bias (last session's close, as of ${label})\nThis is the structural bias verdict from the last session's close as of ${label}, not live. It was computed from the per-strike GEX panel, ${GEX_LANDSCAPE_BIAS_NOTE}\n\n${bias}\n`;
 }
 
 /**
@@ -455,7 +485,7 @@ ${main.strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API
 ${main.netGexHeatmapContext ? `\n## SPX 0DTE Net GEX Heatmap (from API — signed dollar GEX per strike)\nThis is the signed net GEX dollar amount at each strike from the strike_exposures table (UW spot exposures by strike, today's expiry only), updated every minute. This is the same data shown in the UW Net GEX Heatmap UI. Positive net_gex = net long gamma (dealer mean-reverting hedging → price suppression, pin magnetism); negative net_gex = net short gamma (dealer momentum hedging → price acceleration, breakouts). The gamma flip zone (net_gex sign change) is the structural regime boundary between suppression and acceleration. Use this alongside the Per-Strike Greek Profile — this adds the dollar-scaled magnitude and call/put composition that the naive profile lacks.\n\n${main.netGexHeatmapContext}\n` : ''}
 ${periscopeContext ? formatPeriscopeSection(periscopeContext) : ''}
 ${main.zeroGammaContext ? `\n## SPX 0DTE Zero-Gamma Level (derived from per-strike gamma profile)\nThe zero-gamma strike is the approximate SPX level at which aggregate dealer gamma flips sign. Above the flip (positive gamma) dealers hedge mean-reverting and price movement is suppressed. Below the flip (negative gamma) dealers hedge momentum and price movement accelerates. Distance-to-flip in cone fractions tells you how close today's price is to a regime change in units that match the straddle cone.\n\n${main.zeroGammaContext}\n` : ''}
-${context.gexLandscapeBias ? `\n## GEX Landscape Structural Bias (from live GEX panel)\nThis is the real-time structural bias verdict computed from the per-strike GEX panel, using GEXBot's 1-minute capture in GEXBot's taker-side sign (positive = traders net long gamma at the strike). It summarizes where the largest-|γ| strike sits relative to spot, the sign of the summed taker-side gamma within ±50 pts, and the 5m/15m/30m gamma changes above and below spot. It describes taker positioning; it is not a forecast. Treat it as context only, like the GEXBot Taker-Flow Greeks block: do not apply the UW-calibrated Periscope or gamma/charm rules to it.\n\n${context.gexLandscapeBias as string}\n` : ''}
+${context.gexLandscapeBias ? formatGexLandscapeBiasSection(context.gexLandscapeBias as string, context.gexLandscapeBiasClosedAsOf) : ''}
 ${main.allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${main.allExpiryStrikeContext}\n` : ''}
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
 ${volRealizedContext ? `\n## Realized Vol & IV Rank (from API — daily)\n  ${volRealizedContext}\n` : ''}
