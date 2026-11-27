@@ -67,10 +67,11 @@
  * manifest says so in its `kind`, and the same flag undoes it (it puts the old
  * spot and distance back).
  *
- * `--lottery-spots` runs after the gap days' candles are repaired (the `gap`
- * list), takes no --symbol, --list or --date, and corrects the stale
- * `spot_at_event` and `strike_dist` of the gap days' periscope_lottery_fires
- * from those candles (scripts/_lib/lottery-spot-repair.mjs has the rules).
+ * `--lottery-spots` runs after the gap days' and the summer's candles are
+ * repaired (the `gap` and `summer` lists), takes no --symbol, --list or
+ * --date, and corrects the stale `spot_at_event` and `strike_dist` of those
+ * days' periscope_lottery_fires from those candles
+ * (scripts/_lib/lottery-spot-repair.mjs has the rules).
  * Dry run unless --apply: it prints how many fires would change, how many no
  * longer pass their own filter (they are kept, not deleted), each fire with no
  * same-day SPX bar (left unchanged) and each fire whose bar is more than 5
@@ -118,7 +119,7 @@
  *   --spots <folder>   the price files --refit fits to (with --refit only)
  *   --check            verify refit dates, read-only (no --apply)
  *   --undo <manifest>  restore a run, from its manifest
- *   --lottery-spots    correct the gap days' lottery fire spots (alone)
+ *   --lottery-spots    correct the gap and summer days' lottery spots (alone)
  *
  * Environment: UW_API_KEY; DATABASE_URL; UPSTASH_REDIS_REST_URL /
  * UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN);
@@ -475,9 +476,10 @@ async function runCheck() {
 }
 
 /**
- * The gap days' lottery fire spots: report the plan, and with --apply write
- * it. Only the market-hours guard applies (no Schwab call is made). Returns
- * the exit code: 1 when any fire has no same-day bar (lotterySpotsExitCode).
+ * The gap and summer days' lottery fire spots: report the plan, and with
+ * --apply write it. Only the market-hours guard applies (no Schwab call is
+ * made). Returns the exit code: 1 when any fire has no same-day bar
+ * (lotterySpotsExitCode).
  */
 async function runLotterySpots() {
   const { apply } = plan;
@@ -496,7 +498,7 @@ async function runLotterySpots() {
 
   say(
     `Correcting periscope_lottery_fires spot_at_event and strike_dist on the ` +
-      `gap days${apply ? '' : ' (DRY RUN: no Neon writes, no backup)'}`,
+      `gap and summer days${apply ? '' : ' (DRY RUN: no Neon writes, no backup)'}`,
   );
   if (backupDir != null) say(`  backups: ${backupDir}`);
   const result = await repairLotterySpots(neon(DATABASE_URL), {

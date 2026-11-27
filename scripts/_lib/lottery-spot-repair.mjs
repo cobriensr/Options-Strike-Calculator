@@ -1,7 +1,8 @@
 /**
  * The logic of `--lottery-spots` in scripts/repair-index-candle-placeholders.mjs:
  * correct the stale `spot_at_event` and `strike_dist` of the Periscope lottery
- * fires on the gap days, from the repaired SPX one-minute candles. Spec:
+ * fires on the gap days and the summer outage, from the repaired SPX
+ * one-minute candles. Spec:
  * docs/superpowers/specs/2026-11-24-spx-candle-placeholder-repair.md (Decision
  * 2 "keep them and report the count", Phase 4).
  *
@@ -10,7 +11,8 @@
  * bound (periscope-lottery-finder.ts fetchCandidates), so every fire read the
  * last bar of an earlier day: the 09-21 12:18 close, or the 10-07 close. On
  * 09-21 the bars stop at 12:18 ET (16:18Z), so that day's later fires read the
- * 12:18 close.
+ * 12:18 close. The summer outage (07-22 -> 09-04) is the same: 07-22's last
+ * live bar is the 14:51Z one, and every fire after it, through 09-04, read it.
  *
  * The rules, from the finder (applyCallFilter, applyPutFilter):
  *   new_spot  the close of the latest SPX bar at or before fire_time on the
@@ -58,18 +60,31 @@ import {
 
 // ── The scope ──────────────────────────────────────────────
 
-/** 09-21's bars stop at 12:18 ET, so only its later fires read a stale spot. */
-const PARTIAL_DATE = '2026-09-21';
-const PARTIAL_AFTER = '2026-09-21T16:18:00Z';
+/**
+ * The days that have live bars up to a cut, so only their fires after it read a
+ * stale spot. A fire at the cut itself still reads that minute's real bar, so
+ * the cut is strict (`fire_time > after`).
+ *   09-21  the gap's first day: its bars stop at 12:18 ET (16:18Z)
+ *   07-22  the summer outage's first day: its last live bar is 14:51Z
+ */
+const PARTIALS = Object.freeze([
+  Object.freeze({ date: '2026-09-21', after: '2026-09-21T16:18:00Z' }),
+  Object.freeze({ date: '2026-07-22', after: '2026-07-22T14:51:00Z' }),
+]);
+const PARTIAL_DATES = new Set(PARTIALS.map((p) => p.date));
 
 /**
- * The fires to correct: those whose ET date is one of `dates` (the gap list
- * without 09-21, which the CLI's `gap` list also repairs), plus 09-21's fires
- * strictly after 16:18Z (a fire at 16:18:00 still reads that minute's real bar).
+ * The fires to correct: those whose ET date is one of `dates` (the gap and
+ * summer lists without their partial days, which the CLI's lists also repair),
+ * plus each of `partials`' fires strictly after its cut.
  */
 export const LOTTERY_SPOT_SCOPE = Object.freeze({
-  dates: Object.freeze(REPAIR_LISTS.gap.filter((d) => d !== PARTIAL_DATE)),
-  partial: Object.freeze({ date: PARTIAL_DATE, after: PARTIAL_AFTER }),
+  dates: Object.freeze(
+    [...REPAIR_LISTS.gap, ...REPAIR_LISTS.summer].filter(
+      (d) => !PARTIAL_DATES.has(d),
+    ),
+  ),
+  partials: PARTIALS,
 });
 
 const { CALL, PUT } = PERISCOPE_LOTTERY_THRESHOLDS;
@@ -118,7 +133,9 @@ function stillPasses(fireType, dist) {
  * not depend on the session time zone.
  */
 export async function planLotterySpots(sql) {
-  const { dates, partial } = LOTTERY_SPOT_SCOPE;
+  const { dates, partials } = LOTTERY_SPOT_SCOPE;
+  const partialDates = partials.map((p) => p.date);
+  const partialCuts = partials.map((p) => p.after);
   const rows = await retryTransientDb(
     () => sql`
       SELECT f.id::text AS id,
@@ -145,9 +162,14 @@ export async function planLotterySpots(sql) {
       ) bar ON TRUE
       WHERE (f.fire_time AT TIME ZONE 'America/New_York')::date
               = ANY(${dates}::date[])
-         OR ((f.fire_time AT TIME ZONE 'America/New_York')::date
-               = ${partial.date}::date
-             AND f.fire_time > ${partial.after}::timestamptz)
+         OR EXISTS (
+           SELECT 1
+           FROM unnest(
+             ${partialDates}::date[],
+             ${partialCuts}::timestamptz[]
+           ) AS p(day, cut)
+           WHERE (f.fire_time AT TIME ZONE 'America/New_York')::date = p.day
+             AND f.fire_time > p.cut)
       ORDER BY f.fire_time, f.id`,
   );
 

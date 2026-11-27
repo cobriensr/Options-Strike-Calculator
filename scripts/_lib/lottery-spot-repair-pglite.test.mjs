@@ -1,7 +1,8 @@
 // @vitest-environment node
 
 /**
- * REAL-SQL test of the gap-day lottery spot repair (lottery-spot-repair.mjs):
+ * REAL-SQL test of the gap-day and summer lottery spot repair
+ * (lottery-spot-repair.mjs):
  * which periscope_lottery_fires rows are in scope, the same-session spot the
  * repair reads from the repaired SPX candles, the distance it recomputes from
  * event_strike, the backed-up one-transaction UPDATE, and the undo. The
@@ -271,33 +272,60 @@ async function planAndApply(sql = makeSql(), backupDir = backupDirOf()) {
 
 // ── The scope ──────────────────────────────────────────────
 
+/** The gap days after 09-21, the days a fire read a stale bar all day. */
+const GAP_FULL_DAYS = [
+  '2026-09-22',
+  '2026-09-23',
+  '2026-09-24',
+  '2026-09-25',
+  '2026-09-28',
+  '2026-09-29',
+  '2026-09-30',
+  '2026-10-08',
+  '2026-10-09',
+  '2026-10-12',
+  '2026-10-13',
+  '2026-10-14',
+  '2026-10-15',
+];
+
 describe('LOTTERY_SPOT_SCOPE', () => {
-  it('holds the 13 gap days after 09-21, and the 09-21 cut', () => {
-    expect(LOTTERY_SPOT_SCOPE.dates).toEqual([
-      '2026-09-22',
-      '2026-09-23',
-      '2026-09-24',
-      '2026-09-25',
-      '2026-09-28',
-      '2026-09-29',
-      '2026-09-30',
-      '2026-10-08',
-      '2026-10-09',
-      '2026-10-12',
-      '2026-10-13',
-      '2026-10-14',
-      '2026-10-15',
-    ]);
-    expect(LOTTERY_SPOT_SCOPE.dates).toEqual(
+  it('holds the 13 gap days after 09-21 and the 32 summer days after 07-22', () => {
+    const summerFullDays = REPAIR_LISTS.summer.filter(
+      (d) => d !== '2026-07-22',
+    );
+    expect(GAP_FULL_DAYS).toEqual(
       REPAIR_LISTS.gap.filter((d) => d !== '2026-09-21'),
     );
-    expect(LOTTERY_SPOT_SCOPE.partial).toEqual({
-      date: '2026-09-21',
-      after: '2026-09-21T16:18:00Z',
-    });
+    expect(summerFullDays).toHaveLength(32);
+    expect(summerFullDays.at(0)).toBe('2026-07-23');
+    expect(summerFullDays.at(-1)).toBe('2026-09-04');
+    expect(LOTTERY_SPOT_SCOPE.dates).toEqual([
+      ...GAP_FULL_DAYS,
+      ...summerFullDays,
+    ]);
+    // 09-08, the first day the live feed was back, is not a summer day.
+    expect(LOTTERY_SPOT_SCOPE.dates).not.toContain('2026-09-08');
+  });
+
+  it('keeps 09-21 and 07-22 out of dates and lists each as a partial day with its cut', () => {
+    expect(LOTTERY_SPOT_SCOPE.dates).not.toContain('2026-09-21');
+    expect(LOTTERY_SPOT_SCOPE.dates).not.toContain('2026-07-22');
+    expect(LOTTERY_SPOT_SCOPE.partials).toEqual([
+      { date: '2026-09-21', after: '2026-09-21T16:18:00Z' },
+      { date: '2026-07-22', after: '2026-07-22T14:51:00Z' },
+    ]);
+    // The old single `partial` has no reader left.
+    expect(LOTTERY_SPOT_SCOPE).not.toHaveProperty('partial');
+  });
+
+  it('is deeply frozen', () => {
     expect(Object.isFrozen(LOTTERY_SPOT_SCOPE)).toBe(true);
     expect(Object.isFrozen(LOTTERY_SPOT_SCOPE.dates)).toBe(true);
-    expect(Object.isFrozen(LOTTERY_SPOT_SCOPE.partial)).toBe(true);
+    expect(Object.isFrozen(LOTTERY_SPOT_SCOPE.partials)).toBe(true);
+    for (const partial of LOTTERY_SPOT_SCOPE.partials) {
+      expect(Object.isFrozen(partial)).toBe(true);
+    }
   });
 });
 
@@ -326,7 +354,7 @@ describe('planLotterySpots', () => {
       '2026-10-16T14:00:00Z', // 10-16
       '2026-10-20T14:30:00Z',
     ];
-    for (const date of [...LOTTERY_SPOT_SCOPE.dates, '2026-09-21']) {
+    for (const date of [...GAP_FULL_DAYS, '2026-09-21']) {
       await seedBar({ date, at: `${date}T13:30:00Z`, close: 6700 });
       await seedBar({ date, at: `${date}T19:59:00Z`, close: 6701 });
     }
@@ -340,6 +368,100 @@ describe('planLotterySpots', () => {
     );
     expect(plan.no_bar).toEqual([]);
     expect(await snapshot()).toEqual(before);
+  });
+
+  it('selects the summer days, and 07-22 only after its last live bar', async () => {
+    const inScope = [
+      '2026-07-22T14:51:01Z', // 07-22, one second after the cut
+      '2026-07-22T14:59:00Z', // 07-22, minutes after the last live bar
+      '2026-07-23T01:00:00Z', // 07-22 21:00 ET: ET date 07-22, UTC date 07-23
+      '2026-07-23T14:30:00Z', // the first full summer day
+      '2026-08-20T14:30:00Z',
+      '2026-09-04T14:30:00Z', // the last one
+      '2026-09-05T00:30:00Z', // 09-04 20:30 ET: ET date 09-04, UTC date 09-05
+    ];
+    const outOfScope = [
+      '2026-07-21T14:30:00Z', // the day before the outage
+      '2026-07-22T03:00:00Z', // 07-21 23:00 ET: UTC date 07-22, ET date 07-21
+      '2026-07-22T14:50:00Z', // 07-22, before the cut
+      '2026-07-22T14:50:15Z', // 07-22, read the real 14:50 bar
+      '2026-07-22T14:51:00Z', // 07-22, exactly at the cut: its bar was real
+      '2026-09-08T14:30:00Z', // the live feed was back before 09-08's first fire
+    ];
+    for (const date of ['2026-07-23', '2026-08-20', '2026-09-04']) {
+      await seedBar({ date, at: `${date}T13:30:00Z`, close: 7500 });
+    }
+    await seedBar({
+      date: '2026-07-22',
+      at: '2026-07-22T14:51:00Z',
+      close: 7497.751,
+    });
+    await seedBar({
+      date: '2026-07-22',
+      at: '2026-07-22T14:59:00Z',
+      close: 7505,
+    });
+    for (const at of [...inScope, ...outOfScope]) {
+      await seedFire({ at, strike: 7520, spot: 7497.751 });
+    }
+    const before = await snapshot();
+
+    const plan = await planLotterySpots(makeSql());
+
+    expect(plan.fires.map((f) => f.fire_time)).toEqual(
+      inScope.map((at) => new Date(at).toISOString()),
+    );
+    expect(plan.no_bar).toEqual([]);
+    // Each in-scope fire reads its own session's latest bar, not 07-22's stale one.
+    expect(plan.fires.map((f) => f.new_spot)).toEqual([
+      7497.751, // 07-22 14:51Z bar, the last one before 14:51:01Z
+      7505,
+      7505, // 07-22 21:00 ET: still 07-22's 14:59Z bar
+      7500,
+      7500,
+      7500,
+      7500,
+    ]);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('counts the gap days and the summer in in_scope, partial days included', async () => {
+    await seedBar({ date: GAP_DAY, at: OPEN, close: 6700 });
+    await seedBar({
+      date: '2026-09-21',
+      at: '2026-09-21T16:18:00Z',
+      close: 6651,
+    });
+    await seedBar({
+      date: '2026-08-20',
+      at: '2026-08-20T13:30:00Z',
+      close: 7500,
+    });
+    await seedBar({
+      date: '2026-07-22',
+      at: '2026-07-22T14:51:00Z',
+      close: 7497.751,
+    });
+    for (const at of [
+      '2026-09-22T14:00:00Z', // a full gap day
+      '2026-09-21T17:00:00Z', // 09-21 after its cut
+      '2026-08-20T14:30:00Z', // a full summer day
+      '2026-07-22T15:00:00Z', // 07-22 after its cut
+      '2026-09-21T16:18:00Z', // out: exactly at 09-21's cut
+      '2026-07-22T14:51:00Z', // out: exactly at 07-22's cut
+      '2026-07-21T14:30:00Z', // out: before the outage
+      '2026-09-08T14:30:00Z', // out: the live feed was back
+    ]) {
+      await seedFire({ at });
+    }
+
+    const dry = await repairLotterySpots(makeSql(), {
+      apply: false,
+      backupDir: backupDirOf(),
+    });
+
+    expect(dry).toMatchObject({ in_scope: 4, updated: 4 });
+    expect(dry.no_bar).toEqual([]);
   });
 
   it('reads the ET date whatever the session time zone', async () => {
@@ -628,6 +750,70 @@ describe('applyLotterySpots', () => {
     expect(after.find((r) => r.id === outOfScope.id)).toEqual(outOfScope);
     // The two in-scope fires moved.
     expect(after.filter((r) => r.spot_txt === '6700.0000')).toHaveLength(2);
+  });
+
+  it('writes the summer fires and 07-22 after its last live bar, and no other fire', async () => {
+    await seedBar({
+      date: '2026-07-22',
+      at: '2026-07-22T14:50:00Z',
+      close: 7497.1,
+    });
+    await seedBar({
+      date: '2026-07-22',
+      at: '2026-07-22T14:51:00Z',
+      close: 7497.751,
+    });
+    await seedBar({
+      date: '2026-07-22',
+      at: '2026-07-22T14:59:00Z',
+      close: 7505,
+    });
+    await seedBar({
+      date: '2026-08-20',
+      at: '2026-08-20T13:30:00Z',
+      close: 7500,
+    });
+    const beforeCut = await seedFire({
+      at: '2026-07-22T14:50:15Z',
+      strike: 7520,
+      spot: 7497.751,
+    });
+    const atCut = await seedFire({
+      at: '2026-07-22T14:51:00Z',
+      strike: 7520,
+      spot: 7497.751,
+    });
+    const afterCut = await seedFire({
+      at: '2026-07-22T14:59:00Z',
+      strike: 7520,
+      spot: 7497.751,
+    });
+    const midSummer = await seedFire({
+      at: '2026-08-20T14:30:00Z',
+      strike: 7520,
+      spot: 7497.751,
+    });
+    const before = await snapshot();
+
+    const out = await planAndApply();
+
+    expect(out).toMatchObject({ in_scope: 2, updated: 2, no_longer_pass: 0 });
+    const after = await snapshot();
+    const byId = (rows) => Object.fromEntries(rows.map((r) => [r.id, r]));
+    // The two fires before the cut keep every value.
+    for (const id of [beforeCut, atCut]) {
+      expect(byId(after)[id]).toEqual(byId(before)[id]);
+    }
+    expect(byId(after)[afterCut]).toMatchObject({
+      spot_txt: '7505.0000',
+      dist_txt: '15.0000',
+    });
+    expect(byId(after)[midSummer]).toMatchObject({
+      spot_txt: '7500.0000',
+      dist_txt: '20.0000',
+    });
+    expect(readJson(out.manifest).backedUpIds).toEqual([afterCut, midSummer]);
+    expect(untouchedColumns(after)).toEqual(untouchedColumns(before));
   });
 
   it('counts fires that no longer pass, keeps them, and updates their spot', async () => {
