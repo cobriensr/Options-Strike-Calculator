@@ -122,8 +122,13 @@ const GEX_STALE_THRESHOLD_MS = 3 * 60_000;
 export interface GexLandscapeProps {
   /** Whether the equity market is currently open (drives polling + LIVE badge). */
   marketOpen: boolean;
-  /** Called whenever the structural bias summary changes; pass to analyze. */
-  onBiasChange?: (summary: string | null) => void;
+  /**
+   * Called whenever the structural bias summary changes; pass to analyze.
+   * `closedAsOf` is the ISO capture time of the closed session's landscape
+   * (the hook's `asOf`, untouched), or null while the market is open and on a
+   * scrubbed view.
+   */
+  onBiasChange?: (summary: string | null, closedAsOf: string | null) => void;
 }
 
 const GexLandscape = memo(function GexLandscape({
@@ -210,6 +215,11 @@ const GexLandscape = memo(function GexLandscape({
 
   const timestamp = scrubTimestamp ?? liveTimestamps.at(-1) ?? null;
   const isLive = scrubTimestamp == null && marketOpen;
+  // After the close, when the strikes on screen were captured: the header
+  // pill's label, and the marker sent with the bias. A scrub (`at` set) is a
+  // past minute, not the closed session, so it gets none. `asOf` labels only:
+  // the time select stays on the last minute option.
+  const closedAsOf = !marketOpen && at == null ? asOf : null;
 
   // How old the data on screen is, for the DELAYED badge and the empty-panel
   // message. It applies only while the panel is live, the market is open and
@@ -398,10 +408,11 @@ const GexLandscape = memo(function GexLandscape({
   );
 
   // Notify parent whenever the structural bias verdict changes so it can be
-  // forwarded to the analyze endpoint as part of AnalysisContext.
+  // forwarded to the analyze endpoint as part of AnalysisContext. The closed
+  // capture time goes in the same call, so the pair never disagrees.
   useEffect(() => {
-    onBiasChange?.(formatBiasForClaude(bias));
-  }, [bias, onBiasChange]);
+    onBiasChange?.(formatBiasForClaude(bias), closedAsOf);
+  }, [bias, closedAsOf, onBiasChange]);
 
   // Arrow/Home/End keyboard nav between tabs (WAI-ARIA APG "Tabs (automatic
   // activation)" pattern). Focus follows the newly selected tab so the
@@ -502,10 +513,8 @@ const GexLandscape = memo(function GexLandscape({
       lastDataAgeMs={lastDataAgeMs}
       staleThresholdMs={GEX_STALE_THRESHOLD_MS}
       // After the close the header says when the strikes on screen were
-      // captured, in place of LIVE or DELAYED. A scrub (`at` set) is a past
-      // minute, not the closed session, so it keeps SCRUBBED. `asOf` labels
-      // only: the time select stays on the last minute option.
-      closedAsOf={!marketOpen && at == null ? asOf : null}
+      // captured, in place of LIVE or DELAYED. A scrub keeps SCRUBBED.
+      closedAsOf={closedAsOf}
       // Locked Decision #4: /api/gex-landscape scrubs today only against
       // gexbot_api_capture — no `?date=` parameter is accepted. The
       // shared ScrubControls would render a no-op picker otherwise, which

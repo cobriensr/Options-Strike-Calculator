@@ -712,6 +712,18 @@ export default function StrikeCalculator() {
     null,
   );
   const [gexBiasContext, setGexBiasContext] = useState<string | null>(null);
+  const [gexBiasClosedAsOf, setGexBiasClosedAsOf] = useState<string | null>(
+    null,
+  );
+  // One stable handler sets the pair, so a changed bias and its closed capture
+  // time land in the same render and the panel map's deps hold one callback.
+  const handleGexBiasChange = useCallback(
+    (summary: string | null, closedAsOf: string | null) => {
+      setGexBiasContext(summary);
+      setGexBiasClosedAsOf(closedAsOf);
+    },
+    [],
+  );
   const handleAnalysisSaved = useCallback(() => {
     setHistoryRefreshKey((k) => k + 1);
     toast.show('Analysis saved', 'success');
@@ -900,6 +912,7 @@ export default function StrikeCalculator() {
     events: selectedDateEvents,
     chain: liveChain,
     gexLandscapeBias: gexBiasContext,
+    gexLandscapeBiasClosedAsOf: gexBiasClosedAsOf,
   });
 
   // The slot a history snapshot is read at, as the time picker shows it. The
@@ -1193,7 +1206,7 @@ export default function StrikeCalculator() {
             >
               <GexLandscape
                 marketOpen={liveMarketOpen}
-                onBiasChange={setGexBiasContext}
+                onBiasChange={handleGexBiasChange}
               />
             </GatedSection>
           ),
@@ -1518,6 +1531,7 @@ export default function StrikeCalculator() {
       gexTarget,
       handleAnalysisSaved,
       handleDateChange,
+      handleGexBiasChange,
       handleIvModeChange,
       handleResumeLive,
       handleSpotChange,
@@ -1550,7 +1564,6 @@ export default function StrikeCalculator() {
       setContracts,
       setCsvPositionSummary,
       setDirectIVInput,
-      setGexBiasContext,
       setMultiplier,
       setPeriscopeSlot,
       setSkewPct,

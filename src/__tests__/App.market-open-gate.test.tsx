@@ -88,6 +88,8 @@ const h = vi.hoisted(() => ({
   intervalBAAlertState: { alerts: [] as unknown[], acknowledge: vi.fn() },
   intervalBAMute: { muted: false, toggle: vi.fn() },
   analysisContext: {},
+  /** The params App hands useAnalysisContext, one call per render. */
+  useAnalysisContext: vi.fn(),
   useChainData: vi.fn(),
   useAlertPolling: vi.fn(),
   useIntervalBAAlerts: vi.fn(),
@@ -167,7 +169,10 @@ vi.mock('../hooks/useSnapshotSave', () => ({
 // Stable, like the real hook's memoized return: App's panelMap memo depends on
 // it, and a new object per render would rebuild the map every time.
 vi.mock('../hooks/useAnalysisContext', () => ({
-  useAnalysisContext: () => h.analysisContext,
+  useAnalysisContext: (params: unknown) => {
+    h.useAnalysisContext(params);
+    return h.analysisContext;
+  },
 }));
 vi.mock('../hooks/usePushSubscription', () => ({
   usePushSubscription: () => ({ subscribe: vi.fn() }),
@@ -758,6 +763,62 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
       expect(lastArgAt(h.marketRegimeSection, 0)).toEqual(
         expect.objectContaining({ marketOpen: false, showFlowRegime: false }),
       );
+    });
+  });
+
+  // The GEX Landscape reports its bias summary and, after the close, the ISO
+  // time its strikes were captured. App keeps both and hands them to
+  // useAnalysisContext, which sends them to analyze.
+  describe('the GEX Landscape bias reaching the analysis context', () => {
+    const CAPTURED_AT = '2026-11-20T21:00:49.000Z';
+    type OnBiasChange = (
+      summary: string | null,
+      closedAsOf: string | null,
+    ) => void;
+
+    async function mountWithLandscape(): Promise<OnBiasChange> {
+      h.access.mode = 'owner';
+      h.market.current = marketFor(viewer('owner'));
+      mountApp();
+      await waitFor(() => expect(h.gexLandscape).toHaveBeenCalled());
+      const props = lastArgAt(h.gexLandscape, 0) as {
+        onBiasChange: OnBiasChange;
+      };
+      return props.onBiasChange;
+    }
+
+    it('hands useAnalysisContext the summary and the closed capture time the panel reports', async () => {
+      const onBiasChange = await mountWithLandscape();
+      // Nothing reported yet.
+      expect(lastArgAt(h.useAnalysisContext, 0)).toMatchObject({
+        gexLandscapeBias: null,
+        gexLandscapeBiasClosedAsOf: null,
+      });
+
+      act(() => onBiasChange('Verdict: pinned near 6,880', CAPTURED_AT));
+      expect(lastArgAt(h.useAnalysisContext, 0)).toMatchObject({
+        gexLandscapeBias: 'Verdict: pinned near 6,880',
+        gexLandscapeBiasClosedAsOf: CAPTURED_AT,
+      });
+
+      // Back on a live or scrubbed view the marker goes, the summary stays.
+      act(() => onBiasChange('Verdict: pinned near 6,880', null));
+      expect(lastArgAt(h.useAnalysisContext, 0)).toMatchObject({
+        gexLandscapeBias: 'Verdict: pinned near 6,880',
+        gexLandscapeBiasClosedAsOf: null,
+      });
+    });
+
+    it('hands the panel one callback for every render, so its report effect does not re-run', async () => {
+      const onBiasChange = await mountWithLandscape();
+      act(() => onBiasChange('Verdict: pinned near 6,880', CAPTURED_AT));
+
+      const callbacks = new Set(
+        argsAt(h.gexLandscape, 0).map(
+          (arg) => (arg as { onBiasChange: OnBiasChange }).onBiasChange,
+        ),
+      );
+      expect(callbacks.size).toBe(1);
     });
   });
 

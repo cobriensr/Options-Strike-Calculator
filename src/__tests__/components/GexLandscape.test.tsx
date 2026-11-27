@@ -159,6 +159,8 @@ interface RenderOptions {
   marketOpen?: boolean;
   freshness?: GexLandscapeFreshness | null;
   asOf?: string | null;
+  /** The parent's bias callback. Absent = the panel gets none. */
+  onBiasChange?: (summary: string | null, closedAsOf: string | null) => void;
 }
 
 /** Point the mocked data and scrub hooks at one display state. */
@@ -204,7 +206,10 @@ function renderLandscape(opts: RenderOptions = {}) {
   mockLandscape(opts);
   return render(
     <CollapseAllContext.Provider value={collapseSignal}>
-      <GexLandscape marketOpen={opts.marketOpen ?? true} />
+      <GexLandscape
+        marketOpen={opts.marketOpen ?? true}
+        onBiasChange={opts.onBiasChange}
+      />
     </CollapseAllContext.Provider>,
   );
 }
@@ -2271,5 +2276,98 @@ describe('GexLandscape: the CLOSED pill', () => {
     renderLandscape({ marketOpen: false, asOf: null });
     expect(screen.queryByTestId('scrub-closed-badge')).toBeNull();
     expect(screen.queryAllByText('LIVE')).toHaveLength(0);
+  });
+});
+
+// ============================================================
+// THE CLOSED CAPTURE TIME, REPORTED WITH THE BIAS
+//
+// `onBiasChange(summary, closedAsOf)`: the second argument is the same value
+// the CLOSED pill reads, so the analysis context can label the bias as the
+// last session's close. It is the hook's `asOf` while the market is closed on
+// the live route, and null on every other view (open, or a scrubbed minute).
+// The analyze schema 400s the whole call on anything but an ISO datetime with
+// an offset, so the string goes out untouched.
+// ============================================================
+
+describe('GexLandscape: the bias callback carries the closed capture time', () => {
+  // The hook's sanitized asOf. Its seconds stay: it is not floored to a minute.
+  const CAPTURED_AT = '2026-11-20T21:00:49.000Z';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function panel(
+    marketOpen: boolean,
+    onBiasChange: (summary: string | null, closedAsOf: string | null) => void,
+  ) {
+    return (
+      <CollapseAllContext.Provider value={collapseSignal}>
+        <GexLandscape marketOpen={marketOpen} onBiasChange={onBiasChange} />
+      </CollapseAllContext.Provider>
+    );
+  }
+
+  it("passes the hook's asOf, untouched, with the bias once the market has closed", () => {
+    const onBiasChange = vi.fn();
+    renderLandscape({ marketOpen: false, asOf: CAPTURED_AT, onBiasChange });
+    expect(onBiasChange).toHaveBeenLastCalledWith(
+      expect.any(String),
+      CAPTURED_AT,
+    );
+    // Same string, not a reformatted or minute-floored copy.
+    expect(onBiasChange.mock.lastCall?.[1]).toBe(CAPTURED_AT);
+  });
+
+  // The open and scrubbed cases are handed an asOf anyway (the real hook gives
+  // none there): the panel's own guard has to hold, not the hook's.
+  it.each([
+    [
+      'the market is open, whatever asOf says',
+      { marketOpen: true, asOf: CAPTURED_AT },
+    ],
+    [
+      'the view is scrubbed, whatever asOf says',
+      { marketOpen: false, isScrubbed: true, asOf: CAPTURED_AT },
+    ],
+    ['the response carries no capture time', { marketOpen: false, asOf: null }],
+  ] satisfies Array<[string, RenderOptions]>)(
+    'passes null with the bias when %s',
+    (_label, opts) => {
+      const onBiasChange = vi.fn();
+      renderLandscape({ ...opts, onBiasChange });
+      expect(onBiasChange).toHaveBeenLastCalledWith(expect.any(String), null);
+    },
+  );
+
+  it('reports again, with the marker, when the close arrives, and drops it on a scrub', () => {
+    const onBiasChange = vi.fn();
+    const view = renderLandscape({ marketOpen: true, onBiasChange });
+    expect(onBiasChange).toHaveBeenLastCalledWith(expect.any(String), null);
+
+    // The close: same callback identity (App's handler is stable). Only asOf
+    // changes in the mocked data: the strikes and the Δ% maps keep their
+    // identity, so the bias is not recomputed and only the marker can make the
+    // panel report again.
+    dataMock.mockReturnValue({ ...dataMock(), asOf: CAPTURED_AT });
+    view.rerender(panel(false, onBiasChange));
+    expect(onBiasChange).toHaveBeenLastCalledWith(
+      expect.any(String),
+      CAPTURED_AT,
+    );
+
+    // Scrub back to a minute: that is a past minute, not the closed session,
+    // so the marker goes even with asOf still set. The props are unchanged and
+    // the memoized panel would not re-read the mocked hooks on a rerender, so a
+    // tab click (the panel's own state) stands in for the scrub controller's
+    // state change.
+    scrubMock.mockReturnValue({
+      ...scrubMock(),
+      isScrubbed: true,
+      scrubTimestamp: '2026-04-13T19:40:00.000Z',
+    });
+    fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
+    expect(onBiasChange).toHaveBeenLastCalledWith(expect.any(String), null);
   });
 });
