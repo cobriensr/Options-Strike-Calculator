@@ -8,7 +8,7 @@ import { vi, beforeEach, afterEach, describe, it, expect } from 'vitest';
  *
  * The main buildAnalysisContext is integration-heavy and tested
  * indirectly through analyze.test.ts. These tests cover the pure
- * utilities: numOrUndef and formatMlFindingsForClaude.
+ * utilities: numOrUndef and the context formatters.
  */
 
 import {
@@ -159,35 +159,11 @@ describe('formatMarketInternalsForClaude', () => {
   });
 });
 
-// ── formatMlFindingsForClaude ──────────────────────────────
-// This is a private function — we test it via a re-export trick.
-// Since it's not exported, we test it indirectly by importing the module
-// and using the function through buildAnalysisContext's DB fetch path.
-// However, since we want to test it directly, we'll test the behavior
-// through the module's internal wiring by providing crafted mock data
-// to buildAnalysisContext.
-//
-// Actually — formatMlFindingsForClaude is NOT exported, so we need to
-// test its behavior indirectly. We can test the crash scenario by
-// validating that the function handles undefined dataset gracefully
-// via the buildAnalysisContext integration path. But to keep tests
-// focused, we'll use a dynamic import workaround.
-
-// Since formatMlFindingsForClaude is private, we can only test it
-// indirectly through buildAnalysisContext. The key coverage targets are:
-// - Valid findings with all fields → formatted output
-// - Missing dataset → runtime error (the known bug)
-// - Missing top_correctness_predictors → graceful skip
-//
-// We test these via buildAnalysisContext with mocked DB responses.
-
-// We need to import buildAnalysisContext with mocks for its deps.
-// This is done in a separate describe block with vi.mock calls.
-
-// ── Mocks for buildAnalysisContext (to reach formatMlFindingsForClaude) ──
+// ── Mocks for buildAnalysisContext ──────────────────────────
 
 const mockSql = Object.assign(vi.fn(), {
   begin: vi.fn(),
+  query: vi.fn(),
 });
 
 vi.mock('../_lib/db.js', () => ({
@@ -344,15 +320,55 @@ vi.mock('../_lib/sentry.js', () => ({
   },
 }));
 
-describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
+describe('buildAnalysisContext — no ML Calibration Update section', () => {
+  // The section came from the ml_findings row. Its last write was 2026-04-25
+  // and the ML pipeline is disabled, so it passed frozen April values to every
+  // live analysis (a "repeat yesterday = 53%" that was the majority-class rate,
+  // and a gamma_asymmetry r = -0.997 that came from one outlier day). The
+  // analyze context no longer reads the row at all. The mock answers any query
+  // naming ml_findings with a valid row, in both call forms (the tagged
+  // template and sql.query(text, params)), so a read that came back would show.
+  const staleFindings = {
+    dataset: {
+      total_days: 39,
+      labeled_days: 36,
+      date_range: ['2026-02-09', '2026-04-03'],
+      overall_accuracy: 0.917,
+    },
+    structure_accuracy: {
+      'PUT CREDIT SPREAD': { correct: 13, total: 13, rate: 1.0 },
+    },
+    confidence_calibration: {
+      HIGH: { correct: 22, total: 23, rate: 0.957 },
+    },
+    flow_reliability: {
+      'Market Tide': { correct: 22, total: 36, rate: 0.611 },
+    },
+    majority_baseline: { structure: 'CALL CREDIT SPREAD', rate: 0.528 },
+    top_correctness_predictors: [
+      { feature: 'gamma_asymmetry', r: -0.997, p: 0.0 },
+    ],
+  };
+
+  /** The SQL text of a call to mockSql: a tagged template or a plain string. */
+  const sqlText = (call: unknown[]): string => {
+    if (Array.isArray(call[0])) return (call[0] as string[]).join(' ');
+    return typeof call[0] === 'string' ? call[0] : '';
+  };
+
+  const staleRowFor = async (...args: unknown[]) =>
+    sqlText(args).includes('ml_findings')
+      ? [{ findings: staleFindings, updated_at: new Date('2026-04-25') }]
+      : [];
+
   beforeEach(() => {
     vi.restoreAllMocks();
     mockLogger.warn.mockReset();
     mockLogger.error.mockReset();
-    // Reset mockSql to return empty by default
     mockSql.mockReset();
-    mockSql.mockResolvedValue([]);
-    // Restore global fetch mock
+    mockSql.mockImplementation(staleRowFor);
+    mockSql.query.mockReset();
+    mockSql.query.mockImplementation(staleRowFor);
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -363,243 +379,60 @@ describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
     );
   });
 
-  it('includes ML calibration context when findings have valid dataset', async () => {
-    const validFindings = {
-      dataset: {
-        total_days: 39,
-        labeled_days: 36,
-        date_range: ['2026-02-09', '2026-04-03'],
-        overall_accuracy: 0.917,
-      },
-      structure_accuracy: {
-        'PUT CREDIT SPREAD': { correct: 13, total: 13, rate: 1.0 },
-        'CALL CREDIT SPREAD': { correct: 17, total: 19, rate: 0.895 },
-      },
-      confidence_calibration: {
-        HIGH: { correct: 22, total: 23, rate: 0.957 },
-        MODERATE: { correct: 10, total: 12, rate: 0.833 },
-      },
-      flow_reliability: {
-        'Market Tide': { correct: 22, total: 36, rate: 0.611 },
-      },
-      majority_baseline: {
-        structure: 'CALL CREDIT SPREAD',
-        rate: 0.528,
-      },
-      top_correctness_predictors: [
-        { feature: 'gamma_asymmetry', r: -0.997, p: 0.0 },
-        { feature: 'spy_ncp_t2', r: -0.573, p: 0.0 },
-      ],
-    };
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
-    // mockSql is called multiple times in buildAnalysisContext:
-    // 1. vol_realized query
-    // 2. cone_levels query
-    // 3. pre_market_data query
-    // 4. ml_findings query
-    mockSql
-      .mockResolvedValueOnce([]) // vol_realized
-      .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([
-        {
-          findings: validFindings,
-          updated_at: new Date('2026-04-04T09:37:49Z'),
-        },
-      ]); // ml_findings
-
+  it('adds no ML Calibration Update section, whatever the ml_findings row holds', async () => {
     const result = await buildAnalysisContext([], {
       mode: 'entry',
       spx: 5700,
       selectedDate: '2026-04-04',
     });
 
-    // The context text should contain the ML calibration section
-    const textBlock = result.content.find(
-      (b) => b.type === 'text' && b.text.includes('ML Calibration'),
-    );
-    expect(textBlock).toBeDefined();
-    const text = (textBlock as { type: 'text'; text: string }).text;
-
-    // Check key output elements
-    expect(text).toContain('Overall accuracy: 91.7%');
-    expect(text).toContain('Structure accuracy:');
-    expect(text).toContain('PUT CREDIT SPREAD: 13/13 (100%)');
-    expect(text).toContain('CALL CREDIT SPREAD: 17/19 (90%)');
-    expect(text).toContain('Confidence calibration:');
-    expect(text).toContain('HIGH: 22/23 (96%)');
-    expect(text).toContain('Flow source accuracy');
-    expect(text).toContain('Market Tide: 22/36 (61%)');
-    expect(text).toContain('Previous-day baseline');
-    expect(text).toContain('Top correctness predictors:');
-    expect(text).toContain('gamma_asymmetry');
-    expect(text).toContain('higher = LESS correct');
-    vi.unstubAllGlobals();
-  });
-
-  it('includes positive r direction label for positive predictor', async () => {
-    const findings = {
-      dataset: {
-        total_days: 10,
-        labeled_days: 8,
-        date_range: ['2026-01-01', '2026-01-10'],
-        overall_accuracy: 0.8,
-      },
-      structure_accuracy: {},
-      confidence_calibration: {},
-      flow_reliability: {},
-      majority_baseline: { structure: 'IC', rate: 0.5 },
-      top_correctness_predictors: [{ feature: 'delta_flow', r: 0.264, p: 0.1 }],
-    };
-
-    mockSql
-      .mockResolvedValueOnce([]) // vol_realized
-      .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([
-        { findings, updated_at: new Date('2026-01-10') },
-      ]);
-
-    const result = await buildAnalysisContext([], {
-      mode: 'entry',
-      selectedDate: '2026-01-10',
-    });
-
-    const textBlock = result.content.find(
-      (b) => b.type === 'text' && b.text.includes('ML Calibration'),
-    );
-    expect(textBlock).toBeDefined();
-    const text = (textBlock as { type: 'text'; text: string }).text;
-    expect(text).toContain('higher = MORE correct');
-    vi.unstubAllGlobals();
-  });
-
-  it('omits top predictors section when not present', async () => {
-    const findings = {
-      dataset: {
-        total_days: 10,
-        labeled_days: 8,
-        date_range: ['2026-01-01', '2026-01-10'],
-        overall_accuracy: 0.8,
-      },
-      structure_accuracy: {},
-      confidence_calibration: {},
-      flow_reliability: {},
-      majority_baseline: { structure: 'IC', rate: 0.5 },
-      // no top_correctness_predictors
-    };
-
-    mockSql
-      .mockResolvedValueOnce([]) // vol_realized
-      .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([
-        { findings, updated_at: new Date('2026-01-10') },
-      ]);
-
-    const result = await buildAnalysisContext([], {
-      mode: 'entry',
-      selectedDate: '2026-01-10',
-    });
-
-    const textBlock = result.content.find(
-      (b) => b.type === 'text' && b.text.includes('ML Calibration'),
-    );
-    expect(textBlock).toBeDefined();
-    const text = (textBlock as { type: 'text'; text: string }).text;
+    const text = result.content
+      .flatMap((b) => (b.type === 'text' ? [b.text] : []))
+      .join('\n');
+    expect(text.length).toBeGreaterThan(0);
+    expect(text).not.toContain('ML Calibration');
+    expect(text).not.toContain('latest EDA pipeline run');
+    expect(text).not.toContain('Overall accuracy: 91.7%');
     expect(text).not.toContain('Top correctness predictors');
-    vi.unstubAllGlobals();
+    expect(text).not.toContain('gamma_asymmetry');
   });
 
-  it('handles ML findings fetch failure gracefully', async () => {
-    mockSql
-      .mockResolvedValueOnce([]) // vol_realized
-      .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockRejectedValueOnce(new Error('DB connection lost')); // ml_findings
-
-    const result = await buildAnalysisContext([], {
+  it('does not query ml_findings', async () => {
+    await buildAnalysisContext([], {
       mode: 'entry',
-      selectedDate: '2026-01-10',
+      spx: 5700,
+      selectedDate: '2026-04-04',
     });
 
-    // Should complete without crashing
-    expect(result.content.length).toBeGreaterThan(0);
-    // Should NOT have ML calibration section
-    const textBlock = result.content.find(
-      (b) => b.type === 'text' && b.text.includes('ML Calibration'),
-    );
-    expect(textBlock).toBeUndefined();
-    // Should have logged the warning
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ err: expect.any(Error) }),
-      expect.stringContaining('ML findings fetch failed'),
-    );
-    vi.unstubAllGlobals();
+    expect(mockSql).toHaveBeenCalled();
+    expect(
+      mockSql.mock.calls.filter((call) =>
+        sqlText(call).includes('ml_findings'),
+      ),
+    ).toEqual([]);
+    expect(
+      mockSql.query.mock.calls.filter((call) =>
+        sqlText(call).includes('ml_findings'),
+      ),
+    ).toEqual([]);
   });
 
-  it('handles empty ML findings rows', async () => {
-    mockSql
-      .mockResolvedValueOnce([]) // vol_realized
-      .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([]); // ml_findings — empty
-
-    const result = await buildAnalysisContext([], {
-      mode: 'entry',
-      selectedDate: '2026-01-10',
-    });
-
-    // Should NOT have ML calibration section
-    const textBlock = result.content.find(
-      (b) => b.type === 'text' && b.text.includes('ML Calibration'),
-    );
-    expect(textBlock).toBeUndefined();
-    vi.unstubAllGlobals();
-  });
-
-  it('limits top predictors to 5', async () => {
-    const findings = {
-      dataset: {
-        total_days: 10,
-        labeled_days: 8,
-        date_range: ['2026-01-01', '2026-01-10'],
-        overall_accuracy: 0.8,
-      },
-      structure_accuracy: {},
-      confidence_calibration: {},
-      flow_reliability: {},
-      majority_baseline: { structure: 'IC', rate: 0.5 },
-      top_correctness_predictors: Array.from({ length: 10 }, (_, i) => ({
-        feature: `feat_${i}`,
-        r: -0.5 + i * 0.1,
-        p: 0.01,
-      })),
-    };
-
-    mockSql
-      .mockResolvedValueOnce([]) // vol_realized
-      .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([
-        { findings, updated_at: new Date('2026-01-10') },
-      ]);
-
-    const result = await buildAnalysisContext([], {
-      mode: 'entry',
-      selectedDate: '2026-01-10',
-    });
-
-    const textBlock = result.content.find(
-      (b) => b.type === 'text' && b.text.includes('ML Calibration'),
-    );
-    const text = (textBlock as { type: 'text'; text: string }).text;
-
-    // Should show first 5 features only
-    expect(text).toContain('feat_0');
-    expect(text).toContain('feat_4');
-    expect(text).not.toContain('feat_5');
-    vi.unstubAllGlobals();
+  it('adds none in the midday and review modes either', async () => {
+    for (const mode of ['midday', 'review'] as const) {
+      const result = await buildAnalysisContext([], {
+        mode,
+        spx: 5700,
+        selectedDate: '2026-04-04',
+      });
+      const text = result.content
+        .flatMap((b) => (b.type === 'text' ? [b.text] : []))
+        .join('\n');
+      expect(text, mode).not.toContain('ML Calibration');
+    }
   });
 });
 
@@ -2444,8 +2277,7 @@ describe('buildAnalysisContext: vol realized context', () => {
         },
       ]) // vol_realized
       .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([]); // ml_findings
+      .mockResolvedValueOnce([]); // pre_market_data
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -2475,8 +2307,7 @@ describe('buildAnalysisContext: vol realized context', () => {
         },
       ]) // vol_realized
       .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([]); // ml_findings
+      .mockResolvedValueOnce([]); // pre_market_data
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -2504,8 +2335,7 @@ describe('buildAnalysisContext: vol realized context', () => {
         },
       ]) // vol_realized
       .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([]); // ml_findings
+      .mockResolvedValueOnce([]); // pre_market_data
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -2525,8 +2355,7 @@ describe('buildAnalysisContext: vol realized context', () => {
     mockSql
       .mockRejectedValueOnce(new Error('vol_realized table missing')) // vol_realized
       .mockResolvedValueOnce([]) // cone_levels
-      .mockResolvedValueOnce([]) // pre_market_data
-      .mockResolvedValueOnce([]); // ml_findings
+      .mockResolvedValueOnce([]); // pre_market_data
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -2892,7 +2721,7 @@ describe('buildAnalysisContext: coverage-fill', () => {
       'OVERNIGHT GAP: +24.5 pts from prior close',
     );
 
-    // mockSql call order: vol_realized → cone_levels → pre_market_data → ml_findings
+    // mockSql call order: vol_realized → cone_levels → pre_market_data
     // pre_market_data row must have `pre_market_data` field (the JSON column);
     // the fetcher unpacks it into preMarketRow when present.
     mockSql
@@ -2907,8 +2736,7 @@ describe('buildAnalysisContext: coverage-fill', () => {
             esSessionClose: 5705,
           },
         },
-      ]) // pre_market_data — triggers preMarketRow path
-      .mockResolvedValueOnce([]); // ml_findings
+      ]); // pre_market_data — triggers preMarketRow path
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',

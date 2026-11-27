@@ -59,7 +59,6 @@ import {
   fetchIvTermContext,
   fetchMainData,
   fetchMaxPainContext,
-  fetchMlCalibrationContext,
   fetchOiChangeContext,
   fetchPreMarketContext,
   fetchPriorDayFlowContext,
@@ -314,7 +313,6 @@ export async function buildAnalysisContext(
     darkPool,
     maxPainContext,
     oiChangeContext,
-    mlCalibrationContext,
     futuresContext,
     priorDayFlowContext,
     economicCalendarContext,
@@ -329,7 +327,6 @@ export async function buildAnalysisContext(
     fetchDarkPoolContext(context, analysisDate),
     fetchMaxPainContext(context, analysisDate),
     fetchOiChangeContext(context, analysisDate),
-    fetchMlCalibrationContext(),
     fetchFuturesContext(context, analysisDate, asOf),
     fetchPriorDayFlowContext(analysisDate),
     fetchEconomicCalendarContext(analysisDate),
@@ -465,7 +462,6 @@ export async function buildAnalysisContext(
   })()}
 - Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
-${mlCalibrationContext ? `\n## ML Calibration Update (from latest EDA pipeline run)\nWhen these numbers differ from the static values in the system prompt rules, use THESE numbers — they are more recent.\n${mlCalibrationContext}\n` : ''}
 ${unavailableSection}
 ${economicCalendarContext ? `\n## Today's Economic Events (from DB)\n${economicCalendarContext}\n` : ''}
 ${priorDayFlowContext ? `\n${priorDayFlowContext}\n` : ''}

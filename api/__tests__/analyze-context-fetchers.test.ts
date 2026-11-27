@@ -112,7 +112,6 @@ vi.mock('../_lib/archive-sidecar.js', () => ({
 vi.mock('../_lib/analyze-context-formatters.js', () => ({
   formatEconomicCalendarForClaude: vi.fn(() => 'econ'),
   formatMarketInternalsForClaude: vi.fn(() => 'internals'),
-  formatMlFindingsForClaude: vi.fn(() => 'ml'),
   formatPriorDayFlowForClaude: vi.fn(),
   formatSimilarDaysForClaude: vi.fn(() => 'similar'),
 }));
@@ -165,7 +164,6 @@ import {
   fetchDarkPoolContext,
   fetchMaxPainContext,
   fetchOiChangeContext,
-  fetchMlCalibrationContext,
   fetchFuturesContext,
   fetchPriorDayFlowContext,
   fetchEconomicCalendarContext,
@@ -304,12 +302,6 @@ describe('analyze-context-fetchers — catch fallbacks', () => {
   it('fetchOiChangeContext returns null on DB throw', async () => {
     vi.mocked(getOiChangeData).mockRejectedValueOnce(new Error('DB'));
     expect(await fetchOiChangeContext({ spx: 6605 }, '2026-04-29')).toBeNull();
-  });
-
-  it('fetchMlCalibrationContext returns null on DB throw', async () => {
-    const sql = vi.fn().mockRejectedValueOnce(new Error('DB'));
-    vi.mocked(getDb).mockReturnValue(sql as never);
-    expect(await fetchMlCalibrationContext()).toBeNull();
   });
 
   it('fetchFuturesContext returns null on formatter throw', async () => {
@@ -460,12 +452,6 @@ describe('analyze-context-fetchers — early returns', () => {
   it('fetchOiChangeContext returns null when no rows', async () => {
     vi.mocked(getOiChangeData).mockResolvedValueOnce([]);
     expect(await fetchOiChangeContext({}, '2026-04-29')).toBeNull();
-  });
-
-  it('fetchMlCalibrationContext returns null when no findings row', async () => {
-    const sql = vi.fn().mockResolvedValueOnce([]);
-    vi.mocked(getDb).mockReturnValue(sql as never);
-    expect(await fetchMlCalibrationContext()).toBeNull();
   });
 });
 
@@ -827,15 +813,35 @@ describe('analyze-context-fetchers — analog backends', () => {
   });
 });
 
-// ── fetchMainData: 0DTE P/C premium ratio signal (lines 241-254) ──────
+// ── fetchMainData: 0DTE P/C premium ratio note ────────────────────────
 //
-// When the zero_dte_index flow data has |NCP| > 0, the fetcher appends
-// a "Put/Call Premium Ratio" tail line to zeroDteIndexContext. The three
-// branches are: pcRatio > 1.5 (put-side hedging), pcRatio < 0.7
-// (call-side speculation), otherwise balanced. Pin every branch so a
-// future threshold edit can't silently change the trading signal.
+// When the zero_dte_index flow data has |NCP| > 0, the fetcher appends a
+// "Put/Call Premium Ratio" tail line to zeroDteIndexContext: the ratio, and
+// one neutral note. It used to read a ratio above 1.5 as an intraday bottom and
+// one below 0.7 as an intraday top, and told the model to raise PCS or CCS
+// confidence. The 171-day re-check of 2026-11-27 found no reliable link
+// between the ratio and the rest of the day's direction, so the note is the
+// same on every ratio and gives no direction. Pin it at both old thresholds
+// and between them, so no branch can bring a signal back.
 
-describe('analyze-context-fetchers — 0DTE P/C premium ratio signal', () => {
+const PC_RATIO_NOTE =
+  "Tested on 171 days (2026-11-27), this ratio showed no reliable link to the rest of the day's direction; treat it as context, not a signal.";
+
+/** The words of the old branches, none of which may come back. */
+const OLD_SIGNAL_WORDS = [
+  'Extreme put-side hedging',
+  'Extreme call-side speculation',
+  'potential intraday bottom',
+  'potential intraday top',
+  'Increases PCS confidence',
+  'Increases CCS confidence',
+  'PCS confidence',
+  'CCS confidence',
+  'Balanced',
+  'no additional signal',
+];
+
+describe('analyze-context-fetchers — 0DTE P/C premium ratio note', () => {
   /**
    * Build a partial getFlowData mock where the 8th call (zero_dte_index)
    * resolves to the rows under test and every other call resolves to [].
@@ -884,91 +890,51 @@ describe('analyze-context-fetchers — 0DTE P/C premium ratio signal', () => {
     expect(result.zeroDteIndexContext).not.toContain('Put/Call Premium Ratio');
   });
 
-  it('emits "Balanced" message when pcRatio is exactly 1.0', async () => {
-    mockZeroDteRows([{ ncp: 100, npp: 100 }]);
-    const result = await fetchMainData(
-      '2026-04-29',
-      undefined,
-      undefined,
-      undefined,
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Put/Call Premium Ratio: 1.00',
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Balanced — no additional signal.',
-    );
-  });
+  // The ratio |NPP| / |NCP| is rounded to 2 places. The rows are the old
+  // thresholds' two sides and the middle: 0.5 and 0.69 were "call-side
+  // speculation", 0.7 and 1.5 the strict boundaries, 1.51 and 2.0 "put-side
+  // hedging", and 1.0 balanced.
+  it.each([
+    [100, 50, '0.50'],
+    [100, 69, '0.69'],
+    [10, 7, '0.70'],
+    [100, 100, '1.00'],
+    [10, 15, '1.50'],
+    [100, 151, '1.51'],
+    [50, 100, '2.00'],
+  ])(
+    'ends the ratio line with the one neutral note: NCP %s, NPP %s, ratio %s',
+    async (ncp, npp, ratio) => {
+      mockZeroDteRows([{ ncp, npp }]);
 
-  it('emits "Extreme call-side speculation" when pcRatio < 0.7', async () => {
-    mockZeroDteRows([{ ncp: 100, npp: 50 }]); // ratio = 0.5
-    const result = await fetchMainData(
-      '2026-04-29',
-      undefined,
-      undefined,
-      undefined,
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Put/Call Premium Ratio: 0.50',
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Extreme call-side speculation',
-    );
-    expect(result.zeroDteIndexContext).toContain('CCS confidence');
-  });
+      const result = await fetchMainData(
+        '2026-04-29',
+        undefined,
+        undefined,
+        undefined,
+      );
 
-  it('emits "Extreme put-side hedging demand" when pcRatio > 1.5', async () => {
-    mockZeroDteRows([{ ncp: 50, npp: 100 }]); // ratio = 2.0
-    const result = await fetchMainData(
-      '2026-04-29',
-      undefined,
-      undefined,
-      undefined,
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Put/Call Premium Ratio: 2.00',
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Extreme put-side hedging demand',
-    );
-    expect(result.zeroDteIndexContext).toContain('PCS confidence');
-  });
+      expect(result.zeroDteIndexContext).toBe(
+        `flow\n  0DTE Put/Call Premium Ratio: ${ratio} (|NPP|/|NCP|) — ${PC_RATIO_NOTE}`,
+      );
+      for (const word of OLD_SIGNAL_WORDS) {
+        expect(result.zeroDteIndexContext, word).not.toContain(word);
+      }
+    },
+  );
 
-  it('treats pcRatio === 0.7 (boundary) as Balanced (strict <)', async () => {
-    mockZeroDteRows([{ ncp: 10, npp: 7 }]); // ratio = 0.7 exactly
-    const result = await fetchMainData(
-      '2026-04-29',
-      undefined,
-      undefined,
-      undefined,
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Put/Call Premium Ratio: 0.70',
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Balanced — no additional signal.',
-    );
-    expect(result.zeroDteIndexContext).not.toContain(
-      'Extreme call-side speculation',
-    );
-  });
+  it('keeps the sign out of the ratio: negative NCP and NPP give the same line', async () => {
+    mockZeroDteRows([{ ncp: -50, npp: -100 }]);
 
-  it('treats pcRatio === 1.5 (boundary) as Balanced (strict >)', async () => {
-    mockZeroDteRows([{ ncp: 10, npp: 15 }]); // ratio = 1.5 exactly
     const result = await fetchMainData(
       '2026-04-29',
       undefined,
       undefined,
       undefined,
     );
-    expect(result.zeroDteIndexContext).toContain(
-      'Put/Call Premium Ratio: 1.50',
-    );
-    expect(result.zeroDteIndexContext).toContain(
-      'Balanced — no additional signal.',
-    );
-    expect(result.zeroDteIndexContext).not.toContain(
-      'Extreme put-side hedging demand',
+
+    expect(result.zeroDteIndexContext).toBe(
+      `flow\n  0DTE Put/Call Premium Ratio: 2.00 (|NPP|/|NCP|) — ${PC_RATIO_NOTE}`,
     );
   });
 
@@ -989,10 +955,10 @@ describe('analyze-context-fetchers — 0DTE P/C premium ratio signal', () => {
   });
 
   it('uses .at(-1) — latest row drives the ratio when multiple exist', async () => {
-    // Earlier row would give a balanced ratio; latest row is extreme put.
+    // The earlier row would give 1.00; the latest gives 2.00.
     mockZeroDteRows([
-      { ncp: 100, npp: 100 }, // 1.00 — balanced
-      { ncp: 50, npp: 100 }, // 2.00 — extreme put
+      { ncp: 100, npp: 100 }, // 1.00
+      { ncp: 50, npp: 100 }, // 2.00
     ]);
     const result = await fetchMainData(
       '2026-04-29',
@@ -1003,9 +969,8 @@ describe('analyze-context-fetchers — 0DTE P/C premium ratio signal', () => {
     expect(result.zeroDteIndexContext).toContain(
       'Put/Call Premium Ratio: 2.00',
     );
-    expect(result.zeroDteIndexContext).toContain(
-      'Extreme put-side hedging demand',
-    );
+    expect(result.zeroDteIndexContext).not.toContain('Ratio: 1.00');
+    expect(result.zeroDteIndexContext).toContain(PC_RATIO_NOTE);
   });
 });
 

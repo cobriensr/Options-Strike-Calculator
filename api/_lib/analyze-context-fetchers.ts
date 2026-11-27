@@ -78,7 +78,6 @@ import logger from './logger.js';
 import {
   formatEconomicCalendarForClaude,
   formatMarketInternalsForClaude,
-  formatMlFindingsForClaude,
   formatPriorDayFlowForClaude,
   type EconomicEventRow,
   type VolRealizedRow,
@@ -242,14 +241,13 @@ export async function fetchMainData(
       const absNpp = Math.abs(latest.npp);
       if (absNcp > 0) {
         const pcRatio = Math.round((absNpp / absNcp) * 100) / 100;
-        let signal = '';
-        if (pcRatio > 1.5)
-          signal =
-            'Extreme put-side hedging demand — potential intraday bottom. Increases PCS confidence.';
-        else if (pcRatio < 0.7)
-          signal =
-            'Extreme call-side speculation — potential intraday top. Increases CCS confidence.';
-        else signal = 'Balanced — no additional signal.';
+        // One note on every ratio. The old text read a ratio above 1.5 as an
+        // intraday bottom and one below 0.7 as an intraday top, and told the
+        // model to raise PCS or CCS confidence; the 171-day re-check found no
+        // reliable link to the rest of the day's direction
+        // (docs/tmp/prompt-check-pcr-2026-11-27.md).
+        const signal =
+          "Tested on 171 days (2026-11-27), this ratio showed no reliable link to the rest of the day's direction; treat it as context, not a signal.";
         result.zeroDteIndexContext += `\n  0DTE Put/Call Premium Ratio: ${pcRatio.toFixed(2)} (|NPP|/|NCP|) — ${signal}`;
       }
     }
@@ -578,35 +576,6 @@ export async function fetchOiChangeContext(
     return formatOiChangeForClaude(oiChangeRows, currentSpx ?? undefined);
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch OI change data');
-    Sentry.captureException(error_);
-    return null;
-  }
-}
-
-// ── ML calibration ────────────────────────────────────────────────────
-
-export async function fetchMlCalibrationContext(): Promise<string | null> {
-  try {
-    const sql = getDb();
-    const mlRows = await withDbRetry(
-      () => sql`
-        SELECT findings, updated_at FROM ml_findings WHERE id = 1
-      `,
-      2,
-      10_000,
-    );
-    if (mlRows.length === 0) return null;
-    const { findings, updated_at } = mlRows[0] as {
-      findings?: Record<string, unknown>;
-      updated_at?: Date;
-    };
-    if (!findings || !updated_at) return null;
-    return formatMlFindingsForClaude(findings, updated_at);
-  } catch (error_) {
-    logger.warn(
-      { err: error_ },
-      'ML findings fetch failed — using static prompt values',
-    );
     Sentry.captureException(error_);
     return null;
   }
