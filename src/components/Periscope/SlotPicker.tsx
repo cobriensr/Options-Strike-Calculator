@@ -31,6 +31,9 @@ interface SlotPickerProps {
   canPrev: boolean;
   canNext: boolean;
   isLive: boolean;
+  /** Regular session open (the panel's `liveMarketOpen`). The live toggle's
+   *  dot means "streaming", so it shows only while this is true. */
+  marketOpen: boolean;
   asOf: string | null;
   loading: boolean;
   onSelectSlot: (slot: PeriscopeSelectedSlot | null) => void;
@@ -47,12 +50,17 @@ export function SlotPicker({
   canPrev,
   canNext,
   isLive,
+  marketOpen,
   asOf,
   loading,
   onSelectSlot,
   onRefresh,
   stepTo,
 }: SlotPickerProps) {
+  // Live route with the market open: the view is streaming. After the close
+  // the live route holds the last session's map and the panel header carries
+  // its capture time, so neither the dot nor the asOf time shows.
+  const streaming = isLive && marketOpen;
   return (
     <div className="flex flex-wrap items-center gap-2">
       <input
@@ -143,9 +151,9 @@ export function SlotPicker({
         }}
         aria-label="Return to live"
       >
-        {isLive ? '● live' : 'live'}
+        {streaming ? '● live' : 'live'}
       </button>
-      {asOf && isLive && (
+      {asOf && streaming && (
         <span
           className="font-mono text-[10px]"
           style={{ color: theme.textMuted }}

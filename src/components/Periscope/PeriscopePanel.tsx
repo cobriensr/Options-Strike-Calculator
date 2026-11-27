@@ -14,11 +14,17 @@
  *
  * Empty states are explicit: "no SPX spot yet" or "no GEXBot capture
  * for today yet" — never a blank panel.
+ *
+ * After the close the live route holds the last session's map: the body
+ * header then reads "Slot Fri 3:00 PM CT · CLOSED" and the slot list is that
+ * session's. A picked slot is a past slice by choice and is never labelled
+ * CLOSED.
  */
 
 import { memo } from 'react';
 import { SectionBox } from '../ui';
 import { theme } from '../../themes';
+import { formatClosedLabel } from '../../utils/closed-session';
 import { formatTimeCT } from '../../utils/component-formatters';
 import { getCTTime } from '../../utils/timezone';
 import type {
@@ -37,6 +43,9 @@ const PANEL_TITLE = {
 } as const;
 
 interface PeriscopePanelProps {
+  /** Regular session open (App's `liveMarketOpen`). When false, the live
+   *  route's view is the last session's, and the header says so. */
+  marketOpen: boolean;
   view: PeriscopeView | null;
   emptyReason: 'no_spot' | 'no_slot' | null;
   asOf: string | null;
@@ -79,6 +88,7 @@ function isoToCtDate(iso: string): string {
 }
 
 function PeriscopePanelInner({
+  marketOpen,
   view,
   emptyReason,
   asOf,
@@ -135,7 +145,8 @@ function PeriscopePanelInner({
       </p>
     );
   } else {
-    body = <PeriscopeBody view={view} />;
+    // A picked slot is a past slice by choice, never "the close".
+    body = <PeriscopeBody view={view} closed={isLive && !marketOpen} />;
   }
 
   const source = view == null ? null : periscopeSourceAt(view.capturedAt);
@@ -153,6 +164,7 @@ function PeriscopePanelInner({
           canPrev={canPrev}
           canNext={canNext}
           isLive={isLive}
+          marketOpen={marketOpen}
           asOf={asOf}
           loading={loading}
           onSelectSlot={onSelectSlot}
@@ -167,12 +179,32 @@ function PeriscopePanelInner({
   );
 }
 
-function PeriscopeBody({ view }: { view: PeriscopeView }) {
+function PeriscopeBody({
+  view,
+  closed,
+}: {
+  view: PeriscopeView;
+  /** True on the live route after the close: the view is the last session's. */
+  closed: boolean;
+}) {
+  // The clock is read at render and only decides whether the label carries a
+  // date (a capture more than 6 days old), so a tab left closed needs no tick.
+  // An empty label (a capture time that does not parse) keeps the plain
+  // header, so a bare "· CLOSED" never dangles.
+  const closedLabel = closed
+    ? formatClosedLabel(view.capturedAt, new Date())
+    : '';
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between font-mono text-[11px]">
         <span style={{ color: theme.textSecondary }}>
-          Slot {formatTimeCT(view.capturedAt)} CT · {view.expiry}
+          {closedLabel === '' ? (
+            <>
+              Slot {formatTimeCT(view.capturedAt)} CT · {view.expiry}
+            </>
+          ) : (
+            <>Slot {closedLabel} · CLOSED</>
+          )}
         </span>
         <span style={{ color: theme.text }}>spot {view.spot.toFixed(2)}</span>
       </div>

@@ -5,8 +5,8 @@
  * in `periscope-trade-plan.test.ts`.
  */
 
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import type { PeriscopeView } from '../hooks/usePeriscopeExposure';
 import { PeriscopePanel } from '../components/Periscope/PeriscopePanel';
 import { dealerClaims } from './helpers/dealer-claims';
@@ -51,6 +51,7 @@ function makeView(overrides: Partial<PeriscopeView> = {}): PeriscopeView {
 }
 
 const baseProps = {
+  marketOpen: true,
   view: null as PeriscopeView | null,
   emptyReason: null as 'no_spot' | 'no_slot' | null,
   asOf: null as string | null,
@@ -402,5 +403,205 @@ describe('PeriscopePanel: spot header', () => {
     render(<PeriscopePanel {...baseProps} view={makeView()} />);
     // Default view spot is 5800.25.
     expect(screen.getByText(/spot 5800\.25/)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// CLOSED SESSION — the live route after the close
+// ============================================================
+//
+// After the close the hook holds the last session's live view and the server
+// sends that session's slots (spec: gexbot-after-close-design). The panel
+// says so in its header, with the capture time; a picked slot never does.
+
+describe('PeriscopePanel: closed session', () => {
+  // Friday 2026-11-20 (CST, UTC-6): the 15:00 CT slot is 21:00Z.
+  const FRIDAY_SLOTS = [
+    '2026-11-20T20:40:00Z',
+    '2026-11-20T20:50:00Z',
+    '2026-11-20T21:00:00Z',
+  ];
+  const FRIDAY_LAST = '2026-11-20T21:00:00Z';
+  const SATURDAY = new Date('2026-11-21T18:00:00Z');
+
+  function fridayView(capturedAt = FRIDAY_LAST): PeriscopeView {
+    return makeView({
+      capturedAt,
+      priorCapturedAt: '2026-11-20T20:50:00Z',
+      expiry: '2026-11-20',
+    });
+  }
+
+  /** Only Date is faked, so Testing Library's own timers keep running. */
+  function setNow(now: Date) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("closed on a Saturday, labels Friday's view CLOSED with its capture time", () => {
+    setNow(SATURDAY);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView()}
+        asOf={FRIDAY_LAST}
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    expect(
+      screen.getByText('Slot Fri 3:00 PM CT · CLOSED'),
+    ).toBeInTheDocument();
+    // The expiry stays on the open header, not here: "Fri" already dates it.
+    expect(screen.queryByText(/2026-11-20/)).toBeNull();
+  });
+
+  it('adds the date once the capture is more than 6 days old', () => {
+    setNow(new Date('2026-11-28T18:00:00Z'));
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView()}
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    expect(
+      screen.getByText('Slot Fri Nov 20 3:00 PM CT · CLOSED'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the plain slot header when the capture time does not parse', () => {
+    setNow(SATURDAY);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={makeView({ capturedAt: 'not-a-date' })}
+      />,
+    );
+    // No label to show, so no dangling CLOSED.
+    expect(screen.queryByText(/CLOSED/)).toBeNull();
+    expect(screen.getByText(/^Slot\s+CT · 2026-05-08$/)).toBeInTheDocument();
+  });
+
+  it("lists the session's slots in the time dropdown, on the view's date", () => {
+    setNow(SATURDAY);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView()}
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    const select = screen.getByRole('combobox', {
+      name: 'Periscope slot time',
+    });
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['14:40', '14:50', '15:00']);
+    expect(select).toHaveValue(FRIDAY_LAST);
+    // Saturday's CT date is 2026-11-21; the date shown is the view's.
+    expect(screen.getByLabelText('Periscope slot date')).toHaveValue(
+      '2026-11-20',
+    );
+  });
+
+  it("sends the view's CT date, not today's, when a slot is picked", () => {
+    setNow(SATURDAY);
+    const onSelectSlot = vi.fn();
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView()}
+        availableSlots={FRIDAY_SLOTS}
+        onSelectSlot={onSelectSlot}
+      />,
+    );
+    fireEvent.change(
+      screen.getByRole('combobox', { name: 'Periscope slot time' }),
+      { target: { value: '2026-11-20T20:50:00Z' } },
+    );
+    expect(onSelectSlot).toHaveBeenCalledTimes(1);
+    expect(onSelectSlot).toHaveBeenCalledWith({
+      date: '2026-11-20',
+      time: '14:50',
+    });
+  });
+
+  it('drops the streaming dot and the asOf time from the live toggle', () => {
+    setNow(SATURDAY);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView()}
+        asOf={FRIDAY_LAST}
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    const toggle = screen.getByRole('button', { name: 'Return to live' });
+    expect(toggle).toHaveTextContent(/^live$/);
+    expect(toggle).toBeDisabled();
+    // The header carries the capture time; no bare "3:00 PM CT" beside it.
+    expect(screen.queryByText(/^\d{1,2}:\d{2}\sPM CT$/)).toBeNull();
+  });
+
+  it('drops the dot while closed even with no view to label', () => {
+    setNow(SATURDAY);
+    render(<PeriscopePanel {...baseProps} marketOpen={false} />);
+    expect(
+      screen.getByRole('button', { name: 'Return to live' }),
+    ).toHaveTextContent(/^live$/);
+  });
+
+  it('open: keeps the slot header, the live dot and the asOf time', () => {
+    setNow(new Date('2026-11-20T21:30:00Z'));
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={true}
+        view={fridayView()}
+        asOf={FRIDAY_LAST}
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    expect(
+      screen.getByText(/^Slot 3:00\sPM CT · 2026-11-20$/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/CLOSED/)).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Return to live' }),
+    ).toHaveTextContent('● live');
+    expect(screen.getByText(/^3:00\sPM CT$/)).toBeInTheDocument();
+  });
+
+  it('a picked slot is never labelled CLOSED', () => {
+    setNow(SATURDAY);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView('2026-11-20T20:50:00Z')}
+        availableSlots={FRIDAY_SLOTS}
+        selectedSlot={{ date: '2026-11-20', time: '14:50' }}
+      />,
+    );
+    expect(screen.queryByText(/CLOSED/)).toBeNull();
+    expect(
+      screen.getByText(/^Slot 2:50\sPM CT · 2026-11-20$/),
+    ).toBeInTheDocument();
+    // Off the live route the toggle is the way back, not a status.
+    const toggle = screen.getByRole('button', { name: 'Return to live' });
+    expect(toggle).toHaveTextContent(/^live$/);
+    expect(toggle).toBeEnabled();
   });
 });

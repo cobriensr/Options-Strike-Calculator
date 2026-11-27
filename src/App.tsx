@@ -1355,6 +1355,7 @@ export default function StrikeCalculator() {
               fallback={<SkeletonSection lines={6} tall />}
             >
               <PeriscopePanel
+                marketOpen={liveMarketOpen}
                 view={periscope.view}
                 emptyReason={periscope.emptyReason}
                 asOf={periscope.asOf}
