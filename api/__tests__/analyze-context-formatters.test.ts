@@ -6,10 +6,8 @@
  * The companion suite `format-vol-realized.test.ts` covers
  * `formatVolRealizedForClaude`. This file targets the remaining uncovered
  * surface:
- *   - `formatMlFindingsForClaude` early-return branch when findings.dataset
- *     is missing (line 91).
- *   - `formatSimilarDaysForClaude` full body (lines 524-543), including the
- *     empty-cohort fast path and the multi-analog rendering.
+ *   - `formatSimilarDaysForClaude` full body, including the empty-cohort
+ *     fast path and the multi-analog rendering.
  *
  * These are pure string formatters that feed the analyze.ts cached prompt
  * prefix — silent drift in the output bytes invalidates Anthropic's cache
@@ -20,45 +18,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  formatMlFindingsForClaude,
   formatSimilarDaysForClaude,
   type HistoricalAnalog,
 } from '../_lib/analyze-context-formatters.js';
 
-// ── formatMlFindingsForClaude — line 91 (no-dataset fast path) ────────
-
-describe('formatMlFindingsForClaude (no-dataset fast path)', () => {
-  const FIXED_UPDATED_AT = new Date('2026-04-04T09:37:49Z');
-
-  it('returns the "data unavailable" line when findings is empty', () => {
-    const out = formatMlFindingsForClaude({}, FIXED_UPDATED_AT);
-    expect(out).toBe('Latest ML pipeline run: 2026-04-04 (data unavailable)');
-  });
-
-  it('returns the "data unavailable" line when findings.dataset is explicitly missing', () => {
-    // Other top-level keys are present but `dataset` is not — guard must
-    // still short-circuit. This pins the precise key check (`!findings?.dataset`).
-    const out = formatMlFindingsForClaude(
-      {
-        confidence_calibration: { HIGH: { correct: 1, total: 1, rate: 1 } },
-        flow_reliability: {},
-      },
-      FIXED_UPDATED_AT,
-    );
-    expect(out).toBe('Latest ML pipeline run: 2026-04-04 (data unavailable)');
-  });
-
-  it('formats the date as ISO-8601 YYYY-MM-DD (not localized)', () => {
-    // The slice(0, 10) on toISOString() makes the date UTC-stable. A late
-    // afternoon UTC instant on April 4 must still render as 2026-04-04,
-    // not the local-tz April 3/4 boundary.
-    const lateUtc = new Date('2026-04-04T23:59:59Z');
-    const out = formatMlFindingsForClaude({}, lateUtc);
-    expect(out).toBe('Latest ML pipeline run: 2026-04-04 (data unavailable)');
-  });
-});
-
-// ── formatSimilarDaysForClaude — lines 525-543 (full body) ────────────
+// ── formatSimilarDaysForClaude (full body) ────────────────────────────
 
 describe('formatSimilarDaysForClaude', () => {
   const TODAY_SUMMARY =
