@@ -780,9 +780,9 @@ export interface ExpectedMoveRow extends ExpectedMove {
   /**
    * Every strike in the capture the move is computed from, as decoded: the
    * call and put IV (fractions), `null` on a side the vendor sent no quote
-   * for. `[]` when the capture has no usable `mini_contracts` (absent, not an
-   * array, or no row with a finite strike). Carried even when the move itself
-   * is `unavailable`.
+   * for. `[]` when the capture has no `mini_contracts` row that
+   * `decodeStrikeIvs` can use. Carried even when the move itself is
+   * `unavailable`.
    */
   strikeIvs: DecodedStrikeIv[];
 }
