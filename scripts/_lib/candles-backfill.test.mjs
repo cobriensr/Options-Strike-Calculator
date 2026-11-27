@@ -23,6 +23,7 @@ import {
   fetchSchwabDailyCandles,
   fetchSchwabDailyCloses,
   fetchUwCandles,
+  isUsablePrice,
   loadSchwabCloses,
   planCandleDays,
   processEtfDay,
@@ -1162,6 +1163,25 @@ describe('toIndexRows', () => {
     const { rows, dropped } = toIndexRows('SPX', D1, input, 10);
     expect(rows).toHaveLength(2);
     expect(rows.length + dropped).toBe(input.length);
+  });
+});
+
+describe('isUsablePrice', () => {
+  it.each([6401.28, 0.01, 1])('accepts %s', (value) => {
+    expect(isUsablePrice(value)).toBe(true);
+  });
+
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    null,
+    undefined,
+    '6401.28',
+    {},
+  ])('refuses %s', (value) => {
+    expect(isUsablePrice(value)).toBe(false);
   });
 });
 

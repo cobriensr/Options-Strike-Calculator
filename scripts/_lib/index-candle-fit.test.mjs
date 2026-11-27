@@ -74,6 +74,15 @@ function fit(overrides) {
   });
 }
 
+/** A failed fit that stopped before it measured anything. */
+const NO_MEASURES = {
+  ok: false,
+  matched: null,
+  ratio: null,
+  scatter: null,
+  deviation: null,
+};
+
 describe('FIT', () => {
   it('holds the bounds the spec fixes', () => {
     expect(FIT).toEqual({
@@ -95,6 +104,7 @@ describe('fitRatio', () => {
     expect(out.ok).toBe(true);
     expect(out.ratio).toBeCloseTo(10.04, 10);
     expect(out.scatter).toBeCloseTo(0, 8);
+    expect(out.deviation).toBeCloseTo(0, 10);
     expect(out.matched).toBe(390);
   });
 
@@ -153,6 +163,123 @@ describe('fitRatio', () => {
     expect(out.reason).toContain('matched minutes 0 ');
   });
 
+  describe('a measure that is missing or not a finite number fails the gates closed', () => {
+    const bars = regularDay(OPEN, 390);
+    // A day priced at ratio 12 against a 10.04 close ratio: a deviation of
+    // 0.195, which a numeric close ratio refuses.
+    const spots = spotsFor(bars, times(12));
+
+    it('fails the day at ratio 12 on a numeric close ratio, as the baseline', () => {
+      const out = fit({ bars, spots });
+
+      expect(out.ok).toBe(false);
+      expect(out.reason).toContain('0.195219 from the close ratio 10.04');
+    });
+
+    it.each([
+      ['undefined', undefined, 'undefined'],
+      ['null', null, 'null'],
+      [
+        'the ratioFor object, not its ratio',
+        { ratio: 10.04, indexClose: 6401.28, etfClose: 637.14 },
+        'object',
+      ],
+      ['a numeric string', '10.04', 'string'],
+      ['NaN', Number.NaN, 'NaN'],
+      ['zero', 0, '0'],
+      ['a negative ratio', -10.04, '-10.04'],
+      ['Infinity', Number.POSITIVE_INFINITY, 'Infinity'],
+    ])(
+      'fails a day when the close ratio is %s',
+      (_label, closeRatio, shown) => {
+        const out = fit({ bars, spots, closeRatio });
+
+        expect(out).toMatchObject(NO_MEASURES);
+        expect(out.reason).toBe(`close ratio ${shown} is not a number above 0`);
+      },
+    );
+
+    it('fails a day with a NaN price at a bar minute, naming the minute', () => {
+      const withNaN = spotsFor(bars, (b, i) =>
+        i === 5 ? Number.NaN : Number(b.close) * 10.04,
+      );
+
+      const out = fit({ bars, spots: withNaN });
+
+      expect(out).toMatchObject(NO_MEASURES);
+      expect(out.reason).toBe(
+        `price file has no finite price for minute ${minuteOf(bars[5])}`,
+      );
+    });
+
+    it.each([
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['a string', '6400'],
+      ['null', null],
+    ])('fails a day with %s as a price at a bar minute', (_label, price) => {
+      const minutes = new Map(
+        bars.map((b, i) => [
+          minuteOf(b),
+          i === 7 ? price : Number(b.close) * 10.04,
+        ]),
+      );
+
+      const out = fit({ bars, spots: { source: 'tape', minutes } });
+
+      expect(out).toMatchObject(NO_MEASURES);
+      expect(out.reason).toContain(`minute ${minuteOf(bars[7])}`);
+    });
+
+    it('does not read a bad price at a minute with no regular bar', () => {
+      const minutes = new Map(
+        bars.map((b) => [minuteOf(b), Number(b.close) * 10.04]),
+      );
+      minutes.set(minuteOf(bars[0]) - 60, Number.NaN);
+
+      expect(fit({ bars, spots: { source: 'tape', minutes } }).ok).toBe(true);
+    });
+
+    it('leaves a bar with a NaN close unmatched, and the ratio finite', () => {
+      const day = regularDay(OPEN, 390);
+      day[10] = { ...day[10], close: Number.NaN };
+
+      const out = fit({ bars: day, spots: spotsFor(day, () => 6400) });
+
+      expect(out.ok).toBe(true);
+      expect(out.matched).toBe(389);
+      expect(out.ratio).toBeCloseTo(6400 / 637, 10);
+    });
+
+    it('counts a NaN-close bar as not matched toward the floor', () => {
+      const day = regularDay(OPEN, 387);
+      day[10] = { ...day[10], close: Number.NaN };
+
+      const out = fit({ bars: day, spots: spotsFor(day, () => 6400) });
+
+      expect(out).toMatchObject({ ok: false, matched: 386 });
+      expect(out.reason).toContain('matched minutes 386');
+    });
+  });
+
+  describe('a price file that did not read', () => {
+    it('fails with the readSpots reason, not a source mismatch', () => {
+      const bars = regularDay(OPEN, 390);
+      const reason = 'no price file SPX-2026-08-12-spots.json in /spots';
+
+      const out = fit({ bars, spots: { ok: false, reason } });
+
+      expect(out).toMatchObject(NO_MEASURES);
+      expect(out.reason).toBe(reason);
+    });
+
+    it('fails with a reason when the failed answer carries none', () => {
+      const out = fit({ bars: [], spots: { ok: false } });
+
+      expect(out.ok).toBe(false);
+      expect(out.reason).toBe('price file not read');
+    });
+  });
+
   describe('SPX matched minutes', () => {
     it('fails at 386 of 390 and passes at 387, the ceil of 99%', () => {
       const bars = regularDay(OPEN, 390);
@@ -170,7 +297,13 @@ describe('fitRatio', () => {
         ),
       });
 
-      expect(at386.ok).toBe(false);
+      expect(at386).toMatchObject({
+        ok: false,
+        matched: 386,
+        ratio: null,
+        scatter: null,
+        deviation: null,
+      });
       expect(at386.reason).toBe(
         'matched minutes 386 is under the 387 an SPX day needs ' +
           '(99% of its 390 cash minutes)',
@@ -194,7 +327,7 @@ describe('fitRatio', () => {
         spots: spotsFor(bars, upTo(208)),
       });
 
-      expect(at207.ok).toBe(false);
+      expect(at207).toMatchObject({ ok: false, matched: 207, ratio: null });
       expect(at207.reason).toContain('matched minutes 207');
       expect(at207.reason).toContain('208');
       expect(at208.ok).toBe(true);
@@ -206,7 +339,7 @@ describe('fitRatio', () => {
 
       const out = fit({ bars, spots: spotsFor(full, times(10.04)) });
 
-      expect(out.ok).toBe(false);
+      expect(out).toMatchObject({ ok: false, matched: 386 });
       expect(out.reason).toContain('matched minutes 386');
     });
 
@@ -216,7 +349,7 @@ describe('fitRatio', () => {
         spots: { source: 'tape', minutes: new Map() },
       });
 
-      expect(out.ok).toBe(false);
+      expect(out).toMatchObject({ ok: false, matched: 0, ratio: null });
       expect(out.reason).toContain('matched minutes 0');
     });
 
@@ -228,7 +361,7 @@ describe('fitRatio', () => {
         spots: { source: 'tape', minutes: new Map() },
       });
 
-      expect(out.ok).toBe(false);
+      expect(out).toMatchObject({ ok: false, matched: 0, ratio: null });
       expect(out.reason).toContain('matched minutes 0');
     });
 
@@ -263,7 +396,7 @@ describe('fitRatio', () => {
         spots: spotsFor(bars150, times(41), 'parity'),
       });
 
-      expect(at149.ok).toBe(false);
+      expect(at149).toMatchObject({ ok: false, matched: 149, ratio: null });
       expect(at149.reason).toBe(
         'matched minutes 149 is under the 150 an NDX day needs',
       );
@@ -300,7 +433,11 @@ describe('fitRatio', () => {
     it('fails a scatter of 6.01, naming the measure, its value and the bound', () => {
       const out = scatterDay(6.01);
 
-      expect(out.ok).toBe(false);
+      // The measures taken before the gate failed ride on the failure.
+      expect(out).toMatchObject({ ok: false, matched: 150 });
+      expect(out.ratio).toBeCloseTo(41, 10);
+      expect(out.scatter).toBeCloseTo(6.01, 9);
+      expect(out.deviation).toBeCloseTo(0, 12);
       expect(out.reason).toMatch(
         /^scatter 6\.01\d* is over the 6 pt an NDX day allows$/,
       );
@@ -348,6 +485,10 @@ describe('fitRatio', () => {
       for (const factor of [1.00151, 1 - 0.00151]) {
         const out = deviated(factor);
         expect(out.ok).toBe(false);
+        expect(out.matched).toBe(390);
+        expect(out.ratio).toBeCloseTo(10.04 * factor, 10);
+        expect(out.scatter).toBeCloseTo(0, 8);
+        expect(out.deviation).toBeCloseTo(0.00151, 9);
         expect(out.reason).toMatch(
           /^fitted ratio 10\.\d+ is 0\.0015\d* from the close ratio 10\.04, over the 0\.0015 allowed$/,
         );
@@ -381,7 +522,7 @@ describe('fitRatio', () => {
 
       const out = fit({ bars, spots: spotsFor(bars, times(10.04), 'parity') });
 
-      expect(out.ok).toBe(false);
+      expect(out).toMatchObject(NO_MEASURES);
       expect(out.reason).toBe(
         'price file source parity is not tape, which SPX needs',
       );
@@ -398,7 +539,7 @@ describe('fitRatio', () => {
         closeRatio: 41,
       });
 
-      expect(out.ok).toBe(false);
+      expect(out).toMatchObject(NO_MEASURES);
       expect(out.reason).toBe(
         'price file source tape is not parity, which NDX needs',
       );
@@ -500,7 +641,7 @@ describe('fitRatio', () => {
       spots: spotsFor(bars, times(10.04)),
     });
 
-    expect(out.ok).toBe(false);
+    expect(out).toMatchObject(NO_MEASURES);
     expect(out.reason).toContain('RUT');
   });
 });
@@ -622,13 +763,18 @@ describe('levelCheck', () => {
       low: LOW,
     });
 
-    expect(out.ok).toBe(false);
+    expect(out).toMatchObject({ ok: false, dh: null, dl: null });
     expect(out.reason).toContain('no regular rows');
   });
 
   it.each([
     ['no high', { high: undefined }],
+    ['a null high', { high: null }],
+    ['a zero high', { high: 0 }],
     ['a NaN low', { low: Number.NaN }],
+    ['a negative low', { low: -1 }],
+    ['an Infinity high', { high: Number.POSITIVE_INFINITY }],
+    ['a text low', { low: '6390.25' }],
   ])('fails, with a reason, when Schwab gives %s', (_label, overrides) => {
     const out = levelCheck({
       symbol: 'SPX',
@@ -638,7 +784,7 @@ describe('levelCheck', () => {
       ...overrides,
     });
 
-    expect(out.ok).toBe(false);
+    expect(out).toMatchObject({ ok: false, dh: null, dl: null });
     expect(out.reason).toContain('no usable Schwab daily high and low');
   });
 
@@ -650,8 +796,53 @@ describe('levelCheck', () => {
       low: LOW,
     });
 
-    expect(out.ok).toBe(false);
+    expect(out).toMatchObject({ ok: false, dh: null, dl: null });
     expect(out.reason).toContain('RUT');
+  });
+
+  describe('a regular row with no finite high or low', () => {
+    it.each([
+      ['a NaN high', { high: Number.NaN }],
+      ['a NaN low', { low: Number.NaN }],
+      ['a missing high', { high: undefined }],
+      ['a null low', { low: null }],
+      ['an Infinity high', { high: Number.POSITIVE_INFINITY }],
+      ['a text low', { low: '6390' }],
+    ])('fails the day on %s, never passes it', (_label, overrides) => {
+      const rows = [
+        ...rowsAt(0, 0),
+        { market_time: 'r', high: HIGH, low: LOW, ...overrides },
+      ];
+
+      const out = levelCheck({ symbol: 'SPX', rows, high: HIGH, low: LOW });
+
+      expect(out).toMatchObject({ ok: false, dh: null, dl: null });
+      expect(out.reason).toBe('a regular SPX row has no finite high or low');
+    });
+
+    it('fails a single NaN row, the case that read as ok: true', () => {
+      const rows = [{ market_time: 'r', high: Number.NaN, low: Number.NaN }];
+
+      const out = levelCheck({ symbol: 'SPX', rows, high: 6420, low: 6390 });
+
+      expect(out.ok).toBe(false);
+    });
+
+    it('does not read a bad pre- or post-market row', () => {
+      const extra = [
+        { market_time: 'pr', high: Number.NaN, low: null },
+        { market_time: 'po', high: undefined, low: Number.NaN },
+      ];
+
+      const out = levelCheck({
+        symbol: 'SPX',
+        rows: rowsAt(0, 0, extra),
+        high: HIGH,
+        low: LOW,
+      });
+
+      expect(out.ok).toBe(true);
+    });
   });
 });
 

@@ -97,7 +97,7 @@ export function planCandleDays(argv) {
 // ── Schwab daily closes and the per-day ratio ──────────────
 
 /** A price Schwab can have traded at: a finite number above 0. */
-function isUsablePrice(value) {
+export function isUsablePrice(value) {
   return Number.isFinite(value) && value > 0;
 }
 
@@ -450,7 +450,7 @@ export function toEtfRows(ticker, date, bars) {
  * "when present".
  */
 export function toIndexRows(symbol, date, bars, ratio) {
-  const { picked, dropped } = selectBars(bars, date, isIndexBar);
+  const { picked, dropped } = selectIndexBars(bars, date);
   const rows = picked.map(({ bar, ts }) => ({
     symbol,
     date,
@@ -468,14 +468,23 @@ export function toIndexRows(symbol, date, bars, ratio) {
 }
 
 /**
+ * The bars index_candles_1m takes for ET `date`: selectBars under the index
+ * table's well-formed rule. The one selection toIndexRows maps and regularBars
+ * reads, so the two cannot drift.
+ */
+function selectIndexBars(bars, date) {
+  return selectBars(bars, date, isIndexBar);
+}
+
+/**
  * The regular-session bars of ET `date` that toIndexRows maps, as selectBars'
- * `{ bar, ts }` pairs, oldest first: the same selectBars call, the same
- * well-formed filter, the market_time 'r' bars of it. The fit (index-candle-fit)
- * reads these, so what it fits is what toIndexRows writes as regular minutes.
- * toIndexRows does not call this: it maps every session.
+ * `{ bar, ts }` pairs, oldest first: selectIndexBars' picks with market_time
+ * 'r'. The fit (index-candle-fit) reads these, so what it fits is what
+ * toIndexRows writes as regular minutes. toIndexRows does not call this: it
+ * maps every session.
  */
 export function regularBars(bars, date) {
-  return selectBars(bars, date, isIndexBar).picked.filter(
+  return selectIndexBars(bars, date).picked.filter(
     ({ bar }) => bar.market_time === 'r',
   );
 }
