@@ -246,6 +246,14 @@ export function priorTradingDay(date: string): string {
 export const CASH_OPEN_MIN_ET = 9 * 60 + 30;
 
 /**
+ * Minutes after the cash close at which the GEXBot panels make their one
+ * final fetch of a session. The server's closed-response cache rule
+ * (`closedCacheSeconds`) and the client's timer both read it, so a closed
+ * response cached before the last capture landed can never answer that fetch.
+ */
+export const CLOSED_FINAL_FETCH_OFFSET_MIN = 3;
+
+/**
  * 10:00 ET, in ET minutes after midnight: the 30-minute opening range ends
  * here. A 5-minute bar belongs to the range when it starts before this.
  */
