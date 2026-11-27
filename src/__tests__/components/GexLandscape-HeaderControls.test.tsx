@@ -5,10 +5,14 @@
  * button, and refresh while loading.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ScrubControls } from '../../components/ScrubControls';
-import { srHintText, titledGenericsWithoutHint } from '../helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledGenericsWithoutHint,
+} from '../helpers/aria';
 
 function defaultProps(
   overrides: Partial<Parameters<typeof ScrubControls>[0]> = {},
@@ -195,5 +199,138 @@ describe('ScrubControls DELAYED badge (site 96)', () => {
     expect(screen.queryByText(/^DELAYED/)).toBeNull();
     expect(screen.getByText('SCRUBBED')).toBeDefined();
     expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+});
+
+// The opt-in CLOSED pill: `closedAsOf` swaps the LIVE or DELAYED badge for
+// "CLOSED · as of <capture time>" while the panel is not scrubbed. Without
+// the prop the controls render exactly as they did before it existed.
+describe('ScrubControls CLOSED badge', () => {
+  // 3:00 PM CT on Friday 2026-11-20, a few seconds into the capture minute.
+  const CLOSE = '2026-11-20T21:00:07.000Z';
+  const PILL = 'CLOSED · as of Fri 3:00 PM CT';
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-21T15:00:00Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows the capture time in the badge slot once the market has closed', () => {
+    render(
+      <ScrubControls {...defaultProps({ isLive: false, closedAsOf: CLOSE })} />,
+    );
+    expect(screen.getByTestId('scrub-closed-badge').textContent).toBe(PILL);
+    expect(screen.queryAllByText('LIVE')).toHaveLength(0);
+    expect(screen.queryByText(/^DELAYED/)).toBeNull();
+    expect(screen.queryByText('SCRUBBED')).toBeNull();
+  });
+
+  it('adds the date once the capture is more than 6 days old', () => {
+    vi.setSystemTime(new Date('2026-11-30T15:00:00Z'));
+    render(
+      <ScrubControls {...defaultProps({ isLive: false, closedAsOf: CLOSE })} />,
+    );
+    expect(screen.getByTestId('scrub-closed-badge').textContent).toBe(
+      'CLOSED · as of Fri Nov 20 3:00 PM CT',
+    );
+  });
+
+  it('takes the place of LIVE and of DELAYED when the caller still says live', () => {
+    const { rerender } = render(
+      <ScrubControls {...defaultProps({ closedAsOf: CLOSE })} />,
+    );
+    expect(screen.getByTestId('scrub-closed-badge').textContent).toBe(PILL);
+    expect(screen.queryAllByText('LIVE')).toHaveLength(0);
+
+    rerender(
+      <ScrubControls
+        {...defaultProps({
+          closedAsOf: CLOSE,
+          lastDataAgeMs: 900_000,
+          staleThresholdMs: 180_000,
+        })}
+      />,
+    );
+    expect(screen.getByTestId('scrub-closed-badge').textContent).toBe(PILL);
+    expect(screen.queryByText(/^DELAYED/)).toBeNull();
+  });
+
+  it('lets the row wrap, so a long pill drops to its own line instead of overflowing the header', () => {
+    const { container } = render(
+      <ScrubControls {...defaultProps({ isLive: false, closedAsOf: CLOSE })} />,
+    );
+    expect(container.firstElementChild).toHaveClass('flex-wrap');
+  });
+
+  it('gives way to SCRUBBED on a scrubbed view', () => {
+    render(
+      <ScrubControls
+        {...defaultProps({
+          isLive: false,
+          isScrubbed: true,
+          closedAsOf: CLOSE,
+        })}
+      />,
+    );
+    expect(screen.queryByTestId('scrub-closed-badge')).toBeNull();
+    expect(screen.getByText('SCRUBBED')).toBeDefined();
+    expect(screen.getByLabelText('Resume live')).toBeDefined();
+  });
+
+  it('leaves the time select on the timestamp it was given', () => {
+    render(
+      <ScrubControls {...defaultProps({ isLive: false, closedAsOf: CLOSE })} />,
+    );
+    const select = screen.getByRole('combobox', {
+      name: /jump to snapshot time/i,
+    }) as HTMLSelectElement;
+    expect(select.value).toBe('2026-04-14T20:30:00Z');
+  });
+
+  it('exposes the pill as plain text to assistive tech, with no ARIA name on a generic element', () => {
+    const { container } = render(
+      <ScrubControls {...defaultProps({ isLive: false, closedAsOf: CLOSE })} />,
+    );
+    const badge = screen.getByTestId('scrub-closed-badge');
+    expect(badge).not.toHaveAttribute('aria-hidden');
+    expect(badge.closest('[aria-hidden="true"]')).toBeNull();
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  describe('without the prop', () => {
+    it.each([
+      ['absent', undefined],
+      ['null', null],
+    ])('renders exactly as before when closedAsOf is %s', (_label, value) => {
+      // React's useId counts up across renders, in base 32 (DateInput's input
+      // id: `_r_0_`, `_r_a_`, …), so the ids are masked before the two trees
+      // are compared.
+      const markup = (el: HTMLElement) =>
+        el.innerHTML.replaceAll(/_r_[0-9a-z]+_/g, '_r_#_');
+
+      const bare = render(<ScrubControls {...defaultProps()} />);
+      const bareHtml = markup(bare.container);
+      bare.unmount();
+
+      const { container } = render(
+        <ScrubControls {...defaultProps({ closedAsOf: value })} />,
+      );
+      expect(markup(container)).toBe(bareHtml);
+      expect(screen.queryByTestId('scrub-closed-badge')).toBeNull();
+      expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+    });
+
+    it('shows no badge at all for a closed, unscrubbed panel, as before', () => {
+      render(<ScrubControls {...defaultProps({ isLive: false })} />);
+      expect(screen.queryByTestId('scrub-closed-badge')).toBeNull();
+      expect(screen.queryAllByText('LIVE')).toHaveLength(0);
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+      expect(screen.queryByText('SCRUBBED')).toBeNull();
+    });
   });
 });

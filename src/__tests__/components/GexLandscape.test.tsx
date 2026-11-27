@@ -41,6 +41,8 @@ vi.mock('../../utils/auth', () => ({ checkIsOwner: () => true }));
 interface LandscapeData {
   /** Absent = null, as the real hook before its first response. */
   freshness?: GexLandscapeFreshness | null;
+  /** The live response's capture time. Absent = null, as a scrub or no response. */
+  asOf?: string | null;
   strikes: GexStrikeLevel[];
   timestamps: string[];
   gexDelta5mMap: Map<number, number | null>;
@@ -156,6 +158,7 @@ interface RenderOptions {
   canScrubNext?: boolean;
   marketOpen?: boolean;
   freshness?: GexLandscapeFreshness | null;
+  asOf?: string | null;
 }
 
 /** Point the mocked data and scrub hooks at one display state. */
@@ -169,10 +172,12 @@ function mockLandscape(opts: RenderOptions = {}) {
     canScrubPrev = false,
     canScrubNext = false,
     freshness = null,
+    asOf = null,
   } = opts;
 
   dataMock.mockReturnValue({
     freshness,
+    asOf,
     strikes,
     timestamps,
     gexDelta5mMap: new Map<number, number | null>(),
@@ -2162,5 +2167,109 @@ describe('GexLandscape: a stalled feed', () => {
       renderLandscape(build());
       expect(tickIntervals(setIntervalSpy)).toHaveLength(0);
     });
+  });
+});
+
+// ============================================================
+// THE CLOSED PILL
+//
+// After the close the header shows `CLOSED · as of Fri 3:00 PM CT` in place of
+// LIVE or DELAYED, and the last session's strikes stay on screen. The time is
+// the live response's `asOf` (the hook's, null for a scrub), read against the
+// client clock only to decide whether the label carries a date. A scrubbed
+// view keeps SCRUBBED.
+// ============================================================
+
+describe('GexLandscape: the CLOSED pill', () => {
+  // 3:00 PM CT on Friday 2026-11-20, a few seconds into the capture minute.
+  const FRIDAY_CLOSE = '2026-11-20T21:00:07.000Z';
+  const SATURDAY = new Date('2026-11-21T15:00:00Z');
+  const PILL = 'CLOSED · as of Fri 3:00 PM CT';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(SATURDAY);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows the capture time and the last session's strikes after the close", () => {
+    renderLandscape({ marketOpen: false, asOf: FRIDAY_CLOSE });
+    expect(screen.getByTestId('scrub-closed-badge').textContent).toBe(PILL);
+    expect(screen.getAllByText('Takers −γ +charm').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Takers +γ −charm').length).toBeGreaterThan(0);
+  });
+
+  it('shows no LIVE or DELAYED badge in its place', () => {
+    renderLandscape({ marketOpen: false, asOf: FRIDAY_CLOSE });
+    expect(screen.queryAllByText('LIVE')).toHaveLength(0);
+    expect(screen.queryByText(/^DELAYED/)).toBeNull();
+    expect(screen.queryByText('SCRUBBED')).toBeNull();
+  });
+
+  it('exposes the pill to assistive tech as plain text, with no ARIA name on a generic element', () => {
+    const { container } = renderLandscape({
+      marketOpen: false,
+      asOf: FRIDAY_CLOSE,
+    });
+    const badge = screen.getByTestId('scrub-closed-badge');
+    expect(badge).not.toHaveAttribute('aria-hidden');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('keeps the time select on a minute option, not on asOf', () => {
+    const lastMinute = '2026-11-20T21:00:00.000Z';
+    renderLandscape({
+      marketOpen: false,
+      asOf: FRIDAY_CLOSE,
+      timestamps: ['2026-11-20T20:59:00.000Z', lastMinute],
+    });
+    const select = screen.getByRole('combobox', {
+      name: /jump to snapshot time/i,
+    });
+    expect((select as HTMLSelectElement).value).toBe(lastMinute);
+    expect(
+      Array.from((select as HTMLSelectElement).options).map((o) => o.value),
+    ).not.toContain(FRIDAY_CLOSE);
+  });
+
+  it('adds the date once the capture is more than 6 days old', () => {
+    vi.setSystemTime(new Date('2026-11-30T15:00:00Z'));
+    renderLandscape({ marketOpen: false, asOf: FRIDAY_CLOSE });
+    expect(screen.getByTestId('scrub-closed-badge').textContent).toBe(
+      'CLOSED · as of Fri Nov 20 3:00 PM CT',
+    );
+  });
+
+  it('shows the pill beside an empty table too (the header is shared by every branch)', () => {
+    renderLandscape({ marketOpen: false, asOf: FRIDAY_CLOSE, strikes: [] });
+    expect(screen.getByText('No strike data available')).toBeDefined();
+    expect(screen.getByTestId('scrub-closed-badge').textContent).toBe(PILL);
+  });
+
+  it('keeps SCRUBBED, not CLOSED, on a scrubbed view', () => {
+    renderLandscape({
+      marketOpen: false,
+      asOf: FRIDAY_CLOSE,
+      isScrubbed: true,
+    });
+    expect(screen.queryByTestId('scrub-closed-badge')).toBeNull();
+    expect(screen.getByText('SCRUBBED')).toBeDefined();
+  });
+
+  it('shows LIVE and no pill while the market is open, whatever asOf says', () => {
+    renderLandscape({ marketOpen: true, asOf: FRIDAY_CLOSE });
+    expect(screen.queryByTestId('scrub-closed-badge')).toBeNull();
+    expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+  });
+
+  it('shows no pill after the close when the response carries no capture time', () => {
+    renderLandscape({ marketOpen: false, asOf: null });
+    expect(screen.queryByTestId('scrub-closed-badge')).toBeNull();
+    expect(screen.queryAllByText('LIVE')).toHaveLength(0);
   });
 });

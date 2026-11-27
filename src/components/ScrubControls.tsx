@@ -7,6 +7,7 @@
  */
 
 import { theme } from '../themes';
+import { formatClosedLabel } from '../utils/closed-session';
 import { tint } from '../utils/ui-utils';
 import { DateInput } from './ui/DateInput';
 import { SrHint } from './ui/SrHint';
@@ -47,6 +48,15 @@ export interface ScrubControlsProps {
    * the original behaviour for every other consumer.
    */
   hideDatePicker?: boolean;
+  /**
+   * The capture time (ISO) of the last session's data, for a panel that keeps
+   * showing it after the close. When set and the panel is not scrubbed, the
+   * badge slot reads "CLOSED · as of Fri 3:00 PM CT" in place of LIVE or
+   * DELAYED. A scrubbed view keeps SCRUBBED. The time select is not touched:
+   * this feeds the label only. Null or absent, the controls render as they
+   * always have.
+   */
+  closedAsOf?: string | null;
 }
 
 const DEFAULT_STALE_THRESHOLD_MS = 5 * 60_000;
@@ -83,7 +93,9 @@ export function ScrubControls({
   lastDataAgeMs,
   staleThresholdMs = DEFAULT_STALE_THRESHOLD_MS,
   hideDatePicker = false,
+  closedAsOf,
 }: ScrubControlsProps) {
+  const showClosed = closedAsOf != null && !isScrubbed;
   const isStale =
     isLive && lastDataAgeMs != null && lastDataAgeMs >= staleThresholdMs;
   const staleMinutes =
@@ -98,7 +110,15 @@ export function ScrubControls({
       : 'var(--color-secondary)';
 
   return (
-    <div className="flex items-center gap-2">
+    // The closed pill is long: the row may wrap, and wraps right-aligned like
+    // the header it sits in, instead of running past the card on a phone.
+    <div
+      className={
+        showClosed
+          ? 'flex flex-wrap items-center justify-end gap-2'
+          : 'flex items-center gap-2'
+      }
+    >
       {/* Scrubber */}
       <div className="flex items-center gap-1">
         <button
@@ -165,8 +185,24 @@ export function ScrubControls({
         />
       )}
 
-      {/* Status badge */}
-      {isLive && !isStale && (
+      {/* Status badge. The closed pill takes the LIVE / DELAYED slot, so
+          neither shows beside it. Its text is its accessible name, as the
+          LIVE badge's is; it is not hidden from assistive tech. The 9% tint
+          is the header CLOSED badge's (StatusBadge): the muted text on it
+          measures 5.06:1 in the light theme and 4.53:1 in the dark. */}
+      {showClosed && (
+        <span
+          data-testid="scrub-closed-badge"
+          className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold whitespace-nowrap"
+          style={{
+            background: tint(theme.textMuted, '17'),
+            color: theme.textMuted,
+          }}
+        >
+          CLOSED · as of {formatClosedLabel(closedAsOf, new Date())}
+        </span>
+      )}
+      {!showClosed && isLive && !isStale && (
         <span
           className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
           style={{
@@ -177,7 +213,7 @@ export function ScrubControls({
           LIVE
         </span>
       )}
-      {isLive && isStale && (
+      {!showClosed && isLive && isStale && (
         <span
           className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-400"
           title={`Latest data is ${staleMinutes}m old — ${STALE_FEED_HINT}`}

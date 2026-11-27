@@ -181,6 +181,7 @@ const GexLandscape = memo(function GexLandscape({
 
   const {
     freshness,
+    asOf,
     strikes,
     timestamps,
     gexDelta5mMap,
@@ -500,6 +501,11 @@ const GexLandscape = memo(function GexLandscape({
       sectionLabel="GEX landscape"
       lastDataAgeMs={lastDataAgeMs}
       staleThresholdMs={GEX_STALE_THRESHOLD_MS}
+      // After the close the header says when the strikes on screen were
+      // captured, in place of LIVE or DELAYED. A scrub (`at` set) is a past
+      // minute, not the closed session, so it keeps SCRUBBED. `asOf` labels
+      // only: the time select stays on the last minute option.
+      closedAsOf={!marketOpen && at == null ? asOf : null}
       // Locked Decision #4: /api/gex-landscape scrubs today only against
       // gexbot_api_capture — no `?date=` parameter is accepted. The
       // shared ScrubControls would render a no-op picker otherwise, which
