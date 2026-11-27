@@ -23,6 +23,11 @@
  *
  * Nothing here depends on `usePolling`, which never fires on mount or on a
  * gate flip.
+ *
+ * `enabled` is not the market gate. Keep it true through the open session as
+ * well as after the close: the armed instant is what a tab that slept through
+ * the close wakes up to, and a hook that was disabled while the market was open
+ * has none. Pass `false` only for a read that has no final fetch at all.
  */
 
 import { useCallback, useEffect, useRef } from 'react';

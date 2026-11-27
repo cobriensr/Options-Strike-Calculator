@@ -20,6 +20,14 @@ const { captureUnlessAuth } = vi.hoisted(() => ({
 }));
 vi.mock('../../lib/sentry-helpers', () => ({ captureUnlessAuth }));
 
+// A passthrough, so a test can make the calendar answer "no trading day".
+vi.mock('../../utils/closed-session', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../utils/closed-session')>();
+  return { ...actual, nextFinalFetchMs: vi.fn(actual.nextFinalFetchMs) };
+});
+import { nextFinalFetchMs } from '../../utils/closed-session';
+
 /** Fri 2026-11-20: 16:00 ET close + 3 minutes. */
 const FRI_FETCH = Date.parse('2026-11-20T21:03:00Z');
 /** The next trading day's final fetch. */
@@ -85,6 +93,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   Reflect.deleteProperty(document, 'visibilityState');
+  // Back to the real calendar after a test that nulled it.
+  vi.mocked(nextFinalFetchMs).mockReset();
 });
 
 describe('useFinalFetch: the timer', () => {
@@ -184,6 +194,30 @@ describe('useFinalFetch: waking up', () => {
     expect(run).toHaveBeenCalledTimes(2);
   });
 
+  // A tab that slept: the wall clock jumped past the armed instant, the timer
+  // then runs late, and the visibility event follows it. The late timer has
+  // already served the instant and re-armed, so the event has nothing left to
+  // fire for.
+  it('fires once when the overdue timer runs first and a visibilitychange follows', async () => {
+    const run = mockRun();
+    mount(run);
+
+    vi.setSystemTime(new Date('2026-11-23T22:00:00Z'));
+    await advance(3 * 60_000);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    await becomeVisible();
+    await fireWindowEvent('focus');
+    await fireWindowEvent('pageshow');
+    expect(run).toHaveBeenCalledTimes(1);
+
+    // The next one waits for Tuesday's close.
+    await advance(TUE_FETCH - Date.now() - 1);
+    expect(run).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
   it('fires once for a visibilitychange, a focus and a pageshow together', async () => {
     const run = mockRun();
     mount(run);
@@ -243,6 +277,34 @@ describe('useFinalFetch: waking up', () => {
     expect(run).not.toHaveBeenCalled();
 
     await becomeVisible();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useFinalFetch: no trading day to arm for', () => {
+  // `nextFinalFetchMs` finds none (a calendar that has run out): nothing is
+  // armed, and no wake-up has an instant to fire for.
+  it('arms nothing, and fires on no wake-up', async () => {
+    vi.mocked(nextFinalFetchMs).mockReturnValue(null);
+    const run = mockRun();
+    mount(run);
+    expect(vi.getTimerCount()).toBe(0);
+
+    vi.setSystemTime(new Date('2026-11-23T22:00:00Z'));
+    await becomeVisible();
+    await fireWindowEvent('focus');
+    await fireWindowEvent('pageshow');
+    await advance(24 * 60 * 60_000);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('still starts a retry series for a failure the consumer reports', async () => {
+    vi.mocked(nextFinalFetchMs).mockReturnValue(null);
+    const run = mockRun('ok');
+    const { result } = mount(run);
+
+    act(() => result.current('transient'));
+    await advance(CLOSED_RETRY_MS);
     expect(run).toHaveBeenCalledTimes(1);
   });
 });
