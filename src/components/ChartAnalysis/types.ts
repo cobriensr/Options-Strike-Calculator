@@ -75,6 +75,11 @@ export interface AnalysisContext {
   targetDeltaStrikes?: TargetDeltaStrikes;
   /** Pre-formatted structural bias summary from GEX Landscape, passed as-is to analyze. */
   gexLandscapeBias?: string | null;
+  /** ISO capture time of the closed session's landscape, set only when the
+   *  bias above was captured at the close. The server labels the bias as the
+   *  last session's close, and rejects a value that is not an ISO datetime
+   *  with an offset. */
+  gexLandscapeBiasClosedAsOf?: string | null;
 }
 
 /** One rung: a chain strike selected as the nearest match for a target |delta|. */

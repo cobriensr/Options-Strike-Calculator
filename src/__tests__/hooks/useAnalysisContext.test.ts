@@ -435,6 +435,59 @@ describe('useAnalysisContext', () => {
     });
   });
 
+  // ── 9c. Closed landscape capture time ─────────────────────
+  // The analyze body schema takes this as an ISO datetime with an offset, or
+  // absent; a malformed value 400s the whole call. So the hook hands the
+  // value on untouched, and null leaves the key off the JSON body.
+  describe('gexLandscapeBiasClosedAsOf', () => {
+    const CAPTURED_AT = '2026-11-20T21:00:49.000Z';
+
+    it('carries the capture time when the param is set', () => {
+      const ctx = compute({
+        gexLandscapeBias: 'Pinned near 5700',
+        gexLandscapeBiasClosedAsOf: CAPTURED_AT,
+      });
+      expect(ctx.gexLandscapeBiasClosedAsOf).toBe(CAPTURED_AT);
+      expect(
+        JSON.parse(JSON.stringify(ctx)) as Record<string, unknown>,
+      ).toMatchObject({ gexLandscapeBiasClosedAsOf: CAPTURED_AT });
+    });
+
+    it('leaves the bias text as it was when the capture time is set', () => {
+      const ctx = compute({
+        gexLandscapeBias: 'Pinned near 5700',
+        gexLandscapeBiasClosedAsOf: CAPTURED_AT,
+      });
+      expect(ctx.gexLandscapeBias).toBe('Pinned near 5700');
+    });
+
+    it.each([
+      ['null', { gexLandscapeBiasClosedAsOf: null }],
+      ['absent', {}],
+    ])('is undefined, and not on the wire, when it is %s', (_name, extra) => {
+      const ctx = compute({ gexLandscapeBias: 'Pinned near 5700', ...extra });
+      expect(ctx.gexLandscapeBiasClosedAsOf).toBeUndefined();
+      expect(
+        JSON.parse(JSON.stringify(ctx)) as Record<string, unknown>,
+      ).not.toHaveProperty('gexLandscapeBiasClosedAsOf');
+    });
+
+    it('follows the param as the landscape closes and reopens', () => {
+      const params = makeParams({ gexLandscapeBias: 'Pinned near 5700' });
+      const { result, rerender } = renderHook(
+        (p: UseAnalysisContextParams) => useAnalysisContext(p),
+        { initialProps: params },
+      );
+      expect(result.current.gexLandscapeBiasClosedAsOf).toBeUndefined();
+
+      rerender({ ...params, gexLandscapeBiasClosedAsOf: CAPTURED_AT });
+      expect(result.current.gexLandscapeBiasClosedAsOf).toBe(CAPTURED_AT);
+
+      rerender({ ...params, gexLandscapeBiasClosedAsOf: null });
+      expect(result.current.gexLandscapeBiasClosedAsOf).toBeUndefined();
+    });
+  });
+
   // ── 10. topOIStrikes ──────────────────────────────────────
   it('returns undefined topOIStrikes when chain is null', () => {
     const ctx = compute({ chain: null });

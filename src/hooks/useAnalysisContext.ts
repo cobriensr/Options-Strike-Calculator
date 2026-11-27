@@ -100,6 +100,12 @@ export interface UseAnalysisContextParams {
   events: readonly EventItem[] | undefined;
   chain: ChainResponse | null;
   gexLandscapeBias?: string | null;
+  /**
+   * ISO capture time of a closed-session landscape (the landscape hook's
+   * sanitized asOf). Sent untouched: the analyze body schema 400s the whole
+   * call on a value that is not an ISO datetime with an offset.
+   */
+  gexLandscapeBiasClosedAsOf?: string | null;
 }
 
 export function useAnalysisContext({
@@ -117,6 +123,7 @@ export function useAnalysisContext({
   events,
   chain,
   gexLandscapeBias,
+  gexLandscapeBiasClosedAsOf,
 }: UseAnalysisContextParams): AnalysisContext {
   return useMemo(
     () =>
@@ -238,6 +245,7 @@ export function useAnalysisContext({
           };
         })(),
         gexLandscapeBias: gexLandscapeBias ?? undefined,
+        gexLandscapeBiasClosedAsOf: gexLandscapeBiasClosedAsOf ?? undefined,
       }) satisfies AnalysisContext,
     [
       selectedDate,
@@ -254,6 +262,7 @@ export function useAnalysisContext({
       events,
       chain,
       gexLandscapeBias,
+      gexLandscapeBiasClosedAsOf,
     ],
   );
 }
