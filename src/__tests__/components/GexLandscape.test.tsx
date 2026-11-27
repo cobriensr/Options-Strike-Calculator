@@ -2369,5 +2369,18 @@ describe('GexLandscape: the bias callback carries the closed capture time', () =
     });
     fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
     expect(onBiasChange).toHaveBeenLastCalledWith(expect.any(String), null);
+
+    // Back to live while the market is still closed: the closed session is
+    // the view again, so the marker returns with the same capture time.
+    scrubMock.mockReturnValue({
+      ...scrubMock(),
+      isScrubbed: false,
+      scrubTimestamp: null,
+    });
+    fireEvent.click(screen.getByRole('tab', { name: 'All strikes' }));
+    expect(onBiasChange).toHaveBeenLastCalledWith(
+      expect.any(String),
+      CAPTURED_AT,
+    );
   });
 });
