@@ -517,15 +517,18 @@ class FakeS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], tuple[bytes, dict[str, str]]] = {}
         self.puts: list[str] = []
+        self.content_types: dict[str, str | None] = {}  # by key, as the last put set it
         self.tamper: dict[str, Any] = {}
         self.fail: dict[str, Exception] = {}
         self.after_head: Callable[[], None] | None = None  # runs once, after the next HEAD
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes, Metadata: dict[str, str], **_: Any):  # noqa: N803
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes, Metadata: dict[str, str], **o: Any):  # noqa: N803
+        # `o` is the rest of the request; only its ContentType is kept.
         if "put_object" in self.fail:
             raise self.fail["put_object"]
         self.puts.append(Key)
         self.objects[(Bucket, Key)] = (bytes(Body), dict(Metadata))
+        self.content_types[Key] = o.get("ContentType")
         return {}
 
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
@@ -2147,6 +2150,8 @@ def test_heal_window_rechecked_before_each_days_write(world: World):
 # --- export -----------------------------------------------------------------------------------
 
 EXPORT_KEY = "research/interval-ba/replay-2026-03-11.parquet"
+# The research store's content type for a .parquet key (nightly/src/research_store.py).
+PARQUET_TYPE = "application/vnd.apache.parquet"
 _TZ = "TIMESTAMP WITH TIME ZONE"
 EXPORT_SCHEMA = [
     ("option_chain", "VARCHAR"),
@@ -2203,6 +2208,7 @@ def test_export_writes_no_neon_row_and_records_hash_and_constants(world: World):
     assert code == 0, out
     assert world.db.dsns == [] and world.db.statements == []
     assert world.s3.puts == [EXPORT_KEY]
+    assert world.s3.content_types[EXPORT_KEY] == PARQUET_TYPE
     body, metadata = world.s3.objects[("bucket-sekret", EXPORT_KEY)]
     assert (run / "replay-2026-03-11.parquet").read_bytes() == body
     assert metadata == {
@@ -2365,6 +2371,8 @@ def test_export_per_day_writes_one_file_per_day_and_overwrites(world: World):
         assert json.loads(table.schema.metadata[b"interval_ba"]) == footer
         assert table.equals(ibr.export_table(world.alerts[day], footer))  # schema and values
     assert not list(run.glob("*.parquet"))  # no local copy, unlike the snapshot
+    # Both writers of a Parquet object give it the one content type, nightly's for the file.
+    assert {world.s3.content_types[day_key(d)] for d in (FULL_A, FULL_A2)} == {PARQUET_TYPE}
     record = json.loads((run / "export.json").read_text(encoding="utf-8"))
     assert (record["per_day"], record["from"], record["to"]) == (True, "2026-03-10", "2026-03-11")
     first, second = record["days"]
@@ -2504,7 +2512,16 @@ def test_export_per_day_upload_that_does_not_verify_stops(
 
 # The replay module the tool loads, as a checkout holds it: an `origin` and a clone with its
 # `origin/main`. The guard reads git, so these are real repositories in tmp_path.
-_GIT = ("git", "-c", "user.name=Test", "-c", "user.email=test@example.com")
+_GIT = (
+    "git",
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.com",
+    # A signing setup in the developer's global config must not reach these commits.
+    "-c",
+    "commit.gpgsign=false",
+)
 _MODULE_RELATIVE = "nightly/src/interval_ba_replay.py"
 
 
@@ -2554,13 +2571,27 @@ def _commit(c: Checkout) -> None:
     git(c.repo, "commit", "-m", "a local change nobody pushed")
 
 
-def _origin_moved_on(c: Checkout) -> None:
+def _origin_clone(c: Checkout) -> Path:
+    """A second clone of origin, where another session pushes to main."""
     other = c.tmp / "other"
     subprocess.run(
         [*_GIT, "clone", "--quiet", str(c.origin), str(other)], check=True, capture_output=True
     )
+    return other
+
+
+def _origin_moved_on(c: Checkout) -> None:
+    other = _origin_clone(c)
     (other / _MODULE_RELATIVE).write_bytes(b"REPLAY_VERSION = '3'\n")
     git(other, "commit", "-a", "-m", "the deployed module moved on")
+    git(other, "push", "origin", "main")
+
+
+def _origin_dropped_the_module(c: Checkout) -> None:
+    """The file stays here, clean and committed, but origin/main no longer holds it."""
+    other = _origin_clone(c)
+    git(other, "rm", "--quiet", "--", _MODULE_RELATIVE)
+    git(other, "commit", "-m", "the module is not on main")
     git(other, "push", "origin", "main")
 
 
@@ -2577,6 +2608,9 @@ def _no_origin(c: Checkout) -> None:
         pytest.param(_commit, "not origin/main's", id="a commit that is not on origin/main"),
         pytest.param(_origin_moved_on, "not origin/main's", id="an origin/main that moved on"),
         pytest.param(_no_origin, "fetch", id="no origin to fetch"),
+        pytest.param(
+            _origin_dropped_the_module, "cannot be read", id="a module origin/main does not hold"
+        ),
     ],
 )
 def test_a_per_day_write_refuses_unless_the_replay_module_is_origin_mains(
@@ -2600,6 +2634,91 @@ def test_a_per_day_write_refuses_unless_the_replay_module_is_origin_mains(
     assert refused in out and "checkout at origin/main" in out
     # Refused before any tape is opened or object put.
     assert world.tape_connections == 0 and world.s3.puts == [] and not world.runs.exists()
+
+
+@pytest.mark.parametrize(
+    ("failure", "named"),
+    [
+        ("git is not installed", "git did not run (FileNotFoundError)"),
+        ("a git call that never finishes", "git did not finish within 60 s (TimeoutExpired)"),
+        ("a repository git cannot read", "git status failed (exit 128)"),
+    ],
+)
+def test_a_per_day_write_refuses_when_git_cannot_answer(
+    world: World, checkout: Checkout, monkeypatch: pytest.MonkeyPatch, failure: str, named: str
+):
+    export_days(world)
+    monkeypatch.setattr(runs, "refuse_unless_deployed_code", REAL_DEPLOYED_CODE_GUARD)
+    real_run = subprocess.run
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if failure == "git is not installed":
+            raise FileNotFoundError("git")
+        if failure == "a git call that never finishes":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])  # a bounded call
+        if "status" in command:  # the fetch before it ran as usual
+            return subprocess.CompletedProcess(command, 128, "", "fatal: not a git repository")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(runs.subprocess, "run", run)
+
+    code, out = world.run("export", "--per-day", "--from", "2026-03-10", "--to", "2026-03-10")
+
+    assert code == 3, out
+    assert named in out
+    assert world.tape_connections == 0 and world.s3.puts == [] and not world.runs.exists()
+
+
+# --- write_replay_days, called as the readers' repair will -----------------------------------
+
+
+def test_write_replay_days_with_no_days_does_nothing(world: World, monkeypatch: pytest.MonkeyPatch):
+    def no_env(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("an env file was read for no days")
+
+    monkeypatch.setattr(runs, "load_env", no_env)
+
+    assert tool.write_replay_days([], allow_market_hours=True) == []
+
+    # Not even the guard: with nothing to write, nothing is refused, read or opened.
+    assert world.guard_calls == 0 and world.tape_connections == 0 and world.s3.puts == []
+
+
+def test_write_replay_days_called_directly_takes_its_defaults(
+    world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    export_days(world)
+    # No env_file: it is resolved as for the command line without --env-file (here, the test's
+    # own file, so no real .env.local is read).
+    monkeypatch.setattr(runs, "resolve_env_file", lambda cli_path: world.env_file)
+
+    written = tool.write_replay_days([FULL_A, FULL_A2], allow_market_hours=False)
+
+    assert world.guard_calls == 1 and world.db.dsns == []
+    assert world.s3.puts == [day_key(FULL_A), day_key(FULL_A2)]
+    body = world.s3.objects[("bucket-sekret", day_key(FULL_A))][0]
+    assert written[0] == tool.DayFile(
+        day=FULL_A,
+        key=day_key(FULL_A),
+        rows=len(world.alerts[FULL_A]),
+        size=len(body),
+        sha256=hashlib.sha256(body).hexdigest(),
+        root_label_mismatch=0,
+    )
+    assert [done.day for done in written] == [FULL_A, FULL_A2]
+    out = capsys.readouterr().out
+    assert f"{FULL_A}: 2 alerts" in out and f"{FULL_A2}: 2 alerts" in out
+    assert not any(secret in out for secret in SECRET_PARTS)  # the default output redacts too
+
+
+def test_write_replay_days_raises_for_its_caller_to_handle(world: World):
+    export_days(world)
+    world.clock = lambda: ct(TUESDAY, "10:00:00")  # inside weekdays 08:15-16:00 CT
+
+    with pytest.raises(runs.RefusedError, match="08:15"):
+        tool.write_replay_days([FULL_A], allow_market_hours=False)
+
+    assert world.tape_connections == 0 and world.s3.puts == []
 
 
 # --- undo -------------------------------------------------------------------------------------

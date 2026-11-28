@@ -1369,6 +1369,9 @@ HEAL = runs.ApplyMode(
 # --- export: the full-year replay for studies -------------------------------------------------
 
 EXPORT_PREFIX = "research/interval-ba/"
+# The content type of every Parquet object the tool puts, the snapshot and the day files alike
+# (the research store's for a .parquet key).
+_PARQUET = "application/vnd.apache.parquet"
 
 
 def export_key(end: date) -> str:
@@ -1445,7 +1448,7 @@ def _export_snapshot(args: argparse.Namespace, out: runs.Output) -> int:
             "to": meta["to"],
             **ibr.rule(),
         },
-        content_type="application/vnd.apache.parquet",
+        content_type=_PARQUET,
         what="export",
     )
     runs.write_json(
@@ -1466,8 +1469,6 @@ def _export_snapshot(args: argparse.Namespace, out: runs.Output) -> int:
 
 
 # --- export --per-day: one replay file per session, the files the nightly step writes ---------
-
-_PARQUET = "application/vnd.apache.parquet"
 
 
 @dataclass(frozen=True)

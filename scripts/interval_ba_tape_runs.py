@@ -404,12 +404,15 @@ def check_code_blobs(plan: dict[str, Any]) -> None:
 
 _DEPLOYED_REMOTE, _DEPLOYED_BRANCH = "origin", "main"
 _DEPLOYED_REF = f"{_DEPLOYED_REMOTE}/{_DEPLOYED_BRANCH}"
+# Bounds each git call, chiefly the one `git fetch` of origin/main: a stalled remote then
+# refuses the write instead of hanging a backfill that has not started its first replay.
 _GIT_TIMEOUT_SECONDS = 60
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
     """`git -C <repo> <args>` with its output captured, never stopping to ask for credentials.
     Its own output is not shown by callers: a remote's URL can carry them."""
+    unchecked = f"so the replay module cannot be checked against {_DEPLOYED_REF}"
     try:
         return subprocess.run(
             ["git", "-C", str(REPO_ROOT), *args],
@@ -419,11 +422,13 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
             check=False,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
         raise RefusedError(
-            f"git did not run ({type(exc).__name__}), so the replay module cannot be checked"
-            f" against {_DEPLOYED_REF}"
+            f"git did not finish within {_GIT_TIMEOUT_SECONDS} s ({type(exc).__name__}),"
+            f" {unchecked}"
         ) from None
+    except OSError as exc:
+        raise RefusedError(f"git did not run ({type(exc).__name__}), {unchecked}") from None
 
 
 def refuse_unless_deployed_code() -> None:

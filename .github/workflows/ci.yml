@@ -330,9 +330,17 @@ jobs:
       # is every time. This installs it, so the real-HTTP checks run here. It
       # reaches the extension host now, not during the test run, and DuckDB
       # loads only signed extensions unless told otherwise. No secret is in
-      # the step.
+      # the step. Three tries with a pause, so one failed download does not
+      # block every ml and scripts change; a sustained outage still fails the
+      # job, because a silent skip is what this step exists to end.
       - name: Install DuckDB httpfs
-        run: python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
+        run: |
+          for attempt in 1 2 3; do
+            python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')" && exit 0
+            echo "INSTALL httpfs failed (try $attempt of 3)"
+            sleep 5
+          done
+          exit 1
 
       # The root scripts/ tests carry their own copy of the no-database guard
       # (scripts/conftest.py), and nothing else in CI runs it.
