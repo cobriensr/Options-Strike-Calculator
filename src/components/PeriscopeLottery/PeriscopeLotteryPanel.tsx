@@ -212,9 +212,12 @@ function LotteryRow({
   // spot − strike), so the offset is +strikeDist for a call and −strikeDist
   // for a put. It is negative only for a fire whose spot was repaired after
   // the fact and had moved past the strike; a fixed sign would print "+-10.0".
+  // The sign is read from the rounded text, so an offset that rounds to zero
+  // (−0.04) shows "+0.0", never "−0.0".
   const strikeOffset =
     sideLabel === 'call' ? fire.strikeDist : -fire.strikeDist;
-  const offsetSign = strikeOffset < 0 ? '−' : '+';
+  const offsetText = Math.abs(strikeOffset).toFixed(1);
+  const offsetSign = strikeOffset < 0 && offsetText !== '0.0' ? '−' : '+';
   const gammaAbs = Math.abs(fire.greekPost);
   const gexDollarsB =
     fire.gexDollars == null ? null : fire.gexDollars / 1_000_000_000;
@@ -242,7 +245,7 @@ function LotteryRow({
           <dt className="text-muted inline">Δstrike </dt>
           <dd className="inline">
             {offsetSign}
-            {Math.abs(strikeOffset).toFixed(1)}
+            {offsetText}
           </dd>
         </div>
         <div>

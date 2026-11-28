@@ -402,6 +402,14 @@ describe('PeriscopeLotteryPanel Δstrike', () => {
     { fireType: 'put_lottery', strikeDist: -10, shown: '+10.0' },
     // Never "−0.0" for a put exactly at spot (−strikeDist would be −0).
     { fireType: 'put_lottery', strikeDist: 0, shown: '+0.0' },
+    // Never "−0.0" for an offset that rounds to zero: the sign is read from
+    // the rounded text, whichever side the offset sits on.
+    { fireType: 'call_lottery', strikeDist: -0.04, shown: '+0.0' },
+    { fireType: 'call_lottery', strikeDist: 0.04, shown: '+0.0' },
+    { fireType: 'put_lottery', strikeDist: 0.04, shown: '+0.0' },
+    { fireType: 'put_lottery', strikeDist: -0.04, shown: '+0.0' },
+    // Just past rounding to zero the sign is kept.
+    { fireType: 'call_lottery', strikeDist: -0.06, shown: '−0.1' },
   ] as const)(
     'shows a $fireType at strikeDist $strikeDist as $shown',
     ({ fireType, strikeDist, shown }) => {
