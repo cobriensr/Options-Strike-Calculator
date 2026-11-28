@@ -233,6 +233,13 @@ async function stubLadderApis(page: Page) {
   });
 }
 
+/** The card's own right edge is inside a viewport `width` px wide. */
+async function expectInsideViewport(card: Locator, width: number) {
+  const box = await card.boundingBox();
+  expect(box, 'card laid out').not.toBeNull();
+  if (box) expect(box.x + box.width).toBeLessThanOrEqual(width + 0.5);
+}
+
 /** Names every element inside `card` that ends past the card's right edge. */
 async function expectNothingPastRightEdge(card: Locator) {
   const offenders = await card.evaluate((el) => {
@@ -260,7 +267,6 @@ test.describe('The level ladder on a phone', () => {
   ]) {
     test(`stays inside its card at ${width}px (${device}) with every level, both candidates and an edge line`, async ({
       page,
-      browserName,
     }) => {
       await page.setViewportSize({ width, height });
       await page.goto('/');
@@ -269,6 +275,10 @@ test.describe('The level ladder on a phone', () => {
       // higher, so the 10Δ put (6740) lands 50 pts under the ladder's spot,
       // inside its window, and the 10Δ call (6955) 165 pts over it, beyond
       // the +60 pts reach: the call's odds print on the Above line.
+      // The override lasts about a minute. In a live session useAutoFill puts
+      // the quote's SPX back on every new quotes payload, `spxEdited` or not,
+      // and the next payload is the 60 s poll; the test takes seconds. The
+      // SPX Price assertion below names the cause if a stalled run loses it.
       await expect(page.getByLabel('SPY Price')).toHaveValue('679.00');
       await page.getByLabel(/SPX Price/).fill('6850');
 
@@ -288,29 +298,27 @@ test.describe('The level ladder on a phone', () => {
       await expect(putRow).toBeVisible();
       await expect(putRow).toContainText('State major put');
       await expect(putRow).toContainText('Classic major negative · volume');
-      await expect(putRow).toContainText(/σ · touch .+ · finish beyond /);
+      // Laid out, not just in the DOM: the odds line is visible
+      await expect(
+        putRow.getByText(/σ · touch .+ · finish beyond /),
+      ).toBeVisible();
       // The other candidate is past the window: odds and "priced" on its line
-      await expect(page.getByTestId('level-ladder-edge-above')).toContainText(
+      const edgeAbove = page.getByTestId('level-ladder-edge-above');
+      await expect(edgeAbove).toBeVisible();
+      await expect(edgeAbove).toContainText(
         /^Above: .*Call [\d,]+ \(.+ · touch .+ · finish beyond .+\) · priced odds/,
       );
-      await expect(page.getByTestId('level-ladder-edge-below')).toContainText(
+      const edgeBelow = page.getByTestId('level-ladder-edge-below');
+      await expect(edgeBelow).toBeVisible();
+      await expect(edgeBelow).toContainText(
         'Classic major negative · OI 6,700',
       );
+      // The state above still rests on the calculator's SPX override
+      await expect(page.getByLabel(/SPX Price/)).toHaveValue(/^6850(\.00)?$/);
 
+      await expectInsideViewport(ladder, width);
       await expectNothingPastRightEdge(ladder);
-      if (browserName === 'firefox' && width === 320) {
-        // With the owner panels mounted, Firefox lays the Strike Battle Map's
-        // minute slider (MinuteScrubber, a flex-1 range input) 6 px wider than
-        // a 320 px page. Nothing in the ladder is past its own edge (above), so
-        // the page-wide check is left out here and the gap is on the record.
-        test.info().annotations.push({
-          type: 'known-issue',
-          description:
-            'MinuteScrubber range input ends 6 px past a 320 px page in Firefox',
-        });
-      } else {
-        await expectNoSidewaysScroll(page);
-      }
+      await expectNoSidewaysScroll(page);
     });
   }
 });
