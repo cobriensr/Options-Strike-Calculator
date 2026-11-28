@@ -150,10 +150,9 @@ import {
   runDays,
   summarizeRun,
 } from './_lib/backfill-cli.mjs';
+import { backupDirFromGit } from './_lib/backup-dir-from-git.mjs';
 import { loadSchwabCloses, ratioLines } from './_lib/candles-backfill.mjs';
-import { git } from './_lib/git-run.mjs';
 import {
-  defaultBackupDir,
   describeUndo,
   parseRepairArgs,
   processCheckDay,
@@ -181,6 +180,9 @@ try {
   console.error(err.message);
   process.exit(EXIT_BAD_ARGS);
 }
+
+/** This script's folder, where git is asked for the main checkout. */
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -227,21 +229,6 @@ async function runUndo() {
   return EXIT_OK;
 }
 
-/** The main checkout's backup folder, found from this worktree through git. */
-function backupDirFromGit() {
-  const out = git(
-    [
-      '-C',
-      dirname(fileURLToPath(import.meta.url)),
-      'rev-parse',
-      '--path-format=absolute',
-      '--git-common-dir',
-    ],
-    process.env,
-  );
-  return defaultBackupDir(out);
-}
-
 /** The repair, one date at a time. Returns the exit code. */
 async function runRepair() {
   const { symbol, list, dates, apply } = plan;
@@ -265,7 +252,7 @@ async function runRepair() {
   }
   // Before any date runs: a worktree with no git in reach must not get as far
   // as a delete.
-  const backupDir = apply ? backupDirFromGit() : undefined;
+  const backupDir = apply ? backupDirFromGit(SCRIPT_DIR) : undefined;
 
   say(
     `Repairing index_candles_1m ${symbol}, list ${list}, ${dates.length} ` +
@@ -347,7 +334,7 @@ function startReading({ needsUw }) {
   }
   // Before any date runs: a worktree with no git in reach must not get as far
   // as a write, or as a date that reports no manifest.
-  return { schwabEnv, backupDir: backupDirFromGit() };
+  return { schwabEnv, backupDir: backupDirFromGit(SCRIPT_DIR) };
 }
 
 /** Every date of a run that did not pass, with its whole reason. */
@@ -494,7 +481,7 @@ async function runLotterySpots() {
   }
   // Before the plan is read: a worktree with no git in reach must not get as
   // far as an update.
-  const backupDir = apply ? backupDirFromGit() : undefined;
+  const backupDir = apply ? backupDirFromGit(SCRIPT_DIR) : undefined;
 
   say(
     `Correcting periscope_lottery_fires spot_at_event and strike_dist on the ` +

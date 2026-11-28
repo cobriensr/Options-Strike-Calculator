@@ -101,9 +101,12 @@ const RETURN_COLUMNS = Object.freeze([
 /**
  * The most days one backup, delete or NULLing covers. A restore deletes every
  * row in its backup's dates, so the scope must stay a slice of a table, never
- * the table: 62 days is two months (the runbook's widest window is 51 days),
- * and no span of that size reaches back over a table's whole history. It also
- * bounds the size of every statement. A read-only production probe measured
+ * the table: 62 days is two months, and no span of that size reaches back over
+ * a table's whole history. Runbook C's windows fit under it (the gamma fires'
+ * 02-26 .. 04-17 is 51 days) except the day_embeddings scope: 07-22 .. 09-04,
+ * 09-21 .. 09-30 and 10-08 .. 10-15 are 63 calendar days, so that scope takes
+ * two backups or a list of its 47 trading dates. The cap also bounds the size
+ * of every statement. A read-only production probe measured
  * the latest 370 rows of day_embeddings, the widest rows, at 9,310,574 bytes
  * (about 9.3 MB, the embedding text alone), so 62 days are about 1.6 MB;
  * Neon's cap is 64 MB.

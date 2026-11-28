@@ -79,8 +79,7 @@ import { fileURLToPath } from 'node:url';
 import { neon } from '@neondatabase/serverless';
 
 import { EXIT_BAD_ARGS, EXIT_FAILED, redact } from './_lib/backfill-cli.mjs';
-import { git } from './_lib/git-run.mjs';
-import { defaultBackupDir } from './_lib/index-candle-repair.mjs';
+import { backupDirFromGit } from './_lib/backup-dir-from-git.mjs';
 import { parseRebuildArgs, runRebuildBackup } from './_lib/rebuild-backup.mjs';
 
 let plan;
@@ -91,24 +90,12 @@ try {
   process.exit(EXIT_BAD_ARGS);
 }
 
+/** This script's folder, where git is asked for the main checkout. */
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+
 const DATABASE_URL = process.env.DATABASE_URL;
 const secrets = { uwKey: undefined, databaseUrl: DATABASE_URL };
 const say = (line) => console.log(redact(line, secrets));
-
-/** The main checkout's backup folder, found from this worktree through git. */
-function backupDirFromGit() {
-  const out = git(
-    [
-      '-C',
-      dirname(fileURLToPath(import.meta.url)),
-      'rev-parse',
-      '--path-format=absolute',
-      '--git-common-dir',
-    ],
-    process.env,
-  );
-  return defaultBackupDir(out);
-}
 
 try {
   if (!DATABASE_URL) {
@@ -117,7 +104,8 @@ try {
   } else {
     // Before any read: a worktree with no git in reach must not get as far as a
     // backup written to the wrong place.
-    const backupDir = plan.mode === 'backup' ? backupDirFromGit() : undefined;
+    const backupDir =
+      plan.mode === 'backup' ? backupDirFromGit(SCRIPT_DIR) : undefined;
     const { lines, exitCode } = await runRebuildBackup(
       neon(DATABASE_URL),
       plan,
