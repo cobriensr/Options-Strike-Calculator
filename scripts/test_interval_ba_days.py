@@ -27,7 +27,7 @@ import interval_ba_tape_runs as runs
 import pyarrow.parquet as pq
 import pytest
 from _ba_test_support import DayWorld, day_alert, local_connection, write_day_file
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, InvalidRegionError
 
 MON, TUE, WED, THU = date(2026, 11, 16), date(2026, 11, 17), date(2026, 11, 18), date(2026, 11, 19)
 BACKFILL = "scripts/interval_ba_tape.py export --per-day"
@@ -1057,6 +1057,22 @@ def test_a_replay_that_cannot_read_its_tape_stops_the_run_with_its_message(day_w
     message = refused(con, MON, TUE)
 
     assert message == "The repair stopped: fulltape/2026-11-17-fulltape.parquet: no 0DTE rows"
+
+
+def test_a_botocore_error_that_is_also_a_value_error_names_its_class_only(day_world, con):
+    """InvalidRegionError and UnknownEndpointError are BotoCoreErrors and ValueErrors: they must
+    meet the class-only clause, not the ValueError one that prints the text."""
+    error = InvalidRegionError(region_name="https://account-0123.r2.example.invalid")
+    assert isinstance(error, ValueError)  # the case this test is about
+    assert "account-0123" in str(error)
+    day_world.full(MON)
+    day_world.tape(TUE)
+    day_world.write_error = error
+
+    message = refused(con, MON, TUE)
+
+    assert message.startswith("The repair failed: InvalidRegionError")
+    assert "account-0123" not in message
 
 
 def test_a_duckdb_error_in_the_repair_names_its_class_and_never_its_text(day_world, con):

@@ -751,19 +751,19 @@ def _write(runs: Any, to_repair: list[date]) -> list[Any]:
         sys.exit(f"The repair cannot run: {exc}")
     except runs.CheckFailedError as exc:  # its text names days, keys, ids and counts only
         sys.exit(f"The repair stopped: {exc}")
-    except ValueError as exc:  # replay_day's: no 0DTE rows, a damaged tape; names the tape key
-        sys.exit(f"The repair stopped: {exc}")
-    except runs.QUIET_ERRORS as exc:
+    except runs.QUIET_ERRORS as exc:  # before ValueError: two botocore errors are ValueErrors
         sys.exit(
             f"The repair failed: {type(exc).__name__} (its text is not shown: it can name a host)."
         )
     except duckdb.Error as exc:
         _quiet_duckdb("The repair", exc)
+    except ValueError as exc:  # replay_day's: no 0DTE rows, a damaged tape; names the tape key
+        sys.exit(f"The repair stopped: {exc}")
 
 
 def _repair(runs: Any, r2: Any, listing: Listing, needed: Sequence[date], p: Plan) -> None:
-    """Write each missing or stale day, then list the prefix again: every one must be there, and
-    none may hold no alerts, or no study runs."""
+    """Write each missing, stale or empty day, then list the prefix again: every one must be
+    there, and none may hold no alerts, or no study runs."""
     written = _write(runs, p.to_repair)
     empty = [done.day for done in written if done.rows == 0]
     if empty:
