@@ -39,6 +39,7 @@ import {
 import {
   savePositions,
   getLatestCsvPositions,
+  PAPER_MONEY_ACCOUNT_HASH,
   getDb,
   withDbRetry,
   safeDb,
@@ -307,9 +308,7 @@ async function handleCSVUpload(
     const saved = await persistPositions({
       date: today,
       fetchTime,
-      // The marker savePositions' guard and getLatestCsvPositions key on
-      // (PAPER_MONEY_ACCOUNT_HASH in db-positions.ts).
-      accountHash: 'paperMoney',
+      accountHash: PAPER_MONEY_ACCOUNT_HASH,
       spxPrice,
       summary: fullSummary,
       legs: spxLegs,

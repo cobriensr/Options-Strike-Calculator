@@ -11,6 +11,8 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 vi.mock('../_lib/db.js', () => ({
   savePositions: vi.fn(),
+  // The stored CSV marker; the tests below assert the literal.
+  PAPER_MONEY_ACCOUNT_HASH: 'paperMoney',
   getDb: vi.fn(() => {
     const fn = async () => [];
     // Tagged template support for sql``

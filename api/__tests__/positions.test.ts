@@ -14,6 +14,7 @@ vi.mock('../_lib/db.js', async (importOriginal) => {
   return {
     savePositions: vi.fn(),
     getLatestCsvPositions: vi.fn(),
+    PAPER_MONEY_ACCOUNT_HASH: actual.PAPER_MONEY_ACCOUNT_HASH,
     getDb: vi.fn(),
     withDbRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
       try {

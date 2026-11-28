@@ -20,7 +20,7 @@
  *   db-snapshots.ts  — saveSnapshot, getVixOhlcFromSnapshots
  *   db-analyses.ts   — saveAnalysis, saveOutcome, insertOutcomeIfMissing, getPreviousRecommendation
  *   db-flow.ts       — flow data, Greek exposure, spot GEX queries + formatters
- *   db-positions.ts  — savePositions, getLatestPositions
+ *   db-positions.ts  — savePositions, getLatestPositions, getLatestCsvPositions
  *
  * This file re-exports everything so existing imports from './db.js' still work.
  */
