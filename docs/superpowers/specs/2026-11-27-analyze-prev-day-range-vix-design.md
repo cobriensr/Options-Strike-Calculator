@@ -219,7 +219,14 @@ The commits touch only `api/`, so this deploys to Vercel only and touches no Rai
 
 ## Open
 
-**For the owner.** The flow-agreement gates are settled above. One question is left:
+**For the owner.** Nothing left: the flow-agreement gates are settled above, and the gamma label below.
+
+**Gamma-asymmetry label: owner approved, 23:03 CT ("your recommendations are fine").** In `api/_lib/db-strike-formatters.ts` `formatStrikeExposuresForClaude` (~:178-184), keep the percentages and the `SKEWED ABOVE — gamma concentrated above price.` / `SKEWED BELOW — gamma concentrated below price.` / `BALANCED — …` labels, and delete only the sentences "Upside is well-defended; downside is exposed." and "Downside is well-defended; upside is exposed."
+- This is commit **F**: that file plus `api/__tests__/db-strike-helpers.test.ts`.
+- Pin the two skewed labels and BALANCED, the absence of "well-defended" and "exposed", and the 65% boundary.
+- Untouched and untested: `RULE 1: Gamma Asymmetry Overrides Neutral Flow` (`analyze-prompts.ts` ~:613). It is a different measure (a Periscope negative-gamma cliff within 30-40 pts), and no re-check covered it.
+
+The original question, kept for the record:
 1. **The gamma-asymmetry label** in the live context (`api/_lib/db-strike-formatters.ts:179-183`) reads "Upside is well-defended; downside is exposed". The re-check found the "defended side" reading unsupported (p = 0.30).
 
 **For the builder:** the section title and its position. The analyze-prompt-reviewer checks them.
@@ -254,3 +261,6 @@ The commits touch only `api/`, so this deploys to Vercel only and touches no Rai
   - the RV/IV > 1.15 sizing rule, together with the unwired 5-day RV;
   - the "SPX Net Flow 31%, 36 sessions" claims (`:154`, `:664`, `:699`, `:1144`);
   - curated lessons that may still teach the old 100-pt / 2-pt flags.
+
+## Addendum (owner approved 23:14 CT): recent-sessions line
+The prompt's full-sample base rates can't follow the regime (last 20 sessions to 11-25: 9 of 20 reached 1.25×, vs 13.5% full-sample). The section adds a live line: counts of the last 20 full sessions reaching 1.0×, 1.25× and 1.5× their own VIX-implied move, plus the last-5 average multiple. The fetcher becomes one bounded as-of read (`date < D ORDER BY date DESC LIMIT 30`); P1/P2 are still exact-date lookups with no fallback. Half days are excluded from the window; a session needs its prior trading day's close and VIX. Fewer than 10 usable sessions → "unavailable". The preface says recent sessions above the full-sample rates mean those rates understate the current regime. The cached prompt is unchanged. Reviewed by the code and prompt reviewers with the implementation (the doc's two spec reviews were already used).

@@ -176,11 +176,9 @@ export function formatStrikeExposuresForClaude(
     const belowPct = (gammaBelow / gammaTotal) * 100;
     let asymmetrySignal: string;
     if (abovePct > 65) {
-      asymmetrySignal =
-        'SKEWED ABOVE — gamma concentrated above price. Upside is well-defended; downside is exposed.';
+      asymmetrySignal = 'SKEWED ABOVE — gamma concentrated above price.';
     } else if (belowPct > 65) {
-      asymmetrySignal =
-        'SKEWED BELOW — gamma concentrated below price. Downside is well-defended; upside is exposed.';
+      asymmetrySignal = 'SKEWED BELOW — gamma concentrated below price.';
     } else {
       asymmetrySignal = 'BALANCED — roughly equal gamma on both sides.';
     }

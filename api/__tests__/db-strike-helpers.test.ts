@@ -529,6 +529,93 @@ describe('db-strike-helpers', () => {
       expect(result).toContain('strengthens');
       expect(result).toContain('decays');
     });
+
+    // The Gamma Asymmetry line used to end its skewed labels with "Upside is
+    // well-defended; downside is exposed." (and the mirror). The 2026-11-27
+    // re-check found the "defended side" reading unsupported (p = 0.30; the
+    // link to structure errors rested on one wrong day of 21), so the labels
+    // now say only where the gamma sits. The percentages are unchanged.
+    describe('gamma asymmetry line', () => {
+      /** Price 5800: 5850 counts as above (> price + 5), 5750 as below. */
+      function asymmetryLine(above: number, below: number): string {
+        const out = formatStrikeExposuresForClaude([
+          makeRow({ strike: 5850, price: 5800, netGamma: above }),
+          makeRow({ strike: 5750, price: 5800, netGamma: below }),
+        ])!;
+        const line = out
+          .split('\n')
+          .find((l) => l.includes('Gamma Asymmetry:'));
+        expect(line).toBeDefined();
+        return line!;
+      }
+
+      it.each([
+        [
+          80,
+          20,
+          '  Gamma Asymmetry: 80% above / 20% below ATM — SKEWED ABOVE — gamma concentrated above price.',
+        ],
+        [
+          20,
+          80,
+          '  Gamma Asymmetry: 20% above / 80% below ATM — SKEWED BELOW — gamma concentrated below price.',
+        ],
+        [
+          50,
+          50,
+          '  Gamma Asymmetry: 50% above / 50% below ATM — BALANCED — roughly equal gamma on both sides.',
+        ],
+      ])(
+        'labels above %s / below %s with where the gamma sits and nothing more',
+        (above, below, expected) => {
+          expect(asymmetryLine(above, below)).toBe(expected);
+        },
+      );
+
+      // The cut is strictly above 65%, so exactly 65 is BALANCED.
+      it.each([
+        [65, 35, 'BALANCED', '65% above / 35% below'],
+        [651, 349, 'SKEWED ABOVE', '65% above / 35% below'],
+        [35, 65, 'BALANCED', '35% above / 65% below'],
+        [349, 651, 'SKEWED BELOW', '35% above / 65% below'],
+      ])(
+        'weights above %s / below %s read %s at the 65 percent cut',
+        (above, below, label, shares) => {
+          const line = asymmetryLine(above, below);
+
+          expect(line).toContain(`${shares} ATM — ${label}`);
+        },
+      );
+
+      it('says nothing about a defended or exposed side, on any label', () => {
+        for (const [above, below] of [
+          [80, 20],
+          [20, 80],
+          [50, 50],
+        ] as const) {
+          const line = asymmetryLine(above, below);
+          expect(line).not.toMatch(/defended|exposed/i);
+        }
+        expect(formatStrikeExposuresForClaude(buildStrikeRows())!).not.toMatch(
+          /well-defended|is exposed/,
+        );
+      });
+
+      it('weighs gamma by magnitude, whichever sign it has', () => {
+        const line = asymmetryLine(-80, -20);
+
+        expect(line).toContain('80% above / 20% below ATM — SKEWED ABOVE');
+      });
+
+      it('prints no asymmetry line when no gamma sits outside the ATM band', () => {
+        // 5803 is within 5 points of price 5800, so neither side counts.
+        const out = formatStrikeExposuresForClaude([
+          makeRow({ strike: 5803, price: 5800, netGamma: 1_000_000 }),
+        ])!;
+
+        expect(out).not.toContain('Gamma Asymmetry:');
+      });
+    });
   });
 
   // ================================================================
