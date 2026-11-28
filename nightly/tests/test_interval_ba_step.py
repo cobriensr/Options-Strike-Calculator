@@ -1056,8 +1056,12 @@ def test_each_day_file_carries_its_day_rows_rule_and_time(
         assert put.path == night.cache_dir / f"replay-{day}.parquet"
 
 
-def test_a_quiet_day_writes_a_zero_row_file(night: Night, settings: Settings, clock: Clock) -> None:
-    # "No alerts" and "not written" stay apart: the day still gets its file, with its schema.
+def test_a_replay_that_fired_nothing_still_writes_its_zero_row_file_and_the_heal_goes_on(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    # This is no healthy quiet day: a session never fires nothing (the health alert for it is
+    # pinned by the test below). What it pins is the file: "no alerts" and "not written" stay
+    # apart, so the day still gets its file, with its schema, and the heal goes on.
     night.landed([WORK[4]])
     night.replays[WORK[4]] = Replay(day=WORK[4], alerts=(), root_label_mismatch=0)
 

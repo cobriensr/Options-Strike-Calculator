@@ -2691,6 +2691,17 @@ def test_write_replay_days_called_directly_takes_its_defaults(
     # No env_file: it is resolved as for the command line without --env-file (here, the test's
     # own file, so no real .env.local is read).
     monkeypatch.setattr(runs, "resolve_env_file", lambda cli_path: world.env_file)
+    # No out: it builds its own Output. Its lines are only a day, a count and a key, so none
+    # can hold a secret; what the test can hold it to is that it hid the env's values in the
+    # Output it built (a subclass records the instance).
+    built: list[runs.Output] = []
+
+    class RecordingOutput(runs.Output):
+        def __init__(self) -> None:
+            super().__init__()
+            built.append(self)
+
+    monkeypatch.setattr(runs, "Output", RecordingOutput)
 
     written = tool.write_replay_days([FULL_A, FULL_A2], allow_market_hours=False)
 
@@ -2708,7 +2719,9 @@ def test_write_replay_days_called_directly_takes_its_defaults(
     assert [done.day for done in written] == [FULL_A, FULL_A2]
     out = capsys.readouterr().out
     assert f"{FULL_A}: 2 alerts" in out and f"{FULL_A2}: 2 alerts" in out
-    assert not any(secret in out for secret in SECRET_PARTS)  # the default output redacts too
+    (default_output,) = built
+    for secret in SECRET_PARTS:  # the default output redacts every part of every env value
+        assert default_output.redact(f"text {secret} text") == "text <redacted> text"
 
 
 def test_write_replay_days_raises_for_its_caller_to_handle(world: World):

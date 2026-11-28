@@ -636,8 +636,9 @@ cover every row of the day.
 **The day file.** Each worked day also leaves one file in the research store,
 `research/interval-ba/replay/{day}.parquet`: every alert the code's rule fires that day, for
 all three tickers, in the columns and types of `EXPORT_COLUMNS` in
-`src/interval_ba_replay.py`. It is meant for the studies in `scripts/`, whose readers move
-to it in a later change. Design:
+`src/interval_ba_replay.py`. It is what the studies in `scripts/` read by default
+(`enrich_interval_ba_outcomes.py`, `analyze_interval_ba_cuts.py` and
+`analyze_confluence_vs_solo.py`, through `scripts/_interval_ba_days.py`). Design:
 `docs/superpowers/specs/2026-11-26-interval-ba-replay-days-design.md`.
 
 - **The code's rule, not live's.** The file holds what `replay_day` fires, whatever the
@@ -646,7 +647,9 @@ to it in a later change. Design:
 - **Its footer** carries the JSON `interval_ba`: `day`, `rows`, `rule` and `created_at`.
   `rule` is the replay constants plus `replay-version` (`REPLAY_VERSION`, bumped by hand
   with any change to what `replay_day` outputs, constants or not; a test pins it). Files
-  of two rules are not one study, so the readers will refuse a mix.
+  of two rules are not one study, so the readers refuse a mix and name the days on each.
+  The fix is `export --per-day` over the days of the old rule, from a checkout at
+  `origin/main`.
 - **A day with no alerts** gets a file of zero rows, so "none fired" and "not written"
   stay apart. Every session fires at least 19 alerts, so a zero-row file is a replay or
   tape-read fault, and the step's `tape fired no alerts` alert says so whatever live wrote
@@ -667,9 +670,13 @@ to it in a later change. Design:
 - **A re-landed day** is redone like any other (its marker is cleared first, above), so its
   file is rewritten from the new tape. The known gap is the marker limit above: a day
   re-landed on a night the step does not run keeps its marker and its old file, and the
-  step never re-heals it. To bring the day and its file up to date, delete its marker by
-  hand, as for the Neon heal. (A later change to the studies' readers will check for a
-  stale or missing file and rewrite it.)
+  step never re-heals it. The studies' readers close the file's side of that gap: before a
+  run they check each day they need, a file older than its tape or a missing one is
+  written again (by the tool's per-day writer, `write_replay_days`, which `export
+  --per-day` also runs), and the run says the nightly should have written it. The Neon
+  heal still needs the marker deleted by hand, as before. A repair is refused when the
+  tape is not in R2 either, inside 07:15-12:30 UTC, for more than 10 days at once, and
+  when the code's rule is not the files'.
 
 **When the inserts are held.** The day's inserts are held, and its marker says why
 (`inserts_held`), unless live's settings show it ran today's rule. Flags, spot and
@@ -683,7 +690,9 @@ deployed after the close belongs to the next session. The three reasons, in this
   it with no row is healed on the replay module's default settings, which are the code's
   rule with all three tickers on: live ran that rule then (that is why the step starts at
   2026-10-29), and the one-off tool's `--assume-default-settings` made the same assumption
-  for the days it healed. Such a day sends no alert and has its inserts on.
+  for the days it healed. Such a day sends no `no live settings record` alert and has its
+  inserts on. It can still raise any other health alert below, `tape fired no alerts` and
+  the three checks of live against the tape included.
 - `live settings differ from the tape rule`: a covering row's ratio, premium floor,
   window, multi-leg share, codes or confluence window is not the replay module's.
 - `live detector off`: `enabled` is false in any covering row, one that was replaced

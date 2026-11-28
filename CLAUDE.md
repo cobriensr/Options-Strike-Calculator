@@ -60,7 +60,7 @@ nightly/          Full Tape lander and post-tape steps (Python, Railway cron ser
                   silent_boom_alerts from the tape (that step's only Neon writes), `outcome-check` alerts on sessions with no outcomes,
                   `interval-ba-tape` corrects each session's live interval_ba_alerts rows from the tape (sweep/floor flags, a blank SPXW spot; adds
                   the alerts live missed as source='replay'; deletes stale unacknowledged replay rows) and keeps interval_ba_tape_days, its only
-                  Neon writes, with one Sentry alert per day live looks wrong for, and `lottery-refit` builds and judges a shadow candidate of the lottery weights in `lottery_score_versions` (promotion, which
+                  Neon writes, and writes each session's replay to `research/interval-ba/replay/{date}.parquet` in R2 (the day files the Interval B/A study scripts read), with one Sentry alert per day live looks wrong for, and `lottery-refit` builds and judges a shadow candidate of the lottery weights in `lottery_score_versions` (promotion, which
                   rewrites live scores, stays off until the owner's go-ahead).
                   Then eleven research steps: `research-derive` keeps per-day derived state, and ten report steps (the EOD-flow rollup, whale plots,
                   the exit-policy, flow-timing, feature-audit, outcome-mining and score-lineage reports, the lottery tracking CSV, the quality sim and

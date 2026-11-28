@@ -36,8 +36,8 @@ EDA and statistical analyses (Python `analyze_*`, TypeScript `analyze-*`). Outpu
 
 - `analyze_silent_boom_multileg.py`: multi-leg signal correlation
 - `analyze_cross_symbol_confluence.py`: SPY/QQQ/IWM joint signals
-- `analyze_interval_ba_cuts.py`: the five cuts of the Interval B/A alerts (hit rate, magnitude, hour of day, ratio, sweep) over their forward paths. Reads the full-year replay export by default (`--source export`, newest `research/interval-ba/replay-<date>.parquet` unless `--export-end YYYY-MM-DD`; the database is never opened) and the newest `interval-ba-outcomes-export-*.csv`. `--source table` reads `interval_ba_alerts` and the newest `interval-ba-outcomes-*.csv`, which have the live feed's gaps. Also `--ticker` and `--csv`
-- `analyze_confluence_vs_solo.py`: SPXW alerts with an SPY or QQQ partner in the `--window-sec` up to their own `fired_at` (backward only, inclusive; a methodology change of 2026-11-26, earlier reports counted partners up to the window after the alert and are not comparable) vs. alone, over the same forward paths. The same `--source export|table` and `--export-end` as the cuts script; the export gives the partners the live feed missed on its gap days
+- `analyze_interval_ba_cuts.py`: the five cuts of the Interval B/A alerts (hit rate, magnitude, hour of day, ratio, sweep) over their forward paths. Reads the replay day files by default (`--source days`: `research/interval-ba/replay/<date>.parquet`, one per session, which the nightly `interval-ba-tape` step writes; the database is never opened) and the newest `interval-ba-outcomes-days-*.csv`. Only the days that CSV covers are checked and read, and a missing or stale day file is repaired first (see "The Interval B/A readers" below). `--source export` reads the one-time snapshot (newest `research/interval-ba/replay-<date>.parquet` unless `--export-end YYYY-MM-DD`, which alone also means this source) and the newest `interval-ba-outcomes-export-*.csv`. `--source table` reads `interval_ba_alerts` and the newest `interval-ba-outcomes-*.csv`, which have the live feed's gaps. Also `--ticker`, `--csv` and `--dry-run`. The report opens with a banner naming the rebuild's methodology changes, which make it not comparable with reports from before 2026-11-26
+- `analyze_confluence_vs_solo.py`: SPXW alerts with an SPY or QQQ partner in the `--window-sec` up to their own `fired_at` (backward only, inclusive, and a partner at the same instant counts; a methodology change of 2026-11-26, earlier reports counted partners up to the window after the alert and are not comparable) vs. alone, over the same forward paths. The same `--source days|export|table`, `--export-end` and `--dry-run` as the cuts script, and the same banner; the day files and the snapshot give the partners the live feed missed on its gap days
 
 ### Audit / verify (`audit-*`, `check-*`, `verify-*`, `grade-*`)
 
@@ -55,7 +55,33 @@ Compute additional features on existing rows. Typically used after a feature-eng
 - `enrich_lottery_outcomes.py`: realized exit-policy columns on `lottery_finder_fires` from the EOD parquet tape (`make enrich`) or the R2 Full Tape with `--r2` (also `--select` and `--dry-run`)
 - `enrich_silent_boom_outcomes.py`: peak and realized exits on `silent_boom_alerts` from parquet or the R2 Full Tape with `--r2` (also `--select` and `--dry-run`)
 - `enrich_silent_boom_outcomes_fulltape.py`: the same from the Full Tape parquet archive
-- `enrich_interval_ba_outcomes.py`: forward spot paths for Interval B/A alerts, read from the Full Tape in R2. `--source export` (the default) takes the alerts from the full-year replay `research/interval-ba/replay-<end>.parquet`: `--export-end YYYY-MM-DD` names one, else the newest in R2 is listed and used (its key is printed). `--source table` takes them from `interval_ba_alerts` (`--export-end` with it is a usage error). Also `--ticker`, `--from-date`, `--to-date`, `--limit-alerts` and `--dry-run`. It holds the one export reader the two `analyze_interval_ba_*` and `analyze_confluence_vs_solo.py` scripts use, and writes the CSVs they read (`interval-ba-outcomes-export-*.csv` for the export, `interval-ba-outcomes-*.csv` for the table)
+- `enrich_interval_ba_outcomes.py`: forward spot paths for Interval B/A alerts, read from the Full Tape in R2. `--source days` (the default) takes the alerts from the replay day files, `research/interval-ba/replay/<date>.parquet`, for the NYSE trading days of `--from-date` to `--to-date` (default: 2026-01-02 through the newest landed tape). `--source export` takes them from the one-time snapshot `research/interval-ba/replay-<end>.parquet`: `--export-end YYYY-MM-DD` names one (given alone it means this source), else the newest in R2 is listed and used (its key is printed). `--source table` takes them from `interval_ba_alerts` (`--export-end` with it, or with `days`, is a usage error). A half day's path ends at its early close (12:00 CT), from the early-close days in `uw-stream/src/market_calendar.py`. Also `--ticker`, `--limit-alerts` and `--dry-run`. It writes the CSVs the two analysis scripts read: `interval-ba-outcomes-days-*.csv` for the day files, `interval-ba-outcomes-export-*.csv` for the snapshot and `interval-ba-outcomes-*.csv` for the table (a ticker other than SPXW adds `-spy-`/`-qqq-` after the kind), so an analysis never joins the paths of another source. What the three readers share (the `--source` flags, those names, the day-file check and repair) is in `_interval_ba_days.py`; the snapshot reader is here
+
+#### The Interval B/A readers: the day files, the repair and `--dry-run`
+
+The three scripts above read the day files by default. Before it reads, each run lists the day-file prefix and the tape prefix in R2 once and checks the days it needs: enrich's `--from-date` to `--to-date`, and for the two analysis scripts the days of their outcomes CSV (its first to its last `fired_at`). A needed day with a landed tape is:
+
+- **missing** when it has no file, and **stale** when its file is older than its tape (a re-landed tape on a night the nightly step does not run keeps its marker, so the step never rewrites the file);
+- **not a gap** when UW marked it unavailable (`fulltape/_unavailable/<date>.json`): it is printed and skipped.
+
+A missing or stale day is **repaired first**: the tool's per-day writer (`write_replay_days` in `interval_ba_tape.py`, imported only then, the same code as `export --per-day`) replays it from the tape and writes its file, and the run goes on over the files it lists again. It writes research files only, never Neon, and each repaired day is printed with "the nightly should have written it; check the interval-ba-tape step" and named in the report's header. The repair is **refused**, with a message and no study, when:
+
+- a missing day has no tape (wait for the nightly run, or use `--source table`);
+- the run is inside 07:15-12:30 UTC, the nightly window (the message gives the time to retry);
+- more than 10 days need it, which points to a broken nightly write (the message prints the one `export --per-day` command that fills them);
+- the replay module here is not `origin/main`'s (the writer refuses unless the checkout is at `origin/main`), or its rule is not the one the files hold;
+- a file it wrote holds no alerts (no session fires fewer than 19).
+
+The run also refuses when the day files it would read are on more than one rule (`REPLAY_VERSION` and the constants), naming the days on each; the fix is `export --per-day` over the days of the old rule. A day file that holds no alerts is noted, not refused.
+
+`--dry-run` never writes: with the day files it lists the days a repair would write and exits non-zero when there are any; otherwise it runs, and skips the CSV and report files. With no flags each script reads the day files:
+
+```bash
+ml/.venv/Scripts/python scripts/enrich_interval_ba_outcomes.py            # 2026-01-02 to the newest tape
+ml/.venv/Scripts/python scripts/analyze_interval_ba_cuts.py               # the newest -days- CSV's days
+ml/.venv/Scripts/python scripts/analyze_confluence_vs_solo.py
+ml/.venv/Scripts/python scripts/enrich_interval_ba_outcomes.py --dry-run  # lists what a repair would write
+```
 
 ### Python backfills (`backfill_*.py`, plus some `backfill-*.py`)
 
