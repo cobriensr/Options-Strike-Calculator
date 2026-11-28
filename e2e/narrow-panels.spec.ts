@@ -277,10 +277,16 @@ test.describe('The level ladder on a phone', () => {
       // the +60 pts reach: the call's odds print on the Above line.
       // The override lasts about a minute. In a live session useAutoFill puts
       // the quote's SPX back on every new quotes payload, `spxEdited` or not,
-      // and the next payload is the 60 s poll; the test takes seconds. The
-      // SPX Price assertion below names the cause if a stalled run loses it.
+      // and the next payload is the 60 s poll; the test takes seconds. So the
+      // SPX Price is asserted before the rows that depend on it, which carry a
+      // message naming it, and again before the widths are measured: a stalled
+      // run then fails on the cause, and never measures a narrower ladder.
+      const spxPrice = page.getByLabel(/SPX Price/);
+      const spxHeld = /^6850(\.00)?$/;
+      const needsOverride =
+        'needs the calculator SPX held at 6850; the 60 s quotes poll resets it (see the fixture comment)';
       await expect(page.getByLabel('SPY Price')).toHaveValue('679.00');
-      await page.getByLabel(/SPX Price/).fill('6850');
+      await spxPrice.fill('6850');
 
       const ladder = page.getByRole('group', {
         name: 'Level Ladder',
@@ -290,21 +296,23 @@ test.describe('The level ladder on a phone', () => {
       await expect(page.getByTestId('level-ladder-header')).toContainText(
         'spot 6,790.0 · levels 09:59 CT',
       );
+      await expect(spxPrice).toHaveValue(spxHeld);
 
       // The widest row: the candidate, two levels, and its odds line
       const putRow = ladder
         .getByRole('listitem')
         .filter({ hasText: 'CANDIDATE · 10Δ PUT' });
-      await expect(putRow).toBeVisible();
+      await expect(putRow, `put candidate row ${needsOverride}`).toBeVisible();
       await expect(putRow).toContainText('State major put');
       await expect(putRow).toContainText('Classic major negative · volume');
       // Laid out, not just in the DOM: the odds line is visible
       await expect(
         putRow.getByText(/σ · touch .+ · finish beyond /),
+        `put candidate odds line ${needsOverride}`,
       ).toBeVisible();
       // The other candidate is past the window: odds and "priced" on its line
       const edgeAbove = page.getByTestId('level-ladder-edge-above');
-      await expect(edgeAbove).toBeVisible();
+      await expect(edgeAbove, `Above line ${needsOverride}`).toBeVisible();
       await expect(edgeAbove).toContainText(
         /^Above: .*Call [\d,]+ \(.+ · touch .+ · finish beyond .+\) · priced odds/,
       );
@@ -314,7 +322,7 @@ test.describe('The level ladder on a phone', () => {
         'Classic major negative · OI 6,700',
       );
       // The state above still rests on the calculator's SPX override
-      await expect(page.getByLabel(/SPX Price/)).toHaveValue(/^6850(\.00)?$/);
+      await expect(spxPrice).toHaveValue(spxHeld);
 
       await expectInsideViewport(ladder, width);
       await expectNothingPastRightEdge(ladder);
