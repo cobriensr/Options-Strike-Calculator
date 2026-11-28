@@ -1203,3 +1203,265 @@ def test_an_analysis_that_repaired_a_day_says_its_outcomes_csv_was_priced_before
         "Rewritten after the outcomes CSV was priced: 2026-11-16, 2026-11-17. Re-run "
         "enrich_interval_ba_outcomes.py for those days."
     )
+
+
+# --- a day file the nightly rewrote after the CSV was priced -----------------------------------
+
+PRICED = datetime(2026, 11, 28, 14, 0, tzinfo=UTC)
+
+
+def files_modified(
+    modified: dict[date, datetime], repaired: tuple[date, ...] = ()
+) -> days.DayFiles:
+    return days.DayFiles(
+        days=tuple(sorted(modified)),
+        urls=tuple("u" for _ in modified),
+        repaired=repaired,
+        unavailable=(),
+        replay_version="1",
+        modified=modified,
+    )
+
+
+def test_the_newest_modified_time_of_the_files_read_is_the_stamp_the_summary_carries():
+    files = files_modified(
+        {MON: PRICED - timedelta(days=3), TUE: PRICED, WED: PRICED - timedelta(1)}
+    )
+
+    assert files.newest_modified == PRICED
+    assert files.priced_line() == "_Day files read: newest LastModified 2026-11-28T14:00:00+00:00_"
+    assert files_modified({}).newest_modified is None
+
+
+@pytest.mark.parametrize(
+    ("csv_name", "summary_name"),
+    [
+        (
+            "interval-ba-outcomes-days-20261126-120000.csv",
+            "interval-ba-outcomes-summary-days-20261126-120000.md",
+        ),
+        (
+            "interval-ba-outcomes-days-spy-20261126-120000.csv",
+            "interval-ba-outcomes-summary-days-spy-20261126-120000.md",
+        ),
+        (
+            "interval-ba-outcomes-export-20261126-120000.csv",
+            "interval-ba-outcomes-summary-export-20261126-120000.md",
+        ),
+        (
+            "interval-ba-outcomes-20261126-120000.csv",
+            "interval-ba-outcomes-summary-20261126-120000.md",
+        ),
+    ],
+)
+def test_the_stamp_is_read_back_from_the_summary_beside_the_csv(
+    tmp_path: Path, csv_name, summary_name
+):
+    csv_path = tmp_path / csv_name
+    csv_path.write_text("x", encoding="utf-8")
+    line = files_modified({MON: PRICED}).priced_line()
+    (tmp_path / summary_name).write_text(f"# Interval B/A\n\n{line}\n\nrest", encoding="utf-8")
+
+    assert days.priced_at(csv_path) == PRICED
+
+
+def test_there_is_no_stamp_when_the_summary_is_missing_or_carries_none(tmp_path: Path):
+    csv_path = tmp_path / "interval-ba-outcomes-days-20261126-120000.csv"
+    csv_path.write_text("x", encoding="utf-8")
+    assert days.priced_at(csv_path) is None  # no summary at all
+
+    summary = tmp_path / "interval-ba-outcomes-summary-days-20261126-120000.md"
+    summary.write_text("# Interval B/A\n\n_Generated 20261126 UTC. Source: table_\n", "utf-8")
+    assert days.priced_at(csv_path) is None  # a summary from before the stamp existed
+
+    summary.write_text("_Day files read: newest LastModified yesterday_", "utf-8")
+    assert days.priced_at(csv_path) is None  # a stamp that is no time
+
+    assert days.priced_at(tmp_path / "my-own-copy.csv") is None  # a name that is no outcomes CSV
+
+
+def test_an_analysis_names_the_days_whose_file_is_newer_than_the_priced_stamp():
+    files = files_modified(
+        {
+            MON: PRICED - timedelta(hours=1),  # older than the pricing: read as it was
+            TUE: PRICED,  # as old as the stamp: not newer
+            WED: PRICED + timedelta(seconds=1),  # rewritten since
+            THU: PRICED + timedelta(days=2),
+        }
+    )
+
+    assert files.analysis_note(PRICED) == (
+        "Rewritten after the outcomes CSV was priced: 2026-11-18, 2026-11-19. Re-run "
+        "enrich_interval_ba_outcomes.py for those days."
+    )
+    assert files.analysis_note(PRICED + timedelta(days=3)) == ""
+    # Without a stamp only the days this run repaired are known to be newer.
+    assert files.analysis_note(None) == ""
+    assert files_modified({MON: PRICED}, repaired=(MON,)).analysis_note(None) != ""
+
+
+def test_a_repaired_day_is_named_once_even_when_the_stamp_names_it_too():
+    files = files_modified({MON: PRICED + timedelta(hours=1)}, repaired=(MON,))
+
+    assert files.analysis_note(PRICED).count("2026-11-16") == 1
+    # A day this run repaired is named whatever the listing's clock says of its file.
+    skewed = files_modified({MON: PRICED - timedelta(hours=1)}, repaired=(MON,))
+    assert "2026-11-16" in skewed.analysis_note(PRICED)
+
+
+def test_each_file_read_carries_the_time_the_listing_gave_it(day_world, con):
+    day_world.full(MON)
+    day_world.tape(TUE)  # missing: written at `now`
+    day_world.file(WED, at=PRICED - timedelta(days=1))
+    day_world.tape(WED)
+
+    files = check(con, MON, WED)
+
+    assert files.modified == {
+        MON: day_world.landed(MON) + timedelta(hours=1),
+        TUE: day_world.now,  # the repaired day's, from the listing after the repair
+        WED: PRICED - timedelta(days=1),
+    }
+    assert files.newest_modified == day_world.now
+
+
+# --- a day file far below the floor -------------------------------------------------------------
+
+
+def alerts_of(day: date, n: int) -> list[dict[str, Any]]:
+    return [day_alert(day, f"14:{31 + i // 2:02d}:{30 * (i % 2):02d}") for i in range(n)]
+
+
+def test_a_kept_day_file_with_fewer_than_19_alerts_is_warned_about_and_still_read(
+    day_world, con, capsys
+):
+    """A partial tape that fires a few alerts is no zero-row fault, but no session has fired
+    fewer than 19: a warning, never a refusal."""
+    day_world.tape(MON, TUE, WED)
+    day_world.file(MON, alerts_of(MON, 19))  # the floor itself: no warning
+    day_world.file(TUE, alerts_of(TUE, 18))
+    day_world.file(WED, alerts_of(WED, 5))
+
+    files = check(con, MON, WED)
+
+    assert files.days == (MON, TUE, WED)  # all read
+    assert files.low == (TUE, WED)
+    assert day_world.written == []
+    out = capsys.readouterr().out
+    assert "WARN: 2026-11-17, 2026-11-18 hold fewer than 19 alerts" in out
+    assert "2026-11-16" not in out.split("WARN:")[1].split("\n")[0]
+    assert "Days with fewer than 19 alerts: 2026-11-17, 2026-11-18" in files.describe()
+
+
+def test_a_repaired_day_with_fewer_than_19_alerts_is_warned_about_too(day_world, con, capsys):
+    day_world.full(MON)
+    day_world.tape(TUE)  # missing
+    day_world.alerts[TUE] = alerts_of(TUE, 7)
+
+    files = check(con, MON, TUE)
+
+    assert files.repaired == (TUE,)
+    assert files.low == (MON, TUE)  # MON's one alert is under 19 as well
+    assert "WARN: 2026-11-16, 2026-11-17 hold fewer than 19 alerts" in capsys.readouterr().out
+
+
+def test_days_with_19_alerts_or_more_are_not_warned_about(day_world, con, capsys):
+    day_world.tape(MON, TUE)
+    day_world.file(MON, alerts_of(MON, 19))
+    day_world.tape(TUE)
+    day_world.alerts[TUE] = alerts_of(TUE, 25)  # a repaired day over the floor
+
+    files = check(con, MON, TUE)
+
+    assert files.low == ()
+    assert "WARN" not in capsys.readouterr().out
+    assert "fewer than 19" not in files.describe()
+
+
+def test_a_day_with_no_alerts_is_a_repair_and_not_a_warning(day_world, con):
+    day_world.tape(MON)
+    day_world.file(MON, [])
+    day_world.alerts[MON] = alerts_of(MON, 30)
+
+    files = check(con, MON, MON)
+
+    assert files.repaired == (MON,)
+    assert files.low == ()
+
+
+# --- the writer's R2 settings are the reader's --------------------------------------------------
+
+
+def test_a_repair_goes_ahead_when_the_writers_r2_settings_are_the_readers(day_world, con):
+    day_world.full(MON)
+    day_world.tape(TUE)
+
+    check(con, MON, TUE)
+
+    day_world.load_env.assert_called_once_with(None)
+    assert day_world.written == [TUE]
+
+
+def test_nothing_to_repair_means_the_env_file_is_not_read(day_world, con):
+    day_world.full(MON, TUE)
+
+    check(con, MON, TUE)
+
+    assert day_world.load_env.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "differing",
+    [
+        ["R2_BUCKET_FULLTAPE"],
+        ["R2_ENDPOINT_URL", "R2_ACCESS_KEY_ID"],
+        ["R2_SECRET_ACCESS_KEY", "R2_BUCKET_FULLTAPE", "R2_ACCESS_KEY_ID", "R2_ENDPOINT_URL"],
+    ],
+)
+def test_a_repair_refuses_when_the_writers_r2_settings_differ_and_names_only_the_variables(
+    day_world, con, differing
+):
+    """The shell's R2_* come first for the reader, and the env file's for the writer: a repair
+    would write to one bucket and list another. The message never carries a value."""
+    day_world.full(MON)
+    day_world.tape(TUE)
+    for name in differing:
+        day_world.writer_env[name] = f"other-{name.lower()}-value"
+
+    message = refused(con, MON, TUE)
+
+    assert message == (
+        "The repair's writer would read other R2 settings than this run lists with "
+        f"({', '.join(sorted(differing))}): the shell's differ from .env.local's, so it would "
+        "write to one place and list another. Make them the same, or unset the shell's."
+    )
+    for value in (*day_world.env.values(), *day_world.writer_env.values()):
+        assert value not in message
+    assert day_world.written == []
+
+
+def test_a_dry_run_lists_the_r2_settings_that_differ(day_world, con):
+    day_world.full(MON)
+    day_world.tape(TUE)
+    day_world.writer_env["R2_BUCKET_FULLTAPE"] = "another-bucket"
+
+    message = refused(con, MON, TUE, dry_run=True)
+
+    assert "2026-11-17  missing" in message
+    assert "other R2 settings than this run lists with (R2_BUCKET_FULLTAPE)" in message
+    assert "another-bucket" not in message
+
+
+def test_a_writer_that_cannot_read_its_env_file_is_a_problem_with_its_message(day_world, con):
+    day_world.full(MON)
+    day_world.tape(TUE)
+    day_world.load_env.side_effect = runs.UsageError(
+        "no .env.local in this checkout or the main one; pass --env-file"
+    )
+
+    message = refused(con, MON, TUE)
+
+    assert message == (
+        "The repair cannot run: no .env.local in this checkout or the main one; pass --env-file"
+    )
+    assert day_world.written == []

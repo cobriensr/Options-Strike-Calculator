@@ -58,7 +58,7 @@ import re
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NoReturn
@@ -77,6 +77,10 @@ TAPE_PREFIX = "fulltape/"
 STUDY_START = date(2026, 1, 2)  # the first session of the rebuilt record
 # More days than this needing a repair point to a broken nightly write, not to a lagging one.
 MAX_REPAIR_DAYS = 10
+# The fewest alerts any session has fired (the snapshot's lowest day, 2026-08-14). A day file under
+# it, and over zero (which is a repair), is a partial tape or a replay fault: it is warned about
+# and named in the header, never refused, so the study does not change without the owner.
+MIN_SESSION_ALERTS = 19
 
 _CT = ZoneInfo("America/Chicago")
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -579,13 +583,17 @@ class DayFiles:
 
     `repaired` days were missing, stale or empty and have been written again; `unavailable`
     days are ones UW did not post, skipped. No day read holds no alerts: such a file is repaired,
-    or the run is refused."""
+    or the run is refused. `low` days hold fewer than MIN_SESSION_ALERTS (but some), and are read
+    as they are. `modified` is each day file's LastModified (aware UTC) as the check last
+    listed it."""
 
     days: tuple[date, ...]
     urls: tuple[str, ...]
     repaired: tuple[date, ...]
     unavailable: tuple[date, ...]
     replay_version: str | None
+    low: tuple[date, ...] = ()
+    modified: Mapping[date, datetime] = field(default_factory=dict)
 
     @property
     def first(self) -> date:
@@ -614,18 +622,65 @@ class DayFiles:
             )
         if self.unavailable:
             text += f". Skipped, UW posted no tape: {_name_days(self.unavailable)}"
+        if self.low:
+            text += f". Days with fewer than {MIN_SESSION_ALERTS} alerts: {_name_days(self.low)}"
         return text
 
-    def analysis_note(self) -> str:
-        """For an analysis run: the days repaired after its outcomes CSV was priced, if any. That
-        CSV was built from the day files as they were, so a rewritten day may differ from what
-        enrich saw. Empty when nothing was repaired."""
-        if not self.repaired:
+    @property
+    def newest_modified(self) -> datetime | None:
+        """The newest LastModified among the files read."""
+        return max(self.modified.values(), default=None)
+
+    def priced_line(self) -> str:
+        """The line enrich writes into its summary: the newest day-file LastModified it read, which
+        an analysis of its CSV compares with its own listing (`priced_at`)."""
+        newest = self.newest_modified
+        assert newest is not None  # a run that read day files has listed them
+        return f"{_PRICED_PREFIX}{newest.astimezone(UTC).isoformat()}_"
+
+    def analysis_note(self, priced_at: datetime | None = None) -> str:
+        """For an analysis run: the days whose file is newer than its outcomes CSV's pricing. That
+        CSV was built from the day files as they were, so such a day may differ from what enrich
+        saw. They are the days this run repaired, and, given the time enrich stamped in its
+        summary (`priced_at`), every day the nightly or another run rewrote since. Empty when
+        there are none."""
+        rewritten = {*self.repaired}
+        if priced_at is not None:
+            rewritten |= {day for day, at in self.modified.items() if at > priced_at}
+        if not rewritten:
             return ""
         return (
-            f"Rewritten after the outcomes CSV was priced: {_name_days(self.repaired)}. Re-run "
-            "enrich_interval_ba_outcomes.py for those days."
+            f"Rewritten after the outcomes CSV was priced: {_name_days(sorted(rewritten))}. "
+            "Re-run enrich_interval_ba_outcomes.py for those days."
         )
+
+
+# The line enrich writes into its summary, and the analysis scripts read back.
+_PRICED_PREFIX = "_Day files read: newest LastModified "
+_PRICED = re.compile(re.escape(_PRICED_PREFIX) + r"(\S+)_")
+# What an analysis says when there is no stamp to compare with (a CSV of an older run, or a copy).
+NO_STAMP_NOTE = (
+    "{csv} has no outcomes summary with a day-files stamp beside it, so it cannot be checked "
+    "whether a day file was rewritten after it was priced."
+)
+
+
+def priced_at(csv_path: Path) -> datetime | None:
+    """The newest day-file LastModified enrich saw, from the summary it wrote beside `csv_path`
+    (`interval-ba-outcomes[-days][-<ticker>]-<stamp>.csv` has `interval-ba-outcomes-summary...-
+    <stamp>.md`). None when there is no such summary, or it carries no stamp: an older run's."""
+    name = csv_path.name
+    start, end = "interval-ba-outcomes-", ".csv"
+    if not (name.startswith(start) and name.endswith(end)):
+        return None
+    summary = csv_path.with_name(f"interval-ba-outcomes-summary-{name[len(start) : -len(end)]}.md")
+    if not summary.is_file():
+        return None
+    found = _PRICED.search(summary.read_text(encoding="utf-8"))
+    try:
+        return datetime.fromisoformat(found[1]) if found else None
+    except ValueError:
+        return None
 
 
 def _r2_env() -> dict[str, str]:
@@ -659,11 +714,37 @@ def _trading_days(runs: Any, first: date, last: date) -> list[date]:
     return needed
 
 
+def _writer_env_problem(runs: Any, reader_env: Mapping[str, str]) -> str | None:
+    """Why the writer would not write where this run lists, or None. The reader takes its R2
+    settings from the shell, then this checkout's .env.local; the tool's `load_env` takes them
+    from the env file alone (this checkout's, else the main one) and sets them in the process.
+    A shell that exports another bucket would have the repair write to one and list the other.
+    Only the names of the variables that differ are shown, never a value."""
+    try:
+        writer_env = runs.load_env(None)
+    except runs.UsageError as exc:
+        return f"The repair cannot run: {exc}"
+    differing = sorted(name for name in _R2_NAMES if writer_env.get(name) != reader_env.get(name))
+    if not differing:
+        return None
+    return (
+        "The repair's writer would read other R2 settings than this run lists with "
+        f"({', '.join(differing)}): the shell's differ from .env.local's, so it would write to "
+        "one place and list another. Make them the same, or unset the shell's."
+    )
+
+
 def _problems(
-    runs: Any, p: Plan, footers: Mapping[date, Footer], *, no_day_file_at_all: bool
+    runs: Any,
+    p: Plan,
+    footers: Mapping[date, Footer],
+    *,
+    no_day_file_at_all: bool,
+    reader_env: Mapping[str, str],
 ) -> list[str]:
     """Why a repair cannot go ahead, one message each, in the order the owner would fix them.
-    `no_day_file_at_all`: the day-file prefix holds nothing, whatever days this run needs."""
+    `no_day_file_at_all`: the day-file prefix holds nothing, whatever days this run needs.
+    `reader_env`: the R2 settings this run lists with."""
     problems: list[str] = []
     if p.no_tape:
         problems.append(
@@ -708,6 +789,8 @@ def _problems(
             f"window, where the step may write a day file. Retry after {window_end:%H:%M} UTC "
             f"({window_end.astimezone(_CT):%H:%M} CT)."
         )
+    if (env_problem := _writer_env_problem(runs, reader_env)) is not None:
+        problems.append(env_problem)
     try:  # the writer's own first check: asked here, so a dry run does not promise what it won't do
         runs.refuse_unless_deployed_code()
     except runs.RefusedError as exc:
@@ -761,17 +844,20 @@ def _write(runs: Any, to_repair: list[date]) -> list[Any]:
         sys.exit(f"The repair stopped: {exc}")
 
 
-def _repair(runs: Any, r2: Any, listing: Listing, needed: Sequence[date], p: Plan) -> None:
+def _repair(
+    runs: Any, r2: Any, listing: Listing, needed: Sequence[date], p: Plan
+) -> tuple[dict[date, int], dict[date, datetime]]:
     """Write each missing, stale or empty day, then list the prefix again: every one must be
-    there, and none may hold no alerts, or no study runs."""
+    there, and none may hold no alerts, or no study runs. Returns the rows of each day written,
+    and the day files' LastModified as the second listing gave them."""
     written = _write(runs, p.to_repair)
     empty = [done.day for done in written if done.rows == 0]
     if empty:
         sys.exit(
             f"The repair wrote a day file with no alerts for {_name_days(empty)}. No session "
-            "fires fewer than 19, so the replay or the tape read is at fault, and no study runs "
-            f"on it. Fix the cause, then write the day again with `{_BACKFILL} --from "
-            f"{min(empty)} --to {max(empty)}`, {_FROM_ORIGIN_MAIN}."
+            f"fires fewer than {MIN_SESSION_ALERTS}, so the replay or the tape read is at fault, "
+            f"and no study runs on it. Fix the cause, then write the day again with "
+            f"`{_BACKFILL} --from {min(empty)} --to {max(empty)}`, {_FROM_ORIGIN_MAIN}."
         )
     files = _days_of(_list_prefix(runs, r2, DAYS_PREFIX), _DAY_FILE)
     after = plan(needed, replace(listing, files=files))
@@ -781,6 +867,7 @@ def _repair(runs: Any, r2: Any, listing: Listing, needed: Sequence[date], p: Pla
             "still read as missing or stale in R2's listing. Check the interval-ba-tape step, "
             "and try again."
         )
+    return {done.day: done.rows for done in written}, files
 
 
 def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run: bool) -> DayFiles:
@@ -790,7 +877,8 @@ def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run
     and exits non-zero when anything needs a repair or would refuse one, else says the files are
     present and current and returns, for the reader to stop. Returns the files to read."""
     runs = _runs()
-    r2 = runs.r2_bucket(_r2_env())
+    env = _r2_env()
+    r2 = runs.r2_bucket(env)
     day_objects = _list_prefix(runs, r2, DAYS_PREFIX)
     tape_objects = _list_prefix(runs, r2, TAPE_PREFIX)
     listing = parse_listing(day_objects, tape_objects)
@@ -808,13 +896,16 @@ def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run
     footers = read_footers(con, {day: day_url(day) for day in p.keep})
     refuse_mixed_rules(footers)
     p = with_empty(p, footers)
-    problems = _problems(runs, p, footers, no_day_file_at_all=not listing.files)
+    problems = _problems(runs, p, footers, no_day_file_at_all=not listing.files, reader_env=env)
     if dry_run and (p.to_repair or problems):
         sys.exit(_dry_run_report(p, listing, problems))
     if problems:
         sys.exit("\n".join(problems))
+    rows = {day: footers[day].rows for day in p.keep}
+    listed = listing.files
     if p.to_repair:
-        _repair(runs, r2, listing, needed, p)
+        written_rows, listed = _repair(runs, r2, listing, needed, p)
+        rows.update(written_rows)
         for day in p.to_repair:
             how = (
                 "stale: its tape landed after it"
@@ -835,6 +926,14 @@ def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run
         )
     if p.unavailable:
         print(f"  skipped, UW has not posted a tape for: {_name_days(p.unavailable)}")
+    # (No day here has zero rows: with_empty and the repair's own refusal see to that.)
+    low = tuple(day for day in days if rows[day] < MIN_SESSION_ALERTS)
+    if low:
+        print(
+            f"  WARN: {_name_days(low)} hold fewer than {MIN_SESSION_ALERTS} alerts, which no "
+            "session has fired so far: a partial tape, or a replay fault? They are read as "
+            "they are."
+        )
     rules = [footers[day].rule for day in p.keep] or [runs.ibr.rule()]
     files = DayFiles(
         days=tuple(days),
@@ -842,6 +941,8 @@ def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run
         repaired=tuple(p.to_repair),
         unavailable=p.unavailable,
         replay_version=rules[0].get("replay-version"),
+        low=low,
+        modified={day: listed[day] for day in days},
     )
     print(f"Day files: {files.describe()}")
     if dry_run:

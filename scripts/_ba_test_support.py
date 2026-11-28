@@ -340,8 +340,10 @@ class DayWorld:
     it (an hour after its tape, so it is not stale, or at `at=`). `write` stands in for the
     tool's `write_replay_days`: it writes each day's file, `alerts[day]` (default one SPXW alert)
     on the local rule, lists it at `now`, and returns the `DayFile`s the real one does; it raises
-    `write_error` instead when that is set. `now` is the clock the readers' windows read, and
-    `guard` stands in for the deployed-code guard (it passes unless given a side effect)."""
+    `write_error` instead when that is set. `now` is the clock the readers' windows read,
+    `guard` stands in for the deployed-code guard (it passes unless given a side effect), and
+    `load_env` for the tool's env-file read, which gives `writer_env` (a copy of the reader's R2
+    values, plus a DATABASE_URL, until a test changes it)."""
 
     def __init__(self, directory: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.dir = directory
@@ -355,13 +357,21 @@ class DayWorld:
         # The deployed-code guard runs git against the real checkout: stood in for, so a test
         # makes it refuse by setting `guard.side_effect` (a RefusedError).
         self.guard = create_autospec(runs.refuse_unless_deployed_code)
-        for name, value in {
+        self.env = {
             'R2_BUCKET_FULLTAPE': 'bucket',
             'R2_ENDPOINT_URL': 'https://account.invalid',
             'R2_ACCESS_KEY_ID': 'key-id',
             'R2_SECRET_ACCESS_KEY': 'secret',
-        }.items():
+        }
+        for name, value in self.env.items():
             monkeypatch.setenv(name, value)
+        # What the tool's own `load_env` (the env file) gives the writer: the reader's values,
+        # until a test changes `writer_env`. Stood in for, so no test reads a real .env.local.
+        self.writer_env = {**self.env, 'DATABASE_URL': 'postgresql://user:pw@host.invalid/db'}
+        self.load_env = create_autospec(
+            runs.load_env, side_effect=lambda cli_path: dict(self.writer_env)
+        )
+        monkeypatch.setattr(runs, 'load_env', self.load_env)
         monkeypatch.setattr(days, 'day_url', self.url)
         monkeypatch.setattr(
             runs, 'r2_bucket', lambda env: runs.R2Bucket(self.client, env['R2_BUCKET_FULLTAPE'])
