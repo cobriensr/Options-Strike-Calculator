@@ -1,21 +1,31 @@
 #!/usr/bin/env python
 """Compute forward spot paths for Interval B/A alerts, from the Full Tape in R2.
 
-For each alert this walks 5-min steps from the alert's own ``fired_at`` to 15:00 CT
-(regular-session close) and records the underlying's spot at each step, plus the percent
-change from the alert's entry anchor.
+For each alert this walks 5-min steps from the alert's own ``fired_at`` to the session's close
+(15:00 CT, or 12:00 CT on an early-close day) and records the underlying's spot at each step,
+plus the percent change from the alert's entry anchor.
 
 METHODOLOGY CHANGE (2026-11-26, interval-ba-rebuild spec 6.8). Paths from this version do not
-compare with CSVs written by the one before it:
+compare with CSVs written by the one before it. The two analysis reports built on them open with
+a banner naming each change, (a) to (e), and the three scripts' headers say the same:
 
-  - t=0 is the last print of the root with a valid spot at or before ``fired_at``, compared in
-    epoch microseconds. It used to be the last print of the minute containing ``fired_at``,
+  - (a) t=0 is the last print of the root with a valid spot at or before ``fired_at``, compared
+    in epoch microseconds. It used to be the last print of the minute containing ``fired_at``,
     which can sit up to 59 s after the alert.
-  - Every later step sits exactly 5*k minutes after ``fired_at`` and takes the root's last
+  - (b) Every later step sits exactly 5*k minutes after ``fired_at`` and takes the root's last
     print with a valid spot at or before that instant. They used to sit 5*k minutes after the
     alert's minute and take that minute's last print, so a path could start up to 59 s late and
     measure up to 59 s more than its horizon. t=0 and the steps share one basis, the root's
     prints (any contract of the root carries the underlying's spot).
+  - (c) The default source is the replay day files (below), not the table.
+  - (d) Confluence looks backward only, and a partner at the same instant counts. That is
+    analyze_confluence_vs_solo.py's.
+  - (e) A half day's path ends at its early close, 13:00 ET (12:00 CT), on the days of
+    EARLY_CLOSE_DATES, loaded by path from uw-stream/src/market_calendar.py (standard library
+    only; its parity test pins it to src/data/marketHours.ts). It ran to 15:00 CT before, three
+    hours of a flat spot after the last print.
+
+Also changed:
   - Prints are picked by their OCC root (``option_chain_id`` less its last 15 characters), not
     by ``underlying_symbol``: the websocket labels SPXW prints SPX.
   - The entry is the row's own ``underlying_price`` when it is finite and above zero, else the
@@ -24,18 +34,26 @@ compare with CSVs written by the one before it:
   - An alert fired after the close has no path: it is counted apart from the rows skipped for
     want of a spot, in the per-day lines and the summary.
 
-Sources (``--source``):
-  export  the full-year replay in R2, research/interval-ba/replay-<end>.parquet, written by
-          scripts/interval_ba_tape.py: one rule all year and no gaps. This is the default.
-          ``--export-end`` names one; without it the newest in R2 is taken (a wildcard list
-          of the prefix) and its key is printed. The export has no table ids, so ``alert_id``
-          is "<option_chain>@<bucket_start in epoch seconds>", the table's unique key, and the
-          files are named interval-ba-outcomes-export-*.
+Sources (``--source``; _interval_ba_days.py holds what the three readers share):
+  days    the replay day files in R2, research/interval-ba/replay/<date>.parquet, one per session,
+          which the nightly interval-ba-tape step writes each morning: one rule all year and no
+          gaps. This is the default. A run checks the days it needs, the NYSE trading days of
+          ``--from-date`` to ``--to-date`` (by default 2026-01-02 through the newest landed
+          tape), and repairs a missing or stale one before it refuses, by the tool's per-day
+          writer. ``--dry-run`` writes nothing and lists the days a repair would write, exiting
+          non-zero when there are any. The files are named interval-ba-outcomes-days-*.
+  export  the one-time snapshot in R2, research/interval-ba/replay-<end>.parquet, written by
+          scripts/interval_ba_tape.py. ``--export-end`` names one (given alone it means this
+          source); without it the newest in R2 is taken (a wildcard list of the prefix) and its
+          key is printed. Neither source has table ids, so ``alert_id`` is
+          "<option_chain>@<bucket_start in epoch seconds>", the table's unique key, and the
+          snapshot's files are named interval-ba-outcomes-export-*.
   table   interval_ba_alerts in Neon, read only: the live record, plus what the nightly tape
           step added to it. It has the live feed's gaps (live rows stay the record, and missed
-          alerts are added only from 2026-10-29), so a study of the whole year reads the export.
-analyze_interval_ba_cuts.py and analyze_confluence_vs_solo.py read the same two sources, through
-the reader in this file, and take the outcomes CSV that matches their source.
+          alerts are added only from 2026-10-29), so a study of the whole year reads the days.
+analyze_interval_ba_cuts.py and analyze_confluence_vs_solo.py read the same three sources,
+through the module they share with this one, and take the outcomes CSV that matches their
+source.
 
 Data source for the tape: fulltape/{date}-fulltape.parquet in R2 (the R2_* variables, from
 .env.local), through ml/src/utils/r2.py. DuckDB reads only the columns it needs. Each print
@@ -43,8 +61,8 @@ carries the underlying's ``underlying_price``, so the last one per instant gives
 for the whole day, with no dependence on the ``index_candles_1m`` table.
 
 Outputs (under docs/tmp/, per project memory feedback_scratch_files_in_docs_tmp):
-  - interval-ba-outcomes[-export][-<ticker>]-{stamp}.csv: one row per (alert, t_minutes)
-  - interval-ba-outcomes-summary[-export][-<ticker>]-{stamp}.md: aggregate tables
+  - interval-ba-outcomes[-days|-export][-<ticker>]-{stamp}.csv: one row per (alert, t_minutes)
+  - interval-ba-outcomes-summary[-days|-export][-<ticker>]-{stamp}.md: aggregate tables
 Each is written under a ``.partial`` name and renamed when the run finishes, so a run that
 dies leaves nothing the analyze_* scripts' ``*.csv`` discovery can pick up. So does a run that
 reads no day's tape at all (every day missing from R2 or without prints of the root, as a wrong
@@ -55,7 +73,7 @@ Prints a final summary to stdout: median forward % returns at T+5/15/30/60
 
 Usage:
     ml/.venv/Scripts/python scripts/enrich_interval_ba_outcomes.py \\
-        [--source export|table] [--export-end 2026-11-25] \\
+        [--source days|export|table] [--export-end 2026-11-25] \\
         [--from-date 2026-01-02] [--to-date 2026-05-11] \\
         [--limit-alerts N] [--dry-run]
 """
@@ -64,17 +82,21 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import math
 import os
 import re
 import sys
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+# The day files, the --source flags and the CSV names live in the module the three readers
+# share. Run as a script, scripts/ is on sys.path.
+import _interval_ba_days as days
 import duckdb
 import numpy as np
 import pandas as pd
@@ -83,6 +105,10 @@ import psycopg2
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 OUT_DIR = ROOT / 'docs' / 'tmp'
+# The early-close days live in uw-stream's calendar, which is standard library only and is held
+# to src/data/marketHours.ts by a parity test. Loaded by path, and nothing else is taken from
+# uw-stream. A change to it reruns the scripts tests (the ml job's paths filter in ci.yml).
+MARKET_CALENDAR_PATH = ROOT / 'uw-stream' / 'src' / 'market_calendar.py'
 
 # ml/src holds utils.r2, the tape over httpfs.
 _ML_SRC = str(ROOT / 'ml' / 'src')
@@ -91,9 +117,23 @@ if _ML_SRC not in sys.path:
 
 from utils.r2 import fulltape_connection, r2_url  # noqa: E402
 
+
+def _load_early_closes() -> Mapping[str, int]:
+    """EARLY_CLOSE_DATES from uw-stream's market calendar: ISO date to the close hour in ET."""
+    spec = importlib.util.spec_from_file_location('uw_stream_market_calendar', MARKET_CALENDAR_PATH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'cannot load {MARKET_CALENDAR_PATH}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.EARLY_CLOSE_DATES
+
+
+EARLY_CLOSE_DATES = _load_early_closes()
+
 INTERVAL_MIN = 5  # 5-min cadence
 SESSION_END_CT = time(15, 0)  # 15:00 CT regular-session close
 _CT = ZoneInfo('America/Chicago')
+_ET = ZoneInfo('America/New_York')
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _US = timedelta(microseconds=1)
 _MINUTE_US = 60 * 1_000_000
@@ -105,32 +145,10 @@ CRITICAL_THRESHOLD = 500_000
 # An OCC symbol is its root, then yymmdd, C or P, and eight strike digits.
 OCC_SUFFIX_LEN = 15
 
-# The tool's export (scripts/interval_ba_tape.py, spec 6.5): one object per --end date, in the
-# tape's bucket. These are the columns this script reads, in the export's order, with the types
-# the replay module writes (nightly/src/interval_ba_replay.py EXPORT_COLUMNS). This file imports
-# nothing from the tool or the module: a production run hashes the tool's files.
-# test_export_columns_match_the_replay_module holds this copy to the module's own.
-#   option_chain string, ticker string, option_type string, strike decimal(10,3), expiry date,
-#   bucket_start timestamp(us, UTC), fired_at timestamp(us, UTC), ratio_pct decimal(5,2),
-#   total_premium decimal(14,2), trade_count int32, top_trade_is_sweep bool,
-#   top_trade_is_floor bool, underlying_price decimal(10,2) NULLABLE
-# The two analyze_* scripts read the export through this file's reader, so this is the one copy.
+# The tool's snapshot export (scripts/interval_ba_tape.py, spec 6.5): one object per --end date,
+# in the tape's bucket. test_export_columns_match_the_replay_module holds the key prefix to the
+# tool's, and the columns the scripts read (days.ALERT_COLUMNS) to the replay module's.
 EXPORT_PREFIX = 'research/interval-ba/'
-EXPORT_COLUMNS = (
-    'option_chain',
-    'ticker',
-    'option_type',
-    'strike',
-    'expiry',
-    'bucket_start',
-    'fired_at',
-    'ratio_pct',
-    'total_premium',
-    'trade_count',
-    'top_trade_is_sweep',
-    'top_trade_is_floor',
-    'underlying_price',
-)
 
 SKIPPED_NOTE = 'no spot in the row or on the tape'
 AFTER_CLOSE_NOTE = 'fired after the close, no path'
@@ -157,8 +175,13 @@ def severity_of(total_premium: float) -> str:
 
 
 def session_close_utc(date_iso: str) -> datetime:
-    """Return the 15:00 CT instant as a tz-aware UTC datetime."""
+    """The session's close as a tz-aware UTC datetime: 15:00 CT, or on an early-close day (the
+    day before Independence Day, the Friday after Thanksgiving, Christmas Eve) 13:00 ET, which
+    is 12:00 CT."""
     y, m, d = (int(x) for x in date_iso.split('-'))
+    early_hour_et = EARLY_CLOSE_DATES.get(date_iso)
+    if early_hour_et is not None:
+        return datetime(y, m, d, early_hour_et, tzinfo=_ET).astimezone(UTC)
     naive = datetime.combine(datetime(y, m, d).date(), SESSION_END_CT)
     return naive.replace(tzinfo=_CT).astimezone(UTC)
 
@@ -333,70 +356,6 @@ def export_url(end: str) -> str:
     return f's3://{bucket}/{export_key(end)}'
 
 
-def fetch_export_alerts(
-    con,
-    url: str,
-    ticker: str | None,
-    from_date: str | None,
-    to_date: str | None,
-    limit_alerts: int | None,
-) -> list[dict]:
-    """The export's alerts, shaped like fetch_alerts' rows: the same keys and Python types.
-
-    `ticker` None reads every ticker in one call. The export has no ids, so `id` is the
-    table's unique key, the contract and its bucket. Times leave DuckDB as epoch microseconds
-    (a TIMESTAMPTZ needs pytz to come out as a datetime) and become aware UTC datetimes here.
-    """
-    where = ['true']
-    params: dict[str, object] = {'url': url}
-    if ticker is not None:
-        where.append('ticker = $ticker')
-        params['ticker'] = ticker
-    if from_date:
-        where.append('expiry >= CAST($from_date AS DATE)')
-        params['from_date'] = from_date
-    if to_date:
-        where.append('expiry <= CAST($to_date AS DATE)')
-        params['to_date'] = to_date
-    sql = (
-        'SELECT option_chain, ticker, option_type, strike, expiry, '
-        'epoch_us(fired_at) AS fired_us, ratio_pct, total_premium, trade_count, '
-        'underlying_price, top_trade_is_sweep, top_trade_is_floor, '
-        'epoch_us(bucket_start) AS bucket_us '
-        'FROM read_parquet($url) WHERE ' + ' AND '.join(where) +
-        ' ORDER BY fired_at ASC, option_chain ASC'
-    )
-    if limit_alerts is not None:
-        sql += f' LIMIT {int(limit_alerts)}'
-    cur = con.execute(sql, params)
-    cols = [c[0] for c in cur.description]
-    alerts = []
-    for row in cur.fetchall():
-        r = dict(zip(cols, row, strict=True))
-        fired_us = r.pop('fired_us')
-        bucket_us = r.pop('bucket_us')
-        alerts.append(
-            {
-                'id': f'{r["option_chain"]}@{bucket_us // 1_000_000}',
-                **r,
-                'fired_at': _EPOCH + timedelta(microseconds=fired_us),
-            },
-        )
-    return alerts
-
-
-def check_export_columns(con, url: str, key: str) -> None:
-    have = {
-        c[0]
-        for c in con.execute(
-            'SELECT * FROM read_parquet($url) LIMIT 0', {'url': url},
-        ).description
-    }
-    missing = [c for c in EXPORT_COLUMNS if c not in have]
-    if missing:
-        sys.exit(f'{key} lacks column(s) this script reads: {", ".join(missing)}')
-
-
 _EXPORT_NAME = re.compile(r'replay-(\d{4}-\d{2}-\d{2})\.parquet$')
 
 
@@ -430,7 +389,7 @@ def read_export_alerts(
     to_date: str | None = None,
     limit_alerts: int | None = None,
 ) -> list[dict]:
-    """The one reader of the replay export, for this script and the two analyze_* scripts.
+    """The one reader of the replay snapshot, for this script and the two analyze_* scripts.
 
     Exits, naming the key, when the object is not in R2, and names any column the scripts read
     that it lacks. `ticker` None takes every ticker.
@@ -439,8 +398,8 @@ def read_export_alerts(
     url = export_url(end)
     if not object_exists(con, url):
         sys.exit(f'No export object at {key} in R2')
-    check_export_columns(con, url, key)
-    return fetch_export_alerts(con, url, ticker, from_date, to_date, limit_alerts)
+    days.check_columns(con, url, key)
+    return days.fetch_alerts(con, url, ticker, from_date, to_date, limit_alerts)
 
 
 def open_connection():
@@ -448,8 +407,14 @@ def open_connection():
     return fulltape_connection(threads=4, memory_limit='3000MiB')
 
 
-def load_alerts(con, args: argparse.Namespace, ticker: str) -> list[dict]:
-    if args.source == 'export':
+def load_alerts(
+    con, args: argparse.Namespace, ticker: str, files: days.DayFiles | None
+) -> list[dict]:
+    if files is not None:
+        return days.read_day_alerts(
+            con, files, ticker, args.from_date, args.to_date, args.limit_alerts,
+        )
+    if args.source == days.EXPORT:
         return read_export_alerts(
             con, args.export_end, ticker, args.from_date, args.to_date, args.limit_alerts,
         )
@@ -460,56 +425,6 @@ def load_alerts(con, args: argparse.Namespace, ticker: str) -> list[dict]:
         )
     finally:
         conn.close()
-
-
-def outcomes_prefix(ticker: str, export: bool) -> str:
-    """The start of an outcomes CSV's name: interval-ba-outcomes[-export][-<ticker>]-.
-
-    SPXW from the table keeps the original name with no ticker, so existing CSVs and the
-    analyze_* discovery need no migration; the other tickers carry a slug."""
-    kind = '-export' if export else ''
-    slug = '' if ticker == 'SPXW' else f'-{ticker.lower()}'
-    return f'interval-ba-outcomes{kind}{slug}-'
-
-
-def newest_outcomes_csv(out_dir: Path, ticker: str, export: bool) -> Path | None:
-    """The newest outcomes CSV this script wrote for that ticker and source, or None.
-
-    The stamp (digits) follows the prefix right away, which keeps the files of a longer prefix
-    out: "-spy-" and "-export-" files share the SPXW table prefix up to there."""
-    prefix = outcomes_prefix(ticker, export)
-    names = sorted(out_dir.glob(f'{prefix}*.csv'), reverse=True)
-    for path in names:
-        if path.name[len(prefix):].split('-')[0].isdigit():
-            return path
-    return None
-
-
-def alert_id_reader(export: bool, csv_name: str) -> Callable[[str], int | str]:
-    """How the analyze_* scripts read an outcomes CSV's alert_id column.
-
-    The two sources write two kinds of id: the table's integer, and the export's
-    `<chain>@<bucket epoch>`. The CSV of the other source is a named exit, not a raw ValueError
-    from int('SPXW...@epoch') or a join of nothing."""
-
-    def read(raw: str) -> int | str:
-        if export:
-            if '@' not in raw:
-                sys.exit(
-                    f'{csv_name} holds table alert ids (integers such as {raw!r}), not export '
-                    f'alert ids (<chain>@<epoch>): pass --source table, or an export CSV with '
-                    f'--csv.',
-                )
-            return raw
-        try:
-            return int(raw)
-        except ValueError:
-            sys.exit(
-                f'{csv_name} holds export alert ids ({raw!r}: <chain>@<epoch>), not table '
-                f'ids: pass --source export, or a table CSV with --csv.',
-            )
-
-    return read
 
 
 def require_joined(joined: int, alerts: int, paths: int, csv_name: str, source: str) -> None:
@@ -526,57 +441,30 @@ def require_joined(joined: int, alerts: int, paths: int, csv_name: str, source: 
         )
 
 
-def iso_date(text: str) -> str:
-    try:
-        return date.fromisoformat(text).isoformat()
-    except ValueError:
-        raise argparse.ArgumentTypeError(f'{text!r} is not a YYYY-MM-DD date') from None
-
-
-def add_source_arguments(parser: argparse.ArgumentParser) -> None:
-    """--source and --export-end, the same on this script and the two analyze_* scripts."""
-    parser.add_argument(
-        '--source',
-        choices=('export', 'table'),
-        default='export',
-        help=(
-            "Where the alerts come from: the tool's full-year replay export in R2 (default) "
-            'or the interval_ba_alerts table, which has the live feed gaps.'
-        ),
-    )
-    parser.add_argument(
-        '--export-end',
-        type=iso_date,
-        default=None,
-        help=(
-            'With --source export: the --end date of the export object to read. '
-            'Default: the newest research/interval-ba/replay-<date>.parquet in R2.'
-        ),
-    )
-
-
-def check_source_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    if args.source == 'table' and args.export_end is not None:
-        parser.error('--export-end goes with --source export')
-
-
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    add_source_arguments(parser)
+    days.add_source_arguments(parser)
     parser.add_argument(
         '--ticker',
         type=str,
         default='SPXW',
         help='Alert ticker to enrich (SPXW, SPY, QQQ). Default: SPXW.',
     )
-    parser.add_argument('--from-date', type=str, default=None)
-    parser.add_argument('--to-date', type=str, default=None)
-    parser.add_argument('--limit-alerts', type=int, default=None)
     parser.add_argument(
-        '--dry-run', action='store_true', help='Skip CSV/MD writes.',
+        '--from-date',
+        type=days.iso_date,
+        default=None,
+        help='First session date. With the day files: default 2026-01-02.',
     )
+    parser.add_argument(
+        '--to-date',
+        type=days.iso_date,
+        default=None,
+        help='Last session date. With the day files: default the newest landed tape.',
+    )
+    parser.add_argument('--limit-alerts', type=int, default=None)
     args = parser.parse_args(argv)
-    check_source_arguments(parser, args)
+    days.check_source_arguments(parser, args)
     return args
 
 
@@ -598,12 +486,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     con = open_connection()
     try:
-        if args.source == 'export':
+        files = None
+        if args.source == days.DAYS:
+            # The days of the range are checked, and a missing or stale one repaired, first.
+            files = days.ensure_day_files(
+                con,
+                date.fromisoformat(args.from_date) if args.from_date else None,
+                date.fromisoformat(args.to_date) if args.to_date else None,
+                dry_run=args.dry_run,
+            )
+        elif args.source == days.EXPORT:
             args.export_end = resolve_export_end(con, args.export_end)
-        alerts = load_alerts(con, args, ticker)
+        alerts = load_alerts(con, args, ticker, files)
         if not alerts:
             sys.exit('No alerts matched the filter')
-        return enrich(con, args, ticker, alerts)
+        return enrich(con, args, ticker, alerts, files)
     finally:
         con.close()
 
@@ -613,6 +510,7 @@ def enrich(
     args: argparse.Namespace,
     ticker: str,
     alerts: list[dict],
+    files: days.DayFiles | None,
 ) -> int:
     # Group alerts by expiry date so each tape is read once.
     by_date: dict[str, list[dict]] = defaultdict(list)
@@ -625,23 +523,24 @@ def enrich(
         by_date[date_iso].append(a)
 
     stamp = datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')
-    # The names are outcomes_prefix's: the analyze_* scripts find the CSV by them. The summary's
-    # carry `-export` and the ticker slug the same way.
-    export = args.source == 'export'
-    kind = '-export' if export else ''
+    # The names are days.outcomes_prefix's: the analyze_* scripts find the CSV by them. The
+    # summary's carry `-days` or `-export` and the ticker slug the same way.
+    kind = days.kind_of(args.source)
     slug = '' if ticker == 'SPXW' else f'-{ticker.lower()}'
-    csv_path = OUT_DIR / f'{outcomes_prefix(ticker, export)}{stamp}.csv'
+    csv_path = OUT_DIR / f'{days.outcomes_prefix(ticker, args.source)}{stamp}.csv'
     md_path = OUT_DIR / f'interval-ba-outcomes-summary{kind}{slug}-{stamp}.md'
     # Both are written under a .partial name and renamed once the run is through, so a run
     # that dies leaves no file the analyze_* scripts' `*.csv` discovery could take for the
     # newest.
     csv_partial = csv_path.with_name(csv_path.name + '.partial')
     md_partial = md_path.with_name(md_path.name + '.partial')
-    source_text = (
-        f'export ({export_key(args.export_end)})'
-        if args.source == 'export'
-        else 'table'
-    )
+    if files is not None:
+        source_header = files.describe()
+        source_text = 'day files'
+    elif args.source == days.EXPORT:
+        source_header = source_text = f'export ({export_key(args.export_end)})'
+    else:
+        source_header = source_text = 'table'
     print(
         f'Enriching {len(alerts)} alerts across {len(by_date)} day(s) '
         f'from the {source_text} → {csv_path.name}',
@@ -757,10 +656,11 @@ def enrich(
 
     # Aggregate summary tables.
     md_lines = ['# Interval B/A — forward-return experiment\n']
-    md_lines.append(f'_Generated {stamp} UTC. Source: {source_text}_\n')
+    md_lines.append(f'_Generated {stamp} UTC. Source: {source_header}_\n')
     md_lines.append(
         f'\nReplays the {ticker} spot path in 5-min increments from each alert\'s '
-        f'``fired_at`` to 15:00 CT. Each step is the last {ticker}-root print at or before '
+        f'``fired_at`` to the close (15:00 CT, 12:00 CT on an early-close day). Each step is '
+        f'the last {ticker}-root print at or before '
         f'that many minutes after ``fired_at`` (t=0: at or before ``fired_at``). Entry '
         f'anchor is the alert\'s own ``underlying_price`` when it is finite and above zero, '
         f'else the t=0 print. Median % change across {len(alerts)} alerts.\n',

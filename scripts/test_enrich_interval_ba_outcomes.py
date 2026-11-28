@@ -9,7 +9,9 @@ The boundaries are patched (R3, and the scripts conftest blocks both stores):
 - `fulltape_connection` returns a local DuckDB connection, `r2_url` and `export_url` the local
   files' paths;
 - `psycopg2.connect` returns a fake connection whose cursor hands back the table rows;
-- `load_env` does nothing and `OUT_DIR` is a folder in tmp_path.
+- `load_env` does nothing and `OUT_DIR` is a folder in tmp_path;
+- the day files go through a `DayWorld` (scripts/_ba_test_support.py), which patches the R2
+  listing, the day files' URLs and the tool's `write_replay_days`.
 
 The `s3://` tests below keep `r2_url` and `export_url` real. They point DuckDB's httpfs at a
 fake S3 on 127.0.0.1 that a fixture starts for the test and shuts down in its teardown, so the
@@ -38,13 +40,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _interval_ba_days as days
 import enrich_interval_ba_outcomes as mod  # noqa: E402
 from _ba_test_support import (  # noqa: E402
     DAY,
     DAY_ISO,
     EPOCH,
     EXPORT_SCHEMA,
+    DayWorld,
     at,
+    day_alert,
     export_row,
     fake_s3,  # noqa: F401  (a fixture: pytest finds it by name)
     local_connection,
@@ -72,10 +77,11 @@ def tick(
     *,
     label: str | None = None,
     canceled: bool = False,
+    day: date = DAY,
 ) -> dict[str, object]:
-    """One tape row. The underlying_symbol label defaults to the OCC root."""
+    """One tape row of `day`. The underlying_symbol label defaults to the OCC root."""
     return {
-        'at': at(clock),
+        'at': at(clock, day),
         'chain': chain,
         'label': label if label is not None else chain[:-15],
         'spot': spot,
@@ -480,7 +486,7 @@ def test_export_alerts_have_the_tables_keys_and_types(tmp_path, con, monkeypatch
     url = write_export(tmp_path, [export_row(SPXW_C, '20:50:00', '6701.00')])
     cur = fake_table(monkeypatch, [table_row(7, SPXW_C, '20:50:00', '6701.00')])
 
-    from_export = mod.fetch_export_alerts(con, url, 'SPXW', None, None, None)
+    from_export = days.fetch_alerts(con, url, 'SPXW', None, None, None)
     from_table = mod.fetch_alerts(psycopg2.connect(), 'SPXW', None, None, None)
 
     assert cur.execute.called
@@ -509,9 +515,9 @@ def test_export_filters_by_ticker_expiry_and_limit_in_fired_order(tmp_path, con)
         ],
     )
 
-    both_days = mod.fetch_export_alerts(con, url, 'SPXW', None, None, None)
-    one_day = mod.fetch_export_alerts(con, url, 'SPXW', DAY_ISO, DAY_ISO, None)
-    first = mod.fetch_export_alerts(con, url, 'SPXW', DAY_ISO, DAY_ISO, 1)
+    both_days = days.fetch_alerts(con, url, 'SPXW', None, None, None)
+    one_day = days.fetch_alerts(con, url, 'SPXW', DAY_ISO, DAY_ISO, None)
+    first = days.fetch_alerts(con, url, 'SPXW', DAY_ISO, DAY_ISO, 1)
 
     assert [a['option_chain'] for a in both_days] == [SPXW_P, SPXW_C, 'SPXW261118C06700000']
     assert [a['option_chain'] for a in one_day] == [SPXW_P, SPXW_C]
@@ -528,7 +534,7 @@ def test_export_reads_every_ticker_in_one_call_when_none_is_named(tmp_path, con)
         ],
     )
 
-    alerts = mod.fetch_export_alerts(con, url, None, None, None, None)
+    alerts = days.fetch_alerts(con, url, None, None, None, None)
 
     assert [a['ticker'] for a in alerts] == ['SPY', 'QQQ', 'SPXW']  # in fired order
 
@@ -542,7 +548,7 @@ def test_export_alerts_carry_both_top_trade_flags(tmp_path, con):
         ],
     )
 
-    alerts = mod.fetch_export_alerts(con, url, 'SPXW', None, None, None)
+    alerts = days.fetch_alerts(con, url, 'SPXW', None, None, None)
 
     assert [(a['top_trade_is_sweep'], a['top_trade_is_floor']) for a in alerts] == [
         (True, False),
@@ -586,14 +592,19 @@ def run(monkeypatch, tmp_path):
         db.close()
 
 
+@pytest.fixture
+def day_world(tmp_path, monkeypatch) -> DayWorld:
+    return DayWorld(tmp_path / 'days', monkeypatch)
+
+
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline='', encoding='utf-8') as f:
         return list(csv.DictReader(f))
 
 
-def outcome_csv(out: Path, *, export: bool = False) -> Path:
-    pattern = 'interval-ba-outcomes-export-2*.csv' if export else 'interval-ba-outcomes-2*.csv'
-    (path,) = out.glob(pattern)
+def outcome_csv(out: Path, *, export: bool = False, days: bool = False) -> Path:
+    kind = '-days' if days else '-export' if export else ''
+    (path,) = out.glob(f'interval-ba-outcomes{kind}-2*.csv')
     return path
 
 
@@ -893,7 +904,10 @@ def test_no_matching_alerts_exits_with_a_message(run, monkeypatch):
     'argv',
     [
         ['--source', 'table', '--export-end', DAY_ISO],  # an end date the table ignores
+        ['--source', 'days', '--export-end', DAY_ISO],  # nor do the day files
         ['--source', 'export', '--export-end', '2026-13-45'],  # not a date
+        ['--from-date', '2026-13-45'],  # not a date
+        ['--to-date', 'yesterday'],
         ['--source', 'files'],
     ],
 )
@@ -925,18 +939,36 @@ def never_open_the_database(monkeypatch) -> MagicMock:
     return opened
 
 
-def test_the_default_source_is_the_export_and_never_the_database(run, monkeypatch):
+def test_the_snapshot_source_never_opens_the_database(run, monkeypatch):
     write_tape(run, CLOSE_TAPE)
     write_export(run, [export_row(SPXW_C, '20:50:00', '6701.00')])
     opened = never_open_the_database(monkeypatch)
 
-    assert mod.parse_args([]).source == 'export'
-    assert mod.main([]) == 0
+    assert mod.parse_args(['--source', 'export']).source == 'export'
+    assert mod.main(['--source', 'export']) == 0
 
     opened.assert_not_called()
     assert {r['alert_id'] for r in read_rows(outcome_csv(run / 'out', export=True))} == {
         f'{SPXW_C}@{int(at("20:50:00").timestamp()) // 300 * 300}'
     }
+
+
+def test_export_end_still_reads_the_snapshot(run, monkeypatch, day_world):
+    """The date alone means the snapshot, as it did before the day files were the default, and
+    the day files are not listed or read."""
+    write_tape(run, CLOSE_TAPE)
+    write_export(run, [export_row(SPXW_C, '20:50:00', '6701.00')])
+    day_world.file(DAY, [day_alert(DAY, '20:55:00')])  # another alert, in the day file: not read
+    opened = never_open_the_database(monkeypatch)
+
+    assert mod.parse_args(['--export-end', DAY_ISO]).source == 'export'
+    assert mod.main(['--export-end', DAY_ISO]) == 0
+
+    opened.assert_not_called()
+    assert day_world.client.listed == []
+    (path,) = (run / 'out').glob('interval-ba-outcomes-export-2*.csv')
+    assert {r['option_chain'] for r in read_rows(path)} == {SPXW_C}
+    assert not list((run / 'out').glob('interval-ba-outcomes-days-*'))
 
 
 def test_export_end_defaults_to_the_newest_replay_object(run, con, capsys):
@@ -948,7 +980,7 @@ def test_export_end_defaults_to_the_newest_replay_object(run, con, capsys):
     (run / 'replay-2026-11-30.parquet.bak').write_bytes(b'x')
 
     assert mod.newest_export_end(con) == '2026-11-17'
-    assert mod.main([]) == 0
+    assert mod.main(['--source', 'export']) == 0
 
     out = capsys.readouterr().out
     assert 'Export: research/interval-ba/replay-2026-11-17.parquet (the newest)' in out
@@ -975,35 +1007,30 @@ def test_a_named_export_end_is_taken_even_when_a_newer_one_exists(run, con, caps
 
 def test_no_replay_object_exits_with_a_message_naming_the_prefix(run):
     with pytest.raises(SystemExit, match=r'No replay object under research/interval-ba/ in R2'):
-        mod.main([])
+        mod.main(['--source', 'export'])
 
     assert not list((run / 'out').glob('*.csv'))
 
 
-def test_outcomes_csv_discovery_follows_the_name_the_script_writes(tmp_path):
-    for name in (
-        'interval-ba-outcomes-20261120-100000.csv',
-        'interval-ba-outcomes-20261126-101500.csv',  # SPXW, table: the newest of its kind
-        'interval-ba-outcomes-export-20261126-120000.csv',
-        'interval-ba-outcomes-export-spy-20261126-121000.csv',
-        'interval-ba-outcomes-spy-20261126-130000.csv',
-        'interval-ba-outcomes-20261126-140000.csv.partial',  # a run that died
-        'interval-ba-outcomes-summary-20261126-101500.md',
-    ):
-        (tmp_path / name).write_text('x', encoding='utf-8')
+def test_the_outcomes_names_follow_the_source_the_script_reads(run, monkeypatch, day_world):
+    """Each source writes its own names (days.outcomes_prefix, which the analyze scripts find the
+    CSV by): the day files' with `-days-`, the snapshot's with `-export-`, the table's none."""
+    write_tape(run, CLOSE_TAPE)
+    write_export(run, [export_row(SPXW_C, '20:50:00', '6701.00')])
+    day_world.full(DAY)
+    fake_table(monkeypatch, [table_row(7, SPXW_C, '20:50:00', '6701.00')])
 
-    def newest(ticker: str, export: bool) -> str | None:
-        found = mod.newest_outcomes_csv(tmp_path, ticker, export)
-        return found.name if found else None
+    mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO])
+    mod.main(['--export-end', DAY_ISO])
+    mod.main(['--source', 'table'])
 
-    assert newest('SPXW', False) == 'interval-ba-outcomes-20261126-101500.csv'
-    assert newest('SPXW', True) == 'interval-ba-outcomes-export-20261126-120000.csv'
-    assert newest('SPY', False) == 'interval-ba-outcomes-spy-20261126-130000.csv'
-    assert newest('SPY', True) == 'interval-ba-outcomes-export-spy-20261126-121000.csv'
-    assert newest('QQQ', False) is None
-    assert newest('QQQ', True) is None
-    assert mod.outcomes_prefix('SPXW', False) == 'interval-ba-outcomes-'
-    assert mod.outcomes_prefix('SPY', True) == 'interval-ba-outcomes-export-spy-'
+    out = run / 'out'
+    assert len(list(out.glob('interval-ba-outcomes-days-2*.csv'))) == 1
+    assert len(list(out.glob('interval-ba-outcomes-summary-days-2*.md'))) == 1
+    assert len(list(out.glob('interval-ba-outcomes-export-2*.csv'))) == 1
+    assert len(list(out.glob('interval-ba-outcomes-summary-export-2*.md'))) == 1
+    assert len(list(out.glob('interval-ba-outcomes-2*.csv'))) == 1
+    assert len(list(out.glob('interval-ba-outcomes-summary-2*.md'))) == 1
 
 
 @pytest.mark.parametrize(
@@ -1025,16 +1052,335 @@ def test_an_export_without_the_columns_the_script_reads_names_them(run, missing)
 
 
 def test_export_columns_match_the_replay_module():
-    """The script copies the export's column names instead of importing the replay module (a
+    """The scripts copy the export's column names instead of importing the replay module (a
     production run hashes the tool's files, and the module sits in nightly/src). This holds the
-    copies, here and in the script, to the module's EXPORT_COLUMNS, and the key prefix to the
-    tool's."""
+    test schema to the module's EXPORT_COLUMNS, and this script's snapshot key prefix to the
+    tool's. (The scripts' own copy of the names, days.ALERT_COLUMNS, is held to it in
+    test_interval_ba_days.py.)"""
     import interval_ba_tape as tool
 
     wanted = [(name, str(kind)) for name, kind in tool.ibr.EXPORT_COLUMNS]
     assert [(f.name, str(f.type)) for f in EXPORT_SCHEMA] == wanted
-    assert set(mod.EXPORT_COLUMNS) <= {name for name, _ in wanted}
+    assert set(days.ALERT_COLUMNS) <= {name for name, _ in wanted}
     assert mod.EXPORT_PREFIX == tool.EXPORT_PREFIX
+
+
+# --- the day files ----------------------------------------------------------------------------
+
+DAY_ALERT = [day_alert(DAY, '20:50:00', spot='6701.00')]  # the alert CLOSE_TAPE is written for
+DAY_PATH = [('0', '6701.00', '0.0000'), ('5', '6710.00', '0.1343'), ('10', '6720.00', '0.2835')]
+
+
+def test_readers_default_to_the_day_files(run, monkeypatch, day_world, capsys):
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY)
+    day_world.file(DAY, DAY_ALERT)
+    opened = never_open_the_database(monkeypatch)
+
+    assert mod.parse_args([]).source == 'days'
+    assert mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO]) == 0
+
+    opened.assert_not_called()
+    assert day_world.write.call_count == 0
+    rows = read_rows(outcome_csv(run / 'out', days=True))
+    bucket_s = int(at('20:50:00').timestamp()) // 300 * 300
+    assert {r['alert_id'] for r in rows} == {f'{SPXW_C}@{bucket_s}'}
+    assert [(r['t_minutes'], r['spx_price'], r['pct_change']) for r in rows] == DAY_PATH
+    (summary,) = (run / 'out').glob('interval-ba-outcomes-summary-days-2*.md')
+    assert (
+        'Source: the replay day files in `research/interval-ba/replay/` '
+        '(1 day, 2026-11-17 to 2026-11-17; replay version'
+    ) in summary.read_text('utf-8')
+    out = capsys.readouterr().out
+    assert 'Day files: the replay day files' in out
+    assert 'from the day files → interval-ba-outcomes-days-' in out
+
+
+def test_the_default_range_runs_from_2026_01_02_through_the_newest_tape(
+    run, monkeypatch, day_world
+):
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY)
+    day_world.file(DAY, DAY_ALERT)
+
+    # No --from-date: every trading day from 2026-01-02 is needed, and none of them before DAY has
+    # a tape or a file here. No --to-date: DAY, the newest tape, is the last.
+    with pytest.raises(SystemExit) as stopped:
+        mod.main([])
+
+    assert str(stopped.value).startswith('No tape in R2 for 2026-01-02 to 2026-11-16')
+    assert not list((run / 'out').glob('*.csv'))
+
+
+def test_a_given_range_limits_the_days_checked_and_the_alerts_read(run, day_world):
+    """DAY is the range. The day after has a tape and no file (a repair, if it were needed), and
+    the day after that has a file whose alert is not DAY's."""
+    after, later = DAY + timedelta(days=1), DAY + timedelta(days=2)
+    write_tape(run, CLOSE_TAPE)
+    day_world.full(DAY)
+    day_world.tape(after)
+    day_world.full(later)
+    day_world.file(later, [day_alert(later, '20:50:00', spot='6701.00')])
+
+    assert mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO]) == 0
+
+    assert day_world.write.call_count == 0
+    rows = read_rows(outcome_csv(run / 'out', days=True))
+    assert {r['option_chain'] for r in rows} == {SPXW_C}  # not the later day's alert
+    assert len({r['alert_id'] for r in rows}) == 1
+
+
+def test_a_missing_day_with_a_tape_is_rebuilt_written_and_read(
+    run, monkeypatch, day_world, capsys
+):
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY)  # landed; its file was never written
+    day_world.alerts[DAY] = DAY_ALERT
+    never_open_the_database(monkeypatch)
+
+    assert mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO]) == 0
+
+    assert day_world.written == [DAY]
+    rows = read_rows(outcome_csv(run / 'out', days=True))
+    assert [(r['t_minutes'], r['spx_price'], r['pct_change']) for r in rows] == DAY_PATH
+    (summary,) = (run / 'out').glob('interval-ba-outcomes-summary-days-2*.md')
+    assert 'This run repaired 2026-11-17: the nightly should have written them' in (
+        summary.read_text('utf-8')
+    )
+    assert 'the nightly should have written it; check the interval-ba-tape step' in (
+        capsys.readouterr().out
+    )
+
+
+def test_a_day_file_older_than_its_tape_is_repaired_before_the_run(run, day_world):
+    write_tape(run, CLOSE_TAPE)
+    day_world.full(DAY)
+    day_world.tape(DAY, at=day_world.landed(DAY) + timedelta(days=1))  # the tape was re-landed
+    day_world.alerts[DAY] = DAY_ALERT
+
+    assert mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO]) == 0
+
+    assert day_world.written == [DAY]
+
+
+def test_dry_run_never_writes_and_lists_the_days_to_repair(run, day_world):
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY)
+    before = dict(day_world.client.objects)
+
+    with pytest.raises(SystemExit) as stopped:
+        mod.main(['--dry-run', '--from-date', DAY_ISO, '--to-date', DAY_ISO])
+
+    assert str(stopped.value).startswith('--dry-run: nothing was written.')
+    assert '1 day file(s) would be repaired:' in str(stopped.value)
+    assert '2026-11-17  missing' in str(stopped.value)
+    assert day_world.write.call_count == 0
+    assert day_world.client.objects == before
+    assert not list((run / 'out').glob('*'))
+
+
+def test_a_dry_run_with_nothing_to_repair_reads_the_day_files_and_writes_nothing(
+    run, day_world, capsys
+):
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY)
+    day_world.file(DAY, DAY_ALERT)
+
+    assert mod.main(['--dry-run', '--from-date', DAY_ISO, '--to-date', DAY_ISO]) == 0
+
+    assert not list((run / 'out').glob('*'))
+    assert '## Median % change' in capsys.readouterr().out
+
+
+def test_readers_refuse_mixed_rules_and_name_the_days(run, day_world):
+    after = DAY + timedelta(days=1)
+    other = {**day_world.rule, 'replay-version': '2'}
+    day_world.tape(DAY, after)
+    day_world.file(DAY, DAY_ALERT)
+    day_world.file(after, [day_alert(after)], rule=other)
+
+    with pytest.raises(SystemExit) as stopped:
+        mod.main(['--from-date', DAY_ISO, '--to-date', after.isoformat()])
+
+    message = str(stopped.value)
+    assert message.startswith('The day files are not one study: they hold 2 different rules.')
+    assert 'rule 2 (replay-version 2): 2026-11-18' in message
+    assert not list((run / 'out').glob('*.csv'))
+
+
+def test_a_missing_day_without_a_tape_refuses_and_names_it(run, day_world):
+    day_world.file(DAY, DAY_ALERT)  # no tape for it either: fine
+    after = DAY + timedelta(days=1)  # neither a file nor a tape
+
+    with pytest.raises(SystemExit) as stopped:
+        mod.main(['--from-date', DAY_ISO, '--to-date', after.isoformat()])
+
+    assert str(stopped.value).startswith('No tape in R2 for 2026-11-18, and no unavailable marker')
+    assert day_world.write.call_count == 0
+    assert not list((run / 'out').glob('*.csv'))
+
+
+def test_no_day_file_exits_with_the_prefix(run, day_world):
+    with pytest.raises(SystemExit) as stopped:
+        mod.main([])
+
+    assert str(stopped.value).startswith('No day file under research/interval-ba/replay/ in R2')
+    assert not list((run / 'out').glob('*.csv'))
+
+
+def test_a_day_file_that_holds_no_alerts_is_noted_and_the_run_goes_on(run, day_world, capsys):
+    write_tape(run, CLOSE_TAPE)
+    after = DAY + timedelta(days=1)
+    day_world.tape(DAY, after)
+    day_world.file(DAY, DAY_ALERT)
+    day_world.file(after, [])
+
+    assert mod.main(['--from-date', DAY_ISO, '--to-date', after.isoformat()]) == 0
+
+    assert 'NOTE: 2026-11-18 hold no alerts' in capsys.readouterr().out
+
+
+def test_a_day_file_with_a_bad_footer_stops_the_run(run, day_world):
+    day_world.tape(DAY)
+    day_world.file(DAY, DAY_ALERT, footer=False)
+
+    with pytest.raises(SystemExit, match='no readable `interval_ba` footer'):
+        mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO])
+
+    assert not list((run / 'out').glob('*.csv'))
+
+
+def test_a_listing_that_fails_stops_the_run_without_its_text(run, day_world):
+    from botocore.exceptions import ClientError
+
+    day_world.client.fail = ClientError(
+        {'Error': {'Code': 'AccessDenied', 'Message': 'account-0123'}}, 'ListObjectsV2'
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO])
+
+    assert 'ClientError' in str(stopped.value)
+    assert 'account-0123' not in str(stopped.value)
+
+
+def test_day_files_written_by_the_nightly_step_read_as_the_tool_writes_them(run, day_world):
+    """A real day file, as the replay module builds it (export_table, day_meta): the check and the
+    reader take it, rule and all."""
+    import interval_ba_tape as tool
+
+    ibr = tool.ibr
+    alert = ibr.TapeAlert(
+        option_chain=SPXW_C,
+        ticker='SPXW',
+        option_type='C',
+        strike=Decimal('6700.000'),
+        expiry=DAY,
+        bucket_start=at('20:50:00'),
+        bucket_end=at('20:55:00'),
+        fired_at=at('20:50:00'),
+        ratio_pct=Decimal('80.00'),
+        ask_premium=Decimal('240000.00'),
+        total_premium=Decimal('300000.00'),
+        trade_count=3,
+        top_trade_premium=Decimal('100000.00'),
+        top_trade_size=10,
+        top_trade_executed_at=at('20:50:00'),
+        top_trade_is_sweep=False,
+        top_trade_is_floor=False,
+        underlying_price=Decimal('6701.00'),
+        confluence_tickers=(),
+    )
+    import pyarrow.parquet as pq
+
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY)
+    meta = ibr.day_meta(DAY, 1, datetime(2026, 11, 18, 7, 20, tzinfo=UTC))
+    pq.write_table(ibr.export_table([alert], meta), day_world.url(DAY))
+    day_world.client.objects[ibr.day_key(DAY)] = day_world.landed(DAY) + timedelta(hours=1)
+
+    assert mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO]) == 0
+
+    rows = read_rows(outcome_csv(run / 'out', days=True))
+    assert [(r['t_minutes'], r['spx_price']) for r in rows] == [
+        (t, spot) for t, spot, _ in DAY_PATH
+    ]
+
+
+# --- the close of a half day ------------------------------------------------------------------
+
+HALF = date(2026, 11, 27)  # the Friday after Thanksgiving: 13:00 ET, 12:00 CT, 18:00 UTC
+SPXW_HALF_C = 'SPXW261127C06700000'
+
+
+@pytest.mark.parametrize(
+    ('day', 'close'),
+    [
+        ('2026-11-17', datetime(2026, 11, 17, 21, 0, tzinfo=UTC)),  # a full day: 15:00 CT (CST)
+        ('2026-07-14', datetime(2026, 7, 14, 20, 0, tzinfo=UTC)),  # a full day in summer: 15:00 CDT
+        ('2026-11-27', datetime(2026, 11, 27, 18, 0, tzinfo=UTC)),  # 12:00 CT
+        ('2026-12-24', datetime(2026, 12, 24, 18, 0, tzinfo=UTC)),  # Christmas Eve, 12:00 CT
+        ('2025-07-03', datetime(2025, 7, 3, 17, 0, tzinfo=UTC)),  # 13:00 EDT: 12:00 CDT
+        ('2028-07-03', datetime(2028, 7, 3, 17, 0, tzinfo=UTC)),
+    ],
+)
+def test_the_close_is_15_ct_and_on_a_half_day_13_et(day, close):
+    assert mod.session_close_utc(day) == close
+
+
+def test_the_early_close_days_are_uw_streams_calendar_loaded_by_its_path():
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / 'uw-stream' / 'src' / 'market_calendar.py'
+    spec = importlib.util.spec_from_file_location('market_calendar_for_the_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert path == mod.MARKET_CALENDAR_PATH
+    assert dict(mod.EARLY_CLOSE_DATES) == dict(module.EARLY_CLOSE_DATES)
+    assert '2026-11-27' in mod.EARLY_CLOSE_DATES
+
+
+def test_a_change_to_the_market_calendar_reruns_these_tests():
+    """This script loads uw-stream's calendar by path, so the ml job (which runs these tests)
+    must start when that file alone changes: it is in the job's paths filter in ci.yml."""
+    import yaml
+
+    workflow = yaml.safe_load((mod.ROOT / '.github' / 'workflows' / 'ci.yml').read_text('utf-8'))
+    steps = workflow['jobs']['changes']['steps']
+    (filters,) = (s['with']['filters'] for s in steps if s.get('id') == 'filter')
+
+    assert mod.MARKET_CALENDAR_PATH.relative_to(mod.ROOT).as_posix() in yaml.safe_load(filters)['ml']
+
+
+def test_a_half_days_path_ends_at_the_early_close_and_a_full_days_at_15_ct(
+    run, monkeypatch, capsys
+):
+    # A print every five minutes from 17:00 to 21:55 UTC, the spot rising 3 points each time.
+    clocks = [f'{h}:{m:02d}:00' for h in range(17, 22) for m in range(0, 60, 5)]
+    for day, chain in ((HALF, SPXW_HALF_C), (DAY, SPXW_C)):
+        ticks = [tick(clock, chain, f'{6700 + 3 * n}.00', day=day) for n, clock in enumerate(clocks)]
+        write_tape(run, ticks, day=day)
+    half_early = table_row(1, SPXW_HALF_C, '17:50:00', '6700.00')
+    half_after = table_row(2, SPXW_HALF_C, '18:30:00', '6700.00')  # 12:30 CT: after the close
+    full = table_row(3, SPXW_C, '17:50:00', '6700.00')
+    for row in (half_early, half_after):
+        row['expiry'] = HALF
+        row['fired_at'] = at(row['fired_at'].strftime('%H:%M:%S'), HALF)
+    fake_table(monkeypatch, [half_early, half_after, full])
+
+    assert mod.main(['--source', 'table']) == 0
+
+    rows = read_rows(outcome_csv(run / 'out'))
+    steps = {
+        alert_id: [int(r['t_minutes']) for r in rows if r['alert_id'] == alert_id]
+        for alert_id in ('1', '2', '3')
+    }
+    assert steps['1'] == [0, 5, 10]  # 17:50, 17:55 and the 18:00 close, not a step past it
+    assert steps['2'] == []  # fired after the close: no path
+    assert steps['3'][-1] == 190  # 17:50 to 21:00: the full day runs to 15:00 CT
+    out = capsys.readouterr().out
+    assert f'{HALF.isoformat()}  alerts=   2  series_prints=' in out
+    assert 'after_close=1' in out
 
 
 # --- export_url ---------------------------------------------------------------------------------
@@ -1174,7 +1520,7 @@ def test_over_s3_the_newest_replay_object_is_listed_and_taken(s3_run, capsys):
     objects['/bucket/research/other/replay-2026-12-31.parquet'] = b'x'
 
     assert mod.newest_export_end(s3_run.connect()) == DAY_ISO
-    assert mod.main([]) == 0
+    assert mod.main(['--source', 'export']) == 0
 
     assert 'Export: research/interval-ba/replay-2026-11-17.parquet (the newest)' in (
         capsys.readouterr().out
@@ -1188,4 +1534,4 @@ def test_over_s3_no_replay_object_exits_with_a_message_naming_the_prefix(s3_run)
     s3_run.s3.objects['/bucket/research/interval-ba/replay-2026-11-30.parquet.bak'] = b'x'
 
     with pytest.raises(SystemExit, match=r'No replay object under research/interval-ba/ in R2'):
-        mod.main([])
+        mod.main(['--source', 'export'])

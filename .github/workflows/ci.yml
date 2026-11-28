@@ -88,6 +88,13 @@ jobs:
               # only nightly).
               - 'nightly/src/interval_ba_replay.py'
               - 'nightly/src/calendar_nyse.py'
+              # scripts/enrich_interval_ba_outcomes.py loads the early-close days
+              # (EARLY_CLOSE_DATES, which ends a half day's forward path at its
+              # close) from this file by path, and scripts/test_enrich_interval_ba_outcomes.py
+              # pins the two. uw-stream's own parity test holds it to
+              # src/data/marketHours.ts, so an edit to it must run this job
+              # (uw-stream/** alone starts only the uw_stream job).
+              - 'uw-stream/src/market_calendar.py'
               # ml/tests/test_anchor_backfill_extract.py reads the multileg
               # trade codes out of this file.
               - 'api/_lib/multileg-codes.ts'
