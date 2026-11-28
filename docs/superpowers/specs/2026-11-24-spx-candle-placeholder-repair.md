@@ -40,7 +40,7 @@ Replace the placeholder SPX and NDX one-minute bars in `index_candles_1m` with c
 
 **Sources.**
 - **UW `/api/stock/{SPY|QQQ}/ohlc/1m?date=`.** Final bars, reachable back to 02-25 (Phase 0). UW refuses index tickers (422).
-- **Schwab daily `pricehistory`** for `$SPX`, `SPY`, `$NDX` and `QQQ`. This is the per-day close ratio the current backfill uses (`scripts/_lib/candles-backfill.mjs`: `fetchSchwabDailyCloses`, `ratioFor`).
+- **Schwab daily `pricehistory`** for `$SPX`, `SPY`, `$NDX` and `QQQ`. This is the per-day close ratio the current backfill uses (`scripts/_lib/candles-backfill.mjs`: `fetchSchwabDailyCandles`, `ratioFor`).
 - **UW Full Tape in R2** (2026-01-02 → 11-23).
   - Each SPXW print carries `underlying_price`. NDXP and NDX prints carry none. The tape covers regular hours only.
   - It is the independent check for SPX. Up to 2026-05-01 it uses the old layout: naive UTC `executed_at`, DECIMAL numerics.
@@ -173,7 +173,7 @@ Replace the placeholder SPX and NDX one-minute bars in `index_candles_1m` with c
    - **`scripts/backfill-gamma-setup-fires.ts`.**
      - `--dry-run` prints per-date fire counts and writes nothing. It reads no `ws_gamma_setup_fires` rows, so it can run before the delete.
      - `--outcomes-only` skips detection and insertion, then recomputes `ret_*` for the fires in `[--from, --to]`. That window is not clamped to the GEXBot cutover, because no detection runs.
-     - Every outcome fill is limited to the `--from/--to` window.
+     - An outcome fill is limited to the `--from/--to` window when either flag is passed. With neither, it stays table-wide, as before.
      - `--context-only` (owner decision 8) also skips detection and insertion. For each date in `[--from, --to]` that has fires, it runs the detector's own `loadDayContext` for that date and `getConfidenceTier` on the result (`api/_lib/gamma-detector.ts`). It then updates the day-context columns of that date's fires: `prior_5d_ret`, `prior_iv_rank`, `pre_day_filter_fires`, `open_gap_pct` and `confidence_tier`. `--dry-run` with it prints, per date, the stored and new values and the fire count, and writes nothing. The window is not clamped to the GEXBot cutover. `ret_*`, `bar_*` and the fires themselves are untouched.
      - An unknown flag is an error.
      - Its logic moves into a `scripts/_lib` module so it can be tested; today `main()` runs at import.

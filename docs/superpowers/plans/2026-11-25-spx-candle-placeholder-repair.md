@@ -497,7 +497,7 @@ export function extremesFor(closes, symbol, date); // { high, low } of $SPX / $N
   - Each failure's reason names the measure, its value and the bound.
 - **`levelCheck`.** `dh` is the max high of the regular rows minus `high`, and `dl` the min low minus `low`. The check fails when both share a sign and `min(|dh|, |dl|)` is over `FIT.levelBound[symbol]`.
 - **`candles-backfill.mjs`.**
-  - `fetchSchwabDailyCandles` is today's `fetchSchwabDailyCloses` body, keeping each candle's close, high and low, with the same validation and errors. `fetchSchwabDailyCloses` maps its answer to closes.
+  - `fetchSchwabDailyCandles` is today's `fetchSchwabDailyCloses` body, keeping each candle's close, high and low, with the same validation and errors. `fetchSchwabDailyCloses` maps its answer to closes. *As built (final-review fixes, 2026-11-28):* the wrapper was deleted, since only its own tests still called it; those tests now run against `fetchSchwabDailyCandles`.
   - `loadSchwabCloses` calls `fetchSchwabDailyCandles` once per symbol and stores `{ closes, extremes }` for it: `closes` is the Map it holds today, and `extremes` is a Map of date → `{ high, low }`.
   - `ratioFor`, `ratioLines` and every existing test behave exactly as before.
   - `regularBars` makes the same `selectBars` call `toIndexRows` makes, with the same well-formed filter, and keeps the `market_time === 'r'` bars, so the two can't drift.
@@ -670,8 +670,9 @@ export const LOTTERY_SPOT_SCOPE; // { dates: string[], partials: [{ date, after 
 3. Task 3. Runbook B now waits for Runbook A2 (owner decision 5).
 4. Tasks 4–6.
 5. Tasks 12–15, then Runbook A2, then Runbook B.
-6. Tasks 7–11.
-7. Push (needs the owner's OK; api/ + scripts/).
+   - *As built (2026-11-27/28):* Runbook A2 refit every list. SPX: 32 + 14 + 33 days, each fit within 1e-6 (summer: within 5.3e-6 of prior × k) of the 11-26 tuning, and the tape `--fitted` check passes on all 79 days (median |d| ≤ 0.43). NDX: 29 + 18 + 14 + 32 days; 07-29 skipped as expected (scatter 6.66). `--check` passes on every refit date and the residual SQL returns 0 rows. Runbook B updated 2,097 fires (1,998 gap + 99 summer); 613 no longer pass their filter and are kept; `no_bar` and `stale_bar` are 0.
+6. Tasks 7–11. *As built:* done 2026-11-27/28 (Tasks 7–11 run while A2's summer step waited on the Schwab window).
+7. Push (needs the owner's OK; api/ + scripts/, and Task 3's `src/components/PeriscopeLottery/` change).
 8. Runbook C, after 15:00 CT.
 
 **Which steps have no dry run:** `build-features?date=`, `embed-yesterday?date=` and `fetch-day-ohlc?date=`. For those, the Task 11 backup taken just before is the safety net.
@@ -724,23 +725,29 @@ export const LOTTERY_SPOT_SCOPE; // { dates: string[], partials: [{ date, after 
 **Runbook B** (after Runbook A2 and Task 15, and after 15:00 CT): `--lottery-spots` dry run, then apply. Report `in_scope`, `no_longer_pass`, `no_bar` and `stale_bar`. Expect about 1,998 gap-day fires plus 99 summer fires, and `no_bar` and `stale_bar` both 0.
 
 **Runbook C: the rebuilds,** after the push and after 15:00 CT. Each step comes after a Task 11 backup.
+- Run the scripts from the worktree with `--env-file=F:/dev/strike-calculator/.env.local` (the TS ones as `node --import tsx --env-file=… scripts/<name>.ts`). Pass `--backup-file` the absolute path the `--backup` run prints; the backups live in the main checkout's `docs/tmp/spx-candle-repair/rebuild/`.
+- A backup covers at most 62 dates and never today or later. A `--delete-gamma-fires` or `--null-gamma-returns` needs a backup whose dates cover its whole window.
+- For the `?date=` crons, check every response's `status`: a weekend or holiday date answers HTTP 200 with `status: 'skipped'`. Check the date list locally before the loop, because a malformed date answers 500 and turns the production monitor red until its next run.
+- The ratio-cleanup spec that follows this repair (owner decision 2026-11-27) will list the days whose candles it changes; those days' steps below get redone then.
+0. **Before any Vercel call.** Confirm that the production deployment for the pushed SHA is Ready (its commit is the pushed one, and it is the deployment the production domain serves). The three `?date=` crons run the deployed code: a call that lands on the previous deployment rebuilds with the old logic (no `dpKept` and `dpReadFailed` in its answer, the old pick rule), writes the rows anyway, and answers `status: 'success'`.
 1. **Features.**
-   - Read-only pre-check: every one of the 29 dates (03-23 → 04-10, 09-21, the 13 gap days, and 07-22) has `cashSessionMinutes` SPX `r` bars, the same number of SPY ETF bars, SPY prints, and an open (`outcomes.day_open`, when no trusted snapshot row has one). A date that fails goes to the owner before the rebuild. 07-22 has no `outcomes` row; its open comes from its trusted snapshot rows (`spx_open` 7,497.47 on all 25 rows between 09:00 and 11:00 CT, checked 2026-11-26).
+   - Read-only pre-check: every one of the 29 dates (03-23 → 04-10, 09-21, the 13 gap days, and 07-22) has `cashSessionMinutes` SPX `r` bars, the same number of SPY ETF bars, SPY prints (`dark_pool_prints`, symbol SPY, from 08:30 CT = 09:30 ET to the close, which is the window `dpDayComplete` counts: prints outside it do not make the day complete), and an open (`outcomes.day_open`, when no trusted snapshot row has one). A date that fails goes to the owner before the rebuild. 07-22 has no `outcomes` row; its open comes from its trusted snapshot rows (`spx_open` 7,497.47 on all 25 rows between 09:00 and 11:00 CT, checked 2026-11-26).
    - Back up `training_features` and `day_labels` for the 29 dates.
-   - Call `build-features?date=` for each one. Every response must show `status: 'success'` and the date in neither `dpKept` nor `dpReadFailed`. Either list is a stop, and so is a `partial` status: the date's stale `dp_*` values were kept (no prints, short bars or no `spx_open` in `dpKept`; a failed read or completeness check in `dpReadFailed`), so report it.
+   - Call `build-features?date=` for each one. Check every response for the positive facts, not for an absence: `Array.isArray(body.dpKept) && Array.isArray(body.dpReadFailed)` (the previous deployment's answer has neither, and a date missing from a list that is not there would pass), the date in neither list, and `body.status === 'success'`. Either list is a stop, and so is a `partial` status: the date's stale `dp_*` values were kept (no prints, short bars or no `spx_open` in `dpKept`; a failed read or completeness check in `dpReadFailed`), so report it.
+   - In date mode, each of the 10 no-pick March–April dates (spec 1b's accepted side effect) raises one warning-level Sentry event, `build-features: no trusted snapshot row`, tagged `build_features.mode: date` (one run per `?date=` call, so ten events, all in one issue). That is expected: they are the dates the pick fix writes with `feature_completeness = 0`. An event at `error` level, or one that names a date outside those 10, is not.
    - Resolve Sentry `SENTRY-EMERALD-DESERT-MB`.
 2. **Gamma fires:**
    1. Run `--dry-run --from 2026-02-26 --to 2026-04-17`.
    2. Show the owner the per-date counts next to the stored ones. A date that loses every fire, or gains more than double, gets checked first (spec decision 8).
-   3. Back up `ws_gamma_setup_fires` for the window, run `rebuild-backup.mjs --delete-gamma-fires`, then run the script without `--dry-run`.
-   4. For 09-21: back up, `--null-gamma-returns --date 2026-09-21` (expect 12 updated), then `--outcomes-only --from 2026-09-21 --to 2026-09-21`. Expect 12 pending and 12 filled; any other count is a stop.
-   5. For 07-22, the same with its one fire: expect 1 updated, 1 pending and 1 filled.
+   3. Back up `ws_gamma_setup_fires` for the window, run `rebuild-backup.mjs --delete-gamma-fires --from 2026-02-26 --to 2026-04-17 --backup-file <backup> --apply`, then run the script without `--dry-run`. `rebuild-backup.mjs` is a dry run unless `--apply` is on the line, and a dry run exits 0 like a real run. If the delete ran dry, the re-detection's `ON CONFLICT DO NOTHING` would keep every old fire beside the new ones. Check that the run printed `Deleted N fires.`, not `DRY RUN: nothing written`.
+   4. For 09-21: back up, `rebuild-backup.mjs --null-gamma-returns --date 2026-09-21 --backup-file <backup> --apply` (expect `Nulled the returns of 12 fires.`), then `--outcomes-only --from 2026-09-21 --to 2026-09-21`. Expect 12 pending and 12 filled; any other count is a stop.
+   5. For 07-22, the same with its one fire: expect 1 updated, 1 pending and 1 filled. Back up 09-21 and 07-22 separately: one backup holding both dates would read the other date's fires as missing.
    6. **The day context after each hole** (owner decision 8). Back up `ws_gamma_setup_fires` for 09-08..09-15, 10-01..10-07 and 10-16..10-23. For each window run `--context-only --dry-run --from A --to B`, then `--context-only --from A --to B`.
       - Expect 78, 71 and 113 fires updated (262 in all).
       - `prior_5d_ret` changes on all 17 dates; 09-14 goes from +1.95% to about −1.15%. `open_gap_pct` changes only on 09-08, 10-01 and 10-16; 09-08 goes from +2.81% to about −0.14%.
       - `confidence_tier` and `pre_day_filter_fires` stay as they are, with two allowed exceptions: a date whose new 5-day return is within 0.1 point of −1% (10-23 is at −1.03%), and a date whose `prior_iv_rank` changed. Any other change goes to the owner before the write.
 3. **Regime.**
    - Back up `flow_regime_0dte_daily` for 09-21. Run `backfill-regime-0dte.ts --from 2026-09-21 --to 2026-09-21`, compare its printed row with the stored one, then `--apply`.
-   - 07-22 has no stored row (spec decision 8). Run `--from 2026-07-22 --to 2026-07-22`. The printed row must have a gate, and its triggers must agree with the day's bars, before `--apply`.
-4. **Day embeddings.** Back up `day_embeddings` for 09-21, the gap days and the 33 summer days (07-22 → 09-04; only 07-22 has a row). Call `embed-yesterday?date=` then `fetch-day-ohlc?date=` for each. Expect 32 new summer rows and 07-22's row rebuilt from 390 bars.
+   - 07-22 has no stored row (spec decision 8). Back up `flow_regime_0dte_daily` for 07-22 anyway (an empty scope), so the new row has an undo. Run `--from 2026-07-22 --to 2026-07-22`. The printed row must have a gate, and its triggers must agree with the day's bars, before `--apply`.
+4. **Day embeddings.** Back up `day_embeddings` for 09-21, the gap days and the 33 summer days (07-22 → 09-04; only 07-22 has a row). Pass them as the 47 trading dates listed one by one, or as two backups (07-22..09-04, and 09-21..09-30 with 10-08..10-15): the three ranges add up to 63 calendar days, over the 62-date cap. Call `embed-yesterday?date=` then `fetch-day-ohlc?date=` for each, and check each answer for the positive facts: `embed-yesterday` has `body.date === D` and `body.status === 'success'`; `fetch-day-ohlc` has `body.targetDate === D` and `body.status === 'success'` (the two name the date differently). A `skipped` status (`not_trading_day`, `incomplete_day`, `no_summary` or `no_bars`, or `no_day_embeddings_row` when `embed-yesterday` has not made the row yet) is a stop, not a pass. Expect 32 new summer rows and 07-22's row rebuilt from 390 bars.
 5. Record the results in the spec, and update memory `project_spx_candle_placeholder_gaps.md`.
