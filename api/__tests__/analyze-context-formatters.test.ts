@@ -33,6 +33,7 @@ vi.mock('../../src/data/marketHours.js', async (importOriginal) => {
 
 import { getEarlyCloseHourET } from '../../src/data/marketHours.js';
 import {
+  RECENT_ROWS,
   formatPrevSessionForClaude,
   formatSimilarDaysForClaude,
   type HistoricalAnalog,
@@ -616,6 +617,56 @@ describe('formatPrevSessionForClaude', () => {
       const multiples = [...MULTIPLES_20, 3, 3, 3, 3, 3];
 
       expect(recentLine(history(dates, multiples, REAL))).toBe(WORKED_LINE);
+    });
+
+    it('picks the newest sessions whatever order the rows arrive in', () => {
+      // A Map keeps insertion order and the fetcher's rows come newest first,
+      // so a window that leaned on that order would pass every test above.
+      // Reversed (oldest first), it would take the oldest 20 of 25, or read
+      // the first five as the last five.
+      const dates = [
+        ...DATES_21,
+        '2026-10-27',
+        '2026-10-26',
+        '2026-10-23',
+        '2026-10-22',
+        '2026-10-21',
+      ];
+      const multiples = [...MULTIPLES_20, 3, 3, 3, 3, 3];
+
+      for (const [d, m] of [
+        [DATES_21, MULTIPLES_20],
+        [dates, multiples],
+      ] as const) {
+        const reversed = new Map([...history([...d], [...m], REAL)].reverse());
+
+        expect(recentLine(reversed)).toBe(WORKED_LINE);
+      }
+    });
+
+    it('counts a session at exactly 1.0x its implied move as having reached it', () => {
+      // low 0 and high = the prior day's implied move, built with the same
+      // expression the formatter uses, so (high - low) / move is exactly 1 and
+      // only an inclusive comparison counts it.
+      const move = (7000 * 25) / 100 / Math.sqrt(252);
+      const recent = history(
+        DATES_21.slice(0, 11),
+        Array.from({ length: 10 }, () => 0.5),
+      );
+      recent.set('2026-11-25', {
+        ...recent.get('2026-11-25')!,
+        day_low: 0,
+        day_high: move,
+      });
+
+      expect(recentLine(recent)).toBe(
+        'Recent sessions (last 10 full sessions, 2026-11-12 to 2026-11-25): 1 reached 1.0× their implied move (10%), 0 reached 1.25× (0%), 0 reached 1.5× (0%). Average multiple over the last 5: 0.60×.',
+      );
+    });
+
+    it('is read from enough rows: the cap covers the window and the day before its oldest session', () => {
+      // The worked window is 20 sessions on 21 consecutive rows.
+      expect(RECENT_ROWS).toBeGreaterThanOrEqual(DATES_21.length);
     });
 
     it('says "last N" and still prints with 10 usable sessions', () => {
