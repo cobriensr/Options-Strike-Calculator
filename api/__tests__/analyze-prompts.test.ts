@@ -11,6 +11,7 @@ import {
   VIX_RATIO_CONTANGO_MAX,
 } from '../_lib/vix-term-structure.js';
 import { SPOTGAMMA_MECHANICS_CONTEXT } from '../_lib/spotgamma-mechanics.js';
+import { formatStrikeExposuresForClaude } from '../_lib/db-strike-formatters.js';
 import { getCalibrationExample } from '../_lib/analyze-calibration.js';
 import { FLOOR_ENTRY_DELTA } from '../../src/constants/index.js';
 
@@ -665,9 +666,9 @@ const HIERARCHY_LINES = [
   "- Range risk: judge it in multiples of today's VIX-implied move (in the Previous Session section), not in fixed points; 100 pts is about 1.5× the implied move at VIX 15 but 0.8× at VIX 28. These multiples measure the session's whole high-to-low range, not how far price travels from the open toward one short strike. Over 207 sessions (2026-01-28 to 11-25) the median day's range was 0.79× its implied move; 27% reached 1.0×, 13.5% reached 1.25× (about 12% when the prior VIX close was below 19, 17% above it) and 6.8% reached 1.5×. Once VIX is known, a 100+ pt previous day and a 2+ pt VIX rise add nothing measurable; don't treat either as a flag.",
   '',
   'Context only (no demonstrated edge):',
-  "- Gamma asymmetry: its link to structure errors rests on one wrong day of 21 (2026-03-23) and shows nothing on 41 days. Don't lower confidence on the skew alone.",
+  "- Gamma asymmetry (the % above/below ATM split in the Per-Strike Greek Profile; Rule 1's negative-gamma cliff is a separate rule): its link to structure errors rests on one wrong day of 21 (2026-03-23) and shows nothing on 41 days. Don't lower confidence on the skew alone.",
   '- GEX volume: no test supports it as a correctness predictor, and it adds nothing to OI gamma for range. A sign mismatch with OI gamma went with somewhat wider days (85 vs 74 pts, not adjusted for VIX); a mild flag only.',
-  "- Flow agreement count (how many of the flow sources agree): it hasn't been shown to predict correctness or direction. Don't rate confidence or size on the count.",
+  "- Flow agreement count (the ML pipeline's count of agreeing flow sources, not shown in this context): it hasn't been shown to predict correctness or direction. Don't rate confidence or size on the count.",
   '',
   'Other signals (untested or context-only):',
   DARK_POOL_LINE,
@@ -768,6 +769,48 @@ describe('analyze system prompt — the hierarchy judges range risk in multiples
 
   it('points at the section the context carries by the name it is given there', () => {
     expect(hierarchy).toContain('(in the Previous Session section)');
+  });
+
+  // The gamma bullet describes a line of the context, so the name it gives and
+  // the line it describes are taken from the formatter that prints them.
+  it('names the heading the gamma split sits under, and the form the split takes, as the context prints them', () => {
+    const row = (strike: number, netGamma: number) => ({
+      strike,
+      price: 5800,
+      timestamp: '2026-03-24T15:00:00Z',
+      netGamma,
+      netCharm: 0,
+      netDelta: 0,
+      callGammaOi: 0,
+      putGammaOi: 0,
+      callCharmOi: 0,
+      putCharmOi: 0,
+      dirGamma: 0,
+      dirCharm: 0,
+    });
+    const out = formatStrikeExposuresForClaude([row(5850, 80), row(5750, 20)])!;
+
+    expect(out.split('\n')[0]).toContain('Per-Strike Greek Profile');
+    expect(out).toMatch(/Gamma Asymmetry: \d+% above \/ \d+% below ATM/);
+    expect(hierarchy).toContain(
+      '(the % above/below ATM split in the Per-Strike Greek Profile;',
+    );
+  });
+
+  it("keeps Rule 1's negative-gamma cliff apart from the % split, and Rule 1 itself still stands", () => {
+    expect(hierarchy).toContain(
+      "Rule 1's negative-gamma cliff is a separate rule)",
+    );
+    expect(PROMPT).toContain('RULE 1: Gamma Asymmetry Overrides Neutral Flow');
+  });
+
+  it('says the flow agreement count is the ML pipeline count, not a line of this context', () => {
+    expect(hierarchy).toContain(
+      "Flow agreement count (the ML pipeline's count of agreeing flow sources, not shown in this context):",
+    );
+    expect(hierarchy).not.toContain(
+      'Flow agreement count (how many of the flow sources agree)',
+    );
   });
 });
 

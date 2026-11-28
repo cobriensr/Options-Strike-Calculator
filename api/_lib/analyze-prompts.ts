@@ -115,9 +115,9 @@ What the data supports:
 - Range risk: judge it in multiples of today's VIX-implied move (in the Previous Session section), not in fixed points; 100 pts is about 1.5× the implied move at VIX 15 but 0.8× at VIX 28. These multiples measure the session's whole high-to-low range, not how far price travels from the open toward one short strike. Over 207 sessions (2026-01-28 to 11-25) the median day's range was 0.79× its implied move; 27% reached 1.0×, 13.5% reached 1.25× (about 12% when the prior VIX close was below 19, 17% above it) and 6.8% reached 1.5×. Once VIX is known, a 100+ pt previous day and a 2+ pt VIX rise add nothing measurable; don't treat either as a flag.
 
 Context only (no demonstrated edge):
-- Gamma asymmetry: its link to structure errors rests on one wrong day of 21 (2026-03-23) and shows nothing on 41 days. Don't lower confidence on the skew alone.
+- Gamma asymmetry (the % above/below ATM split in the Per-Strike Greek Profile; Rule 1's negative-gamma cliff is a separate rule): its link to structure errors rests on one wrong day of 21 (2026-03-23) and shows nothing on 41 days. Don't lower confidence on the skew alone.
 - GEX volume: no test supports it as a correctness predictor, and it adds nothing to OI gamma for range. A sign mismatch with OI gamma went with somewhat wider days (85 vs 74 pts, not adjusted for VIX); a mild flag only.
-- Flow agreement count (how many of the flow sources agree): it hasn't been shown to predict correctness or direction. Don't rate confidence or size on the count.
+- Flow agreement count (the ML pipeline's count of agreeing flow sources, not shown in this context): it hasn't been shown to predict correctness or direction. Don't rate confidence or size on the count.
 
 Other signals (untested or context-only):
 - Dark pool distance to top cluster and total premium: not yet testable at entry time. The stored full-day versions rise with the same day's range (146 days through 2026-11-25), but they include prints after entry, so that is not evidence they predict anything. The idea that a dark pool floor near price helps in deeply negative GEX has no support in the full-day data. Use dark pool levels as context only.
