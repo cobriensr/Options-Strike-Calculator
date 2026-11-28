@@ -39,9 +39,11 @@
  *     computed here from the backup). The hash covers the journal columns, and
  *     the check before the transaction already refused a journal entry, so a
  *     fire with one now has either changed since (no match) or was refused;
- *   - the last statement raises, by casting a message to an integer, unless the
- *     scope now holds what the write should have left. A raise rolls the whole
- *     transaction back, and the error is turned into a RebuildRefusal.
+ *   - a guard statement raises, by casting a message to an integer, unless the
+ *     scope holds what the write should have left (the writers have one, after
+ *     the write; the restore has two, right after its DELETE and after its
+ *     inserts). A raise rolls the whole transaction back, and the error is
+ *     turned into a RebuildRefusal.
  * So a fire inserted, a row changed, or a journal entry written between the
  * check and the write makes the write refuse and change nothing.
  *
@@ -699,8 +701,8 @@ const GUARD_MARK = 'rebuild-backup guard';
 const guardMessage = (reason) => `${GUARD_MARK}: ${reason}`;
 
 /**
- * Run a transaction; when its last statement raised our guard (see the header),
- * the transaction is already rolled back, and the failure is a RebuildRefusal
+ * Run a transaction; when a guard statement raised (see the header), the
+ * transaction is already rolled back, and the failure is a RebuildRefusal
  * with `refusal` as its text. Any other error is the database's own and goes
  * up unchanged.
  */
@@ -1056,6 +1058,16 @@ function restoreDeleteStatement(sql, info, backup) {
 }
 
 /**
+ * What can make a restore's guard raise, for the refusal's text: only
+ * ws_gamma_setup_fires has a journal, so only it names one.
+ */
+const restoreChangeCauses = (table) =>
+  table === GAMMA_TABLE
+    ? "a row appeared in the backup's scope, or a fire's journal entry was " +
+      'written, changed or cleared'
+    : "a row appeared in the backup's scope";
+
+/**
  * Put `table` back as `backupPath` held it: in ONE transaction delete every
  * row in the backup's scope (its dates, and any row on a backed-up key), then
  * re-insert the backed-up rows with their own keys, each text value cast back
@@ -1133,8 +1145,8 @@ export async function restoreRows(sql, { table, backupPath, apply = false }) {
               ELSE ${guardMessage(`${table} does not hold exactly the backed-up rows after the restore`)}::text
               END AS integer) AS guard`,
       ]),
-    `${table} changed during the restore (a row appeared in the backup's ` +
-      'scope, or a fire gained a journal entry). Nothing was changed.',
+    `${table} changed during the restore (${restoreChangeCauses(table)}). ` +
+      'Nothing was changed.',
   );
   // results: the DELETE, its check, one result per insert batch, the final check.
   const restored = results

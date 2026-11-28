@@ -1560,14 +1560,58 @@ describe('restoreRows', () => {
       `CREATE TRIGGER stray AFTER INSERT ON ${GAMMA} FOR EACH ROW EXECUTE FUNCTION add_stray()`,
     );
     try {
+      // The fires' wording: a journal entry can change mid-restore too.
       await expect(
         doRestore({ table: GAMMA, backupPath: backup.path }),
-      ).rejects.toThrow(/changed during the restore.*Nothing was changed/s);
+      ).rejects.toThrow(
+        `${GAMMA} changed during the restore (a row appeared in the backup's ` +
+          "scope, or a fire's journal entry was written, changed or cleared). " +
+          'Nothing was changed.',
+      );
     } finally {
       await pg.query(`DROP TRIGGER IF EXISTS stray ON ${GAMMA}`);
       await pg.query('DROP FUNCTION IF EXISTS add_stray()');
     }
     expect(await dumpFires()).toEqual(before);
+  });
+
+  it('a row appearing in the scope while a table without journals is restored refuses in plain words', async () => {
+    await pg.query(
+      `INSERT INTO flow_regime_0dte_daily (date, gate) VALUES ('2026-09-21', 'neg_gamma')`,
+    );
+    const backup = await backupRows(sql, {
+      table: 'flow_regime_0dte_daily',
+      dates: ['2026-09-21', '2026-09-22'],
+      backupDir: tmp,
+    });
+    const before = await dump('flow_regime_0dte_daily', 'date');
+    // The row the restore puts back brings another one into the scope.
+    await pg.query(`
+      CREATE FUNCTION add_stray_day() RETURNS trigger AS $$
+      BEGIN
+        INSERT INTO flow_regime_0dte_daily (date, gate) VALUES ('2026-09-22', 'stray');
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+    await pg.query(`
+      CREATE TRIGGER stray_day AFTER INSERT ON flow_regime_0dte_daily
+      FOR EACH ROW WHEN (NEW.date = '2026-09-21') EXECUTE FUNCTION add_stray_day()`);
+    try {
+      const refusal = doRestore({
+        table: 'flow_regime_0dte_daily',
+        backupPath: backup.path,
+      });
+      await expect(refusal).rejects.toThrow(
+        "flow_regime_0dte_daily changed during the restore (a row appeared in the backup's scope). Nothing was changed.",
+      );
+      // No fires, no journals: the message says neither.
+      await expect(refusal).rejects.not.toThrow(/fire|journal/);
+    } finally {
+      await pg.query(
+        'DROP TRIGGER IF EXISTS stray_day ON flow_regime_0dte_daily',
+      );
+      await pg.query('DROP FUNCTION IF EXISTS add_stray_day()');
+    }
+    expect(await dump('flow_regime_0dte_daily', 'date')).toEqual(before);
   });
 
   it("refuses a backed-up row outside the backup's dates (a DATE-keyed table)", async () => {
