@@ -500,10 +500,9 @@ describe('detectPutLotteryAllForDate — historical backfill variant', () => {
 });
 
 describe('SPX spot lookup — bounded to the event ET session date', () => {
-  // The behavior is proven on real SQL in
-  // periscope-lottery-spot-session-pglite.test.ts; these pin that every
-  // variant carries the bound and that a candidate with no spot reaches no
-  // downstream lookup.
+  // Text pin only: each variant's SQL carries the bound. The behavior (a day
+  // with no bar before the event yields no spot, so no fire) is proven on
+  // real SQL in periscope-lottery-spot-session-pglite.test.ts.
   const variants = [
     ['live call', detectCallLottery],
     ['live put', detectPutLottery],
@@ -525,18 +524,6 @@ describe('SPX spot lookup — bounded to the event ET session date', () => {
           'AND timestamp <= c.captured_at ' +
           'ORDER BY timestamp DESC LIMIT 1',
       );
-    },
-  );
-
-  it.each(variants)(
-    '%s fires nothing, and looks nothing else up, when no candidate has a same-day spot',
-    async (_name, detect) => {
-      // The query drops a candidate whose spot_at_event is NULL, so a day
-      // with no bar before the event comes back as an empty candidate set.
-      mockSql.mockResolvedValueOnce([]);
-      const fires = await detect('2026-05-18');
-      expect(fires).toEqual([]);
-      expect(mockSql).toHaveBeenCalledTimes(1);
     },
   );
 });
