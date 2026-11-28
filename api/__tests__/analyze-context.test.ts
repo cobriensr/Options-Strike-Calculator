@@ -3020,3 +3020,208 @@ describe('buildAnalysisContext: coverage-fill', () => {
     vi.unstubAllGlobals();
   });
 });
+
+// ── buildAnalysisContext: previous session + VIX-implied move ─────────
+//
+// The fetcher is real here; only the database answers are faked. The section
+// joins the second Promise.all, so the order-sensitive mockResolvedValueOnce
+// chains of the first one (vol_realized, cone_levels, pre_market_data) are
+// untouched, and every other query still gets [].
+
+describe('buildAnalysisContext: previous session and implied move', () => {
+  // Thanksgiving (11-26) was closed, so D = 2026-11-27 reads 11-25 and 11-24.
+  const outcomesRows = [
+    {
+      date: new Date('2026-11-25T00:00:00.000Z'),
+      settlement: '7182.73',
+      day_high: '7199.31',
+      day_low: '6970.11',
+      day_range_pts: 229,
+      vix_close: '28.29',
+    },
+    {
+      date: new Date('2026-11-24T00:00:00.000Z'),
+      settlement: '7202.45',
+      day_high: '7230.00',
+      day_low: '7100.10',
+      day_range_pts: 130,
+      vix_close: '26.36',
+    },
+  ];
+
+  // Ten more days back from 11-24, each a session at 1.3x its day before's
+  // implied move (close 7000, VIX 25: 110.2 pts, so a 143.32-pt range).
+  const olderRows = [
+    '2026-11-23',
+    '2026-11-20',
+    '2026-11-19',
+    '2026-11-18',
+    '2026-11-17',
+    '2026-11-16',
+    '2026-11-13',
+    '2026-11-12',
+    '2026-11-11',
+    '2026-11-10',
+  ].map((date) => ({
+    date: new Date(`${date}T00:00:00.000Z`),
+    settlement: '7000.00',
+    day_high: '7043.32',
+    day_low: '6900.00',
+    day_range_pts: 143,
+    vix_close: '25.00',
+  }));
+
+  // The section's one preface line, with the half-day wording, the two
+  // "context only" sentences and the regime sentence the model reads.
+  const PREFACE =
+    "Computed from the stored SPX close (4 pm ET, or 1 pm ET on a half day) and VIX close of the trading days before the analysis date, so every number here was known before the open. The multiples to read them against are in <ml_signal_hierarchy>. The previous day's multiple and the VIX change are context; neither is an established predictor of today's range. When recent sessions run above the prompt's full-sample rates, those rates understate the current regime.";
+
+  const sqlText = (call: unknown[]): string =>
+    Array.isArray(call[0]) ? (call[0] as string[]).join(' ') : '';
+  const outcomesCalls = () =>
+    mockSql.mock.calls.filter((call) =>
+      sqlText(call).includes('FROM outcomes'),
+    );
+  const textOf = (result: Awaited<ReturnType<typeof buildAnalysisContext>>) =>
+    result.content
+      .flatMap((b) => (b.type === 'text' ? [b.text] : []))
+      .join('\n');
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockLogger.warn.mockReset();
+    mockLogger.error.mockReset();
+    mockSql.mockReset();
+    mockSql.mockImplementation(async (...args: unknown[]) =>
+      sqlText(args).includes('FROM outcomes') ? outcomesRows : [],
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('adds the Previous Session and Implied Move section with the worked-example numbers', async () => {
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-11-27',
+    });
+
+    const text = textOf(result);
+    expect(text).toContain(
+      '## Previous Session and Implied Move (from outcomes)',
+    );
+    expect(text).toContain(
+      "Today's VIX-implied move (prior-close VIX): 128.0 pts",
+    );
+    expect(text).toContain(
+      "Previous day range (2026-11-25): 229 pts (high 7199.31, low 6970.11) = 1.92× that day's implied move (119.6 pts).",
+    );
+    expect(text).toContain(
+      'VIX change (2026-11-25, close to close): +1.93 (26.36 → 28.29), +7.3%.',
+    );
+    // Only two rows came back, far fewer than the 10 sessions the line needs.
+    expect(text).toContain(
+      'Recent sessions: unavailable (fewer than 10 usable sessions).',
+    );
+    // Present, so it is not in the manifest of missing sources.
+    expect(text).not.toContain('- Previous Session (outcomes)');
+  });
+
+  it('prefaces the section with where the numbers come from and what they are not', async () => {
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-11-27',
+    });
+
+    const text = textOf(result);
+    expect(text).toContain(
+      `## Previous Session and Implied Move (from outcomes)\n${PREFACE}\nToday's VIX-implied move (prior-close VIX)`,
+    );
+    // The close is 4 pm ET only on a full day: P1 is a 1 pm ET close on the
+    // Monday after Black Friday.
+    expect(text).not.toContain('stored 4 pm SPX close');
+    expect(text).toContain('(4 pm ET, or 1 pm ET on a half day)');
+    // The model must not turn "1.92×" into a persistence warning.
+    expect(text).toContain(
+      "neither is an established predictor of today's range.",
+    );
+    // The prompt's rates are full-sample; a hot recent run means they are low.
+    expect(text).toContain('those rates understate the current regime.');
+  });
+
+  it('shows the recent-sessions line when outcomes holds enough history', async () => {
+    mockSql.mockImplementation(async (...args: unknown[]) =>
+      sqlText(args).includes('FROM outcomes')
+        ? [...outcomesRows, ...olderRows]
+        : [],
+    );
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-11-27',
+    });
+
+    expect(textOf(result)).toContain(
+      'Recent sessions (last 11 full sessions, 2026-11-11 to 2026-11-25): 11 reached 1.0× their implied move (100%), 10 reached 1.25× (91%), 1 reached 1.5× (9%). Average multiple over the last 5: 1.40×.',
+    );
+  });
+
+  // The second date is in the past on any day this runs, so "the selected
+  // date" and "today" can never be the same day (the first was the real today
+  // when this was written).
+  it.each([['2026-11-27'], ['2026-04-14']])(
+    'reads the rows before the selected date %s, not before today',
+    async (selectedDate) => {
+      await buildAnalysisContext([], { mode: 'entry', selectedDate });
+
+      expect(outcomesCalls()).toHaveLength(1);
+      // One bound, the selected date itself: P1 and P2 are found in the rows.
+      expect(outcomesCalls()[0]!.slice(1)).toEqual([selectedDate]);
+    },
+  );
+
+  it('omits the section and lists it as unavailable when outcomes has no row for the day before', async () => {
+    mockSql.mockImplementation(async () => []);
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-11-27',
+    });
+
+    const text = textOf(result);
+    expect(text).not.toContain('## Previous Session');
+    expect(text).not.toContain("Today's VIX-implied move");
+    expect(text).toContain('- Previous Session (outcomes)');
+  });
+
+  it('omits the section, lists it, and still runs the analysis when the outcomes query rejects', async () => {
+    const failure = new Error('outcomes table unreachable');
+    mockSql.mockImplementation(async (...args: unknown[]) => {
+      if (sqlText(args).includes('FROM outcomes')) throw failure;
+      return [];
+    });
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-11-27',
+    });
+
+    const text = textOf(result);
+    expect(text).toContain('PRE-TRADE ENTRY');
+    expect(text).not.toContain('## Previous Session');
+    expect(text).toContain('- Previous Session (outcomes)');
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: failure }),
+      expect.stringContaining('Failed to fetch previous session data'),
+    );
+  });
+});

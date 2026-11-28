@@ -61,6 +61,7 @@ import {
   fetchMaxPainContext,
   fetchOiChangeContext,
   fetchPreMarketContext,
+  fetchPrevSessionContext,
   fetchPriorDayFlowContext,
   fetchSpxCandlesContext,
   fetchUwDeltasBlock,
@@ -323,6 +324,7 @@ export async function buildAnalysisContext(
     uwDeltasContext,
     similarDaysContext,
     rangeForecastContext,
+    prevSessionContext,
   ] = await Promise.all([
     fetchDarkPoolContext(context, analysisDate),
     fetchMaxPainContext(context, analysisDate),
@@ -342,6 +344,7 @@ export async function buildAnalysisContext(
     fetchUwDeltasBlock(),
     fetchSimilarDaysContext(analysisDate),
     fetchRangeForecastContext(analysisDate, numOrUndef(context.vix) ?? null),
+    fetchPrevSessionContext(analysisDate),
   ]);
 
   // Periscope exposure block (Phase 3 — replaces the
@@ -385,6 +388,7 @@ export async function buildAnalysisContext(
   if (!maxPainContext) unavailable.push('Max Pain');
   if (!ivTermStructureContext) unavailable.push('IV Term Structure');
   if (!overnightGapContext) unavailable.push('Overnight Gap Analysis');
+  if (!prevSessionContext) unavailable.push('Previous Session (outcomes)');
   if (!oiChangeContext) unavailable.push('OI Change Analysis');
   if (!futuresContext) unavailable.push('Futures Context');
   if (!priorDayFlowContext) unavailable.push('Prior-Day Flow Trend');
@@ -486,6 +490,7 @@ ${main.allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from AP
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
 ${volRealizedContext ? `\n## Realized Vol & IV Rank (from API — daily)\n  ${volRealizedContext}\n` : ''}
 ${overnightGapContext ? `\n## ES Overnight Gap Analysis (from pre-market data)\nThe ES futures overnight session data provides pre-market context for the cash session. Gap fill probability, overnight range consumption, and VWAP positioning help calibrate the opening hour bias. On high gap fill probability days, the first 30 minutes are likely to see a reversal toward the previous close. On low fill probability days, the gap direction extends and aligns with the session trend.\n\n${overnightGapContext}\n` : ''}
+${prevSessionContext ? `\n## Previous Session and Implied Move (from outcomes)\nComputed from the stored SPX close (4 pm ET, or 1 pm ET on a half day) and VIX close of the trading days before the analysis date, so every number here was known before the open. The multiples to read them against are in <ml_signal_hierarchy>. The previous day's multiple and the VIX change are context; neither is an established predictor of today's range. When recent sessions run above the prompt's full-sample rates, those rates understate the current regime.\n${prevSessionContext}\n` : ''}
 ${futuresContext ? `\n${futuresContext}\nFutures signals lead options flow by 10-30 minutes. When futures and flow disagree, futures are usually right — institutional desks execute in futures first. See <futures_context_rules> in the system prompt for interpretation guidance.\n` : ''}
 ${crossAssetRegimeContext ? `\n## Cross-Asset Risk Regime (from futures_bars — 5-min returns)\nComposite and per-symbol returns classifying the session as RISK-ON, RISK-OFF, MIXED, or MACRO-STRESS. See <cross_asset_regime_rules> for interpretation.\n  ${crossAssetRegimeContext}\n` : ''}
 ${volumeProfileContext ? `\n## Prior-Day Volume Profile (from futures_bars)\nPOC/VAH/VAL computed from the prior session's ES minute bars. Treat these as structural reference levels — see <volume_profile_rules> for interpretation.\n${volumeProfileContext}\n` : ''}

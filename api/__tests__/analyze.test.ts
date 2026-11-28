@@ -307,6 +307,14 @@ describe('POST /api/analyze', () => {
     });
     vi.mocked(getHistoricalWinRate).mockResolvedValue(null);
     vi.mocked(formatWinRateForClaude).mockReturnValue('');
+    // The snapshot-ID test points getDb at rows of its own, and
+    // restoreAllMocks does not undo that on a vi.fn(). Later tests must see the
+    // module default again: a fetcher that maps real rows (the previous-session
+    // one reads `date` from each) would otherwise choke on `[{ id: 42 }]` and
+    // report it to Sentry.
+    vi.mocked(getDb).mockImplementation(
+      () => (async () => []) as unknown as ReturnType<typeof getDb>,
+    );
     // Clear shared Sentry mock call history between tests
     mockSentry.captureMessage.mockClear();
     mockSentry.captureException.mockClear();
