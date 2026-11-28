@@ -6,9 +6,11 @@ from the source named by --source, and the forward-return paths at T+5/15/30/60/
 outcomes CSV that enrich_interval_ba_outcomes.py wrote for that source:
   - days (default): the replay day files in R2, research/interval-ba/replay/<date>.parquet, one
     per session, which the nightly step writes each morning: one rule all year and no live-feed
-    gaps. Only the days the CSV covers are checked and read, and a missing or stale one is
-    repaired first (_interval_ba_days.py); --dry-run lists what a repair would write and exits
-    non-zero. The database is never opened. CSV: docs/tmp/interval-ba-outcomes-days[-<ticker>]-*.csv.
+    gaps. Only the days the CSV covers are checked and read, and a missing, stale or empty one
+    is repaired first (_interval_ba_days.py); a day repaired after the CSV was priced is named
+    in the report. --dry-run is a check: it lists what a repair would write and exits
+    non-zero, or says the day files are present and current and stops, reading no alert. The
+    database is never opened. CSV: docs/tmp/interval-ba-outcomes-days[-<ticker>]-*.csv.
   - export: the one-time snapshot in R2, research/interval-ba/replay-<end>.parquet (--export-end
     names one, else the newest; --export-end alone means this source). The database is never
     opened. CSV: docs/tmp/interval-ba-outcomes-export[-<ticker>]-*.csv.
@@ -576,12 +578,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         con = eio.open_connection()
         try:
             files = days.ensure_day_files(con, first, last, dry_run=args.dry_run)
+            if args.dry_run:  # a check, not a run: the day files are present and current
+                return 0
             print(f'Reading {ticker} alerts from the day files…')
             alerts = export_alert_meta(days.read_day_alerts(con, files, ticker))
         finally:
             con.close()
         print(f'  {len(alerts)} alerts total')
         source_note = f' Alerts from {files.describe()}.'
+        if note := files.analysis_note():  # the CSV was priced from the files as they were
+            print(f'  NOTE: {note}')
+            source_note += f' {note}'
     elif source == days.EXPORT:
         con = eio.open_connection()
         try:

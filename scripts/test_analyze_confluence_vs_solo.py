@@ -40,6 +40,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _interval_ba_days as days
 import analyze_confluence_vs_solo as acs  # noqa: E402
 import enrich_interval_ba_outcomes as eio  # noqa: E402
 from _ba_test_support import (  # noqa: E402
@@ -894,13 +895,43 @@ def test_dry_run_lists_the_days_to_repair_and_writes_no_report(run, day_files, d
     assert not list((run / 'out').glob('interval-ba-confluence*'))
 
 
-def test_dry_run_with_nothing_to_repair_prints_the_report_and_writes_none(
-    run, day_files, capsys
+def test_dry_run_with_nothing_to_repair_is_a_check_that_reads_no_alert(
+    run, day_files, monkeypatch, capsys
 ):
+    """It stops after the day-file check: no alert is read and no report is built."""
+    read = MagicMock(side_effect=AssertionError('an alert was read'))
+    monkeypatch.setattr(days, 'read_day_alerts', read)
+
     assert acs.main(['--dry-run']) == 0
 
+    read.assert_not_called()
     assert not list((run / 'out').glob('interval-ba-confluence*'))
-    assert '## Cohort counts' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert '--dry-run: the 1 day file, 2026-11-17 to 2026-11-17, is present and current' in out
+    assert '## Cohort counts' not in out
+
+
+def test_an_analysis_that_repaired_a_day_says_its_outcomes_csv_was_priced_before(
+    run, day_files, day_world, capsys
+):
+    (day_world.dir / f'{DAY_ISO}.parquet').unlink()
+    del day_world.client.objects[f'research/interval-ba/replay/{DAY_ISO}.parquet']
+    day_world.alerts[DAY] = export_rows(day_files)
+    note = (
+        'Rewritten after the outcomes CSV was priced: 2026-11-17. Re-run '
+        'enrich_interval_ba_outcomes.py for those days.'
+    )
+
+    acs.main([])
+
+    assert note in report(run / 'out', days=True)
+    assert f'NOTE: {note}' in capsys.readouterr().out
+
+
+def test_an_analysis_that_repaired_nothing_has_no_such_note(run, day_files):
+    acs.main([])
+
+    assert 'Rewritten after' not in report(run / 'out', days=True)
 
 
 def test_a_snapshot_csv_with_the_day_files_names_the_mistake(run, day_files):

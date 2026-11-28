@@ -35,9 +35,11 @@ Sources (--source), the same three as enrich_interval_ba_outcomes.py (_interval_
   - days (default): the replay day files in R2, research/interval-ba/replay/<date>.parquet, one
     per session, which the nightly step writes each morning. One rule all year and no live-feed
     gaps, so a partner the live feed missed is still there. Only the days the CSV covers are
-    checked and read, and a missing or stale one is repaired first; --dry-run lists what a
-    repair would write and exits non-zero. The database is never opened. The forward paths come
-    from the newest docs/tmp/interval-ba-outcomes-days-*.csv.
+    checked and read, and a missing, stale or empty one is repaired first (a day repaired after
+    the CSV was priced is named in the report); --dry-run is a check: it lists what a repair
+    would write and exits non-zero, or says the day files are present and current and stops,
+    reading no alert. The database is never opened. The forward paths come from the newest
+    docs/tmp/interval-ba-outcomes-days-*.csv.
   - export: the one-time snapshot in R2, research/interval-ba/replay-<end>.parquet (--export-end
     names one, else the newest; --export-end alone means this source). The database is never
     opened. The forward paths come from the newest docs/tmp/interval-ba-outcomes-export-*.csv.
@@ -257,11 +259,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         con = eio.open_connection()
         try:
             files = days.ensure_day_files(con, first, last, dry_run=args.dry_run)
+            if args.dry_run:  # a check, not a run: the day files are present and current
+                return 0
             # Every ticker: SPXW alerts are tagged by their SPY and QQQ partners.
             alerts = days.read_day_alerts(con, files, None)
         finally:
             con.close()
         source_note = f' Alerts from {files.describe()}.'
+        if note := files.analysis_note():  # the CSV was priced from the files as they were
+            print(f'  NOTE: {note}')
+            source_note += f' {note}'
     elif source == days.EXPORT:
         con = eio.open_connection()
         try:
