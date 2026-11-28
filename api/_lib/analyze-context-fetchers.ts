@@ -77,6 +77,7 @@ import { getETDateStr, getETTime } from '../../src/utils/timezone.js';
 import { analyzeZeroGamma } from '../../src/utils/zero-gamma.js';
 import logger from './logger.js';
 import {
+  RECENT_ROWS,
   formatEconomicCalendarForClaude,
   formatMarketInternalsForClaude,
   formatPrevSessionForClaude,
@@ -637,9 +638,10 @@ interface OutcomesDbRow {
  * and how often recent sessions reached 1.0x, 1.25x and 1.5x their own implied
  * move, from the `outcomes` rows before `analysisDate`.
  *
- * One bounded as-of read: the newest 30 rows strictly before `analysisDate`
- * (20 sessions need 21 consecutive rows, and the rest is slack for gaps and
- * half days), so a back-dated analysis can't see its own day. P1 and P2 are
+ * One bounded as-of read: the newest `RECENT_ROWS` rows strictly before
+ * `analysisDate` (the formatter's window of 20 sessions needs 21 consecutive
+ * rows; the rest is slack for gaps and half days), so a back-dated analysis
+ * can't see its own day. P1 and P2 are
  * exact-date lookups in those rows, with no fallback to an older row: a gap in
  * `outcomes` must not show an older day as "yesterday". With no P1 row nothing
  * about today is knowable, so it returns null and the section lands in the
@@ -660,7 +662,7 @@ export async function fetchPrevSessionContext(
         FROM outcomes
         WHERE date < ${analysisDate}
         ORDER BY date DESC
-        LIMIT 30
+        LIMIT ${RECENT_ROWS}
       `,
       2,
       10_000,

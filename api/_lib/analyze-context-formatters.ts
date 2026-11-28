@@ -589,6 +589,12 @@ function halfDayCloseCt(date: string): string | null {
 
 /** How many of the most recent full sessions the recent-sessions line counts. */
 const RECENT_WINDOW = 20;
+/**
+ * How many `outcomes` rows the fetcher reads for that line: the window, the day
+ * before its oldest session, and 9 more for gaps and half days. It follows the
+ * window, so widening one cannot leave the other short.
+ */
+export const RECENT_ROWS = RECENT_WINDOW + 10;
 /** Fewer usable sessions than this and the line says it is unavailable. */
 const RECENT_MIN = 10;
 

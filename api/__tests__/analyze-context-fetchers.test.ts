@@ -109,7 +109,14 @@ vi.mock('../_lib/archive-sidecar.js', () => ({
   fetchDayFeatures: vi.fn(),
 }));
 
-vi.mock('../_lib/analyze-context-formatters.js', () => ({
+// RECENT_ROWS is a constant, not a formatter: take the real value so the query
+// test below checks the fetcher against it rather than against a copy.
+vi.mock('../_lib/analyze-context-formatters.js', async (importOriginal) => ({
+  RECENT_ROWS: (
+    await importOriginal<
+      typeof import('../_lib/analyze-context-formatters.js')
+    >()
+  ).RECENT_ROWS,
   formatEconomicCalendarForClaude: vi.fn(() => 'econ'),
   formatMarketInternalsForClaude: vi.fn(() => 'internals'),
   formatPriorDayFlowForClaude: vi.fn(),
@@ -185,6 +192,7 @@ import { fetchSPXCandles } from '../_lib/spx-candles.js';
 import { uwFetch, schwabFetch } from '../_lib/api-helpers.js';
 import { formatFuturesForClaude } from '../_lib/futures-context.js';
 import {
+  RECENT_ROWS,
   formatMarketInternalsForClaude,
   formatPrevSessionForClaude,
   formatPriorDayFlowForClaude,
@@ -1332,20 +1340,22 @@ describe('analyze-context-fetchers — previous session (outcomes)', () => {
     return sql;
   };
 
-  it('reads the newest 30 rows strictly before D, newest first, in one query', async () => {
+  it('reads RECENT_ROWS rows strictly before D, newest first, in one query', async () => {
     const sql = answerWith([row1125, row1124]);
 
     await fetchPrevSessionContext('2026-11-27');
 
     expect(sql).toHaveBeenCalledOnce();
     const [strings, ...params] = sql.mock.calls[0] as [string[], ...string[]];
-    // Bound by D alone: P1 and P2 are found among the rows, not queried.
-    expect(params).toEqual(['2026-11-27']);
+    // Bound by D and by the row cap the formatter's window needs: P1 and P2
+    // are found among the rows, not queried. The cap is a bound parameter, so
+    // it cannot drift from the formatter's constant.
+    expect(params).toEqual(['2026-11-27', RECENT_ROWS]);
     const text = strings.join('?');
     expect(text).toMatch(/FROM outcomes/);
     expect(text).toMatch(/WHERE date < \?/);
     expect(text).toMatch(/ORDER BY date DESC/);
-    expect(text).toMatch(/LIMIT 30\b/);
+    expect(text).toMatch(/LIMIT \?/);
     // Never a bound that could reach D itself or later.
     expect(text).not.toMatch(/date\s*(>=|<=|>)/);
   });

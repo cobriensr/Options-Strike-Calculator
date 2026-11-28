@@ -19,6 +19,7 @@ import {
   formatMarketInternalsForClaude,
   buildAnalysisContext,
 } from '../_lib/analyze-context.js';
+import { RECENT_ROWS } from '../_lib/analyze-context-formatters.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
   SYSTEM_PROMPT_PART1,
@@ -3146,8 +3147,8 @@ describe('buildAnalysisContext: previous session and implied move', () => {
     expect(text).toContain(
       `## Previous Session and Implied Move (from outcomes)\n${PREFACE}\nToday's VIX-implied move (prior-close VIX)`,
     );
-    // The close is 4 pm ET only on a full day: P1 is a 1 pm ET close on the
-    // Monday after Black Friday.
+    // The close is 4 pm ET only on a full day: when D is the Monday after
+    // Black Friday, P1 is that Friday's 1 pm ET close.
     expect(text).not.toContain('stored 4 pm SPX close');
     expect(text).toContain('(4 pm ET, or 1 pm ET on a half day)');
     // The model must not turn "1.92×" into a persistence warning.
@@ -3184,8 +3185,9 @@ describe('buildAnalysisContext: previous session and implied move', () => {
       await buildAnalysisContext([], { mode: 'entry', selectedDate });
 
       expect(outcomesCalls()).toHaveLength(1);
-      // One bound, the selected date itself: P1 and P2 are found in the rows.
-      expect(outcomesCalls()[0]!.slice(1)).toEqual([selectedDate]);
+      // Bound by the selected date itself and the row cap: P1 and P2 are
+      // found in the rows, not queried.
+      expect(outcomesCalls()[0]!.slice(1)).toEqual([selectedDate, RECENT_ROWS]);
     },
   );
 
