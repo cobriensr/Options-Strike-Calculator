@@ -7,6 +7,16 @@
  *
  *   Query params:
  *     ?date=2026-03-16  (optional, defaults to today ET)
+ *     ?readonly=1       (optional; any other value is a 400, see below)
+ *
+ *   Read-only mode (?readonly=1) saves nothing. It answers from the date's
+ *   newest paperMoney CSV upload when there is one (source 'paperMoney', the
+ *   upload's fetchTime, no Schwab call), otherwise from Schwab (source
+ *   'schwab'). Either way the legs are only those expiring on the date, and
+ *   the body is built with no ?spx=. A failed CSV read is a 503 or 500, never
+ *   a fall back to Schwab. A CSV with no open legs still governs. Why: a
+ *   plain GET saves a row keyed by (date, CT minute), and a polling reader
+ *   that saved would overwrite an upload and change what analyze reads.
  *
  * POST /api/positions
  *   Accepts a thinkorswim paperMoney CSV account statement export.
@@ -14,6 +24,7 @@
  *   to build a complete picture of open positions + closed trades today.
  *
  *   Body: raw CSV text (Content-Type: text/plain or application/json with { csv: "..." })
+ *   Ignores ?readonly=: a CSV upload always saves.
  *
  * Both return:
  *   { positions: { summary, legs, spreads, stats }, saved: boolean }
@@ -27,6 +38,7 @@ import {
 } from './_lib/api-helpers.js';
 import {
   savePositions,
+  getLatestCsvPositions,
   getDb,
   withDbRetry,
   safeDb,
@@ -126,9 +138,11 @@ function parseSpxQuery(raw: unknown): number | undefined {
  * (CSV upload and Schwab live fetch) share this routine — only the
  * summary string and accountHash differ per source.
  *
- * Returns `true` when the row was saved, `false` if savePositions threw
- * (the handler still responds 200 in that case so the trader sees their
- * stats — the DB write is incidental to the response).
+ * Returns `true` when the row was written, `false` when savePositions threw
+ * or returned null (its conflict guard skipped the update because a Schwab
+ * save met a paperMoney row in the same minute). The handler still responds
+ * 200 in both cases so the trader sees their stats — the DB write is
+ * incidental to the response.
  */
 async function persistPositions(args: {
   date: string;
@@ -156,7 +170,7 @@ async function persistPositions(args: {
   }, null);
 
   try {
-    await savePositions({
+    const savedId = await savePositions({
       date,
       fetchTime,
       accountHash,
@@ -174,8 +188,9 @@ async function persistPositions(args: {
       unrealizedPnl: response.totalPnl || undefined,
       snapshotId,
     });
+    // A skipped write is not a failed save: the call succeeded.
     metrics.dbSave('positions', true);
-    return true;
+    return savedId !== null;
   } catch (error_) {
     metrics.dbSave('positions', false);
     logger.error({ err: error_ }, 'Failed to save positions');
@@ -207,7 +222,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const today = (rawDate as string) || getTodayET();
   const fetchTime = getNowCT();
   if (req.method === 'POST') {
+    // A CSV upload always saves: the flag is read on GET only.
     return handleCSVUpload(req, res, today, fetchTime, done);
+  }
+  // `1` turns the read-only mode on; anything else present is a 400, so a typo
+  // can't fall through to a read that saves.
+  const rawReadonly = req.query.readonly;
+  if (rawReadonly !== undefined && rawReadonly !== '1') {
+    done({ status: 400 });
+    return res.status(400).json({ error: 'readonly must be 1' });
+  }
+  if (rawReadonly === '1') {
+    return handleReadonlyFetch(res, today, fetchTime, done);
   }
   return handleSchwabFetch(req, res, today, fetchTime, done);
 }
@@ -281,6 +307,8 @@ async function handleCSVUpload(
     const saved = await persistPositions({
       date: today,
       fetchTime,
+      // The marker savePositions' guard and getLatestCsvPositions key on
+      // (PAPER_MONEY_ACCOUNT_HASH in db-positions.ts).
       accountHash: 'paperMoney',
       spxPrice,
       summary: fullSummary,
@@ -324,7 +352,115 @@ async function handleCSVUpload(
 }
 
 // ============================================================
-// GET — live Schwab Trader API fetch
+// GET — shared pieces of the Schwab read and the read-only mode
+// ============================================================
+
+type SchwabLegsResult =
+  | { ok: true; accountHash: string; legs: PositionLeg[] }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Today's SPX option legs from the live Schwab account: one account-list
+ * call, then one positions call. A Schwab failure comes back as
+ * `{ ok: false, status, error }` (a 401 means the login lapsed) for the
+ * caller to pass through; a thrown error is left to the caller's catch.
+ */
+async function fetchSchwabLegs(today: string): Promise<SchwabLegsResult> {
+  const acctResult = await schwabTraderFetch<SchwabAccountNumber[]>(
+    '/accounts/accountNumbers',
+  );
+  if (!acctResult.ok) {
+    return {
+      ok: false,
+      status: acctResult.status,
+      error: acctResult.error,
+    };
+  }
+  if (!acctResult.data || acctResult.data.length === 0) {
+    return { ok: false, status: 404, error: 'No linked accounts found' };
+  }
+  const accountHash = acctResult.data[0]!.hashValue;
+
+  const posResult = await schwabTraderFetch<SchwabAccount>(
+    `/accounts/${accountHash}?fields=positions`,
+  );
+  if (!posResult.ok) {
+    return {
+      ok: false,
+      status: posResult.status,
+      error: posResult.error,
+    };
+  }
+  const positions = posResult.data?.securitiesAccount?.positions ?? [];
+
+  const spxLegs: PositionLeg[] = [];
+  for (const pos of positions) {
+    const inst = pos.instrument;
+    if (
+      inst.assetType === 'OPTION' &&
+      inst.underlyingSymbol === '$SPX' &&
+      inst.expirationDate &&
+      isExpiringToday(inst.expirationDate, today) &&
+      inst.putCall &&
+      inst.strikePrice != null
+    ) {
+      const qty = (pos.longQuantity || 0) - (pos.shortQuantity || 0);
+      if (qty === 0) continue;
+      spxLegs.push({
+        putCall: inst.putCall,
+        symbol: inst.symbol,
+        strike: inst.strikePrice,
+        expiration: inst.expirationDate.slice(0, 10),
+        quantity: qty,
+        averagePrice: pos.averagePrice,
+        marketValue: pos.marketValue,
+        delta: undefined,
+        theta: undefined,
+        gamma: undefined,
+      });
+    }
+  }
+  return { ok: true, accountHash, legs: spxLegs };
+}
+
+/** The `positions` object of the plain GET's answer, shared with read-only. */
+function livePositionsBody(r: PositionResponse, legs: PositionLeg[]) {
+  return {
+    summary: r.summary,
+    legs,
+    spreads: r.spreads,
+    stats: {
+      totalSpreads: r.spreads.length,
+      callSpreads: r.callSpreadsCount,
+      putSpreads: r.putSpreadsCount,
+      netDelta: r.netDelta,
+      netTheta: r.netTheta,
+      netGamma: r.netGamma,
+      totalCredit: r.totalCredit,
+      currentValue: r.totalValue,
+      unrealizedPnl: r.totalPnl,
+    },
+  };
+}
+
+/**
+ * The GET catch: a transient Neon blip is a 503, anything else an opaque 500
+ * that goes to Sentry.
+ */
+function sendPositionsReadError(
+  res: VercelResponse,
+  err: unknown,
+  done: RequestDone,
+) {
+  done({ status: 500, error: 'positions_fetch_error' });
+  sendDbErrorResponse(res, err, {
+    label: 'positions',
+    serverErrorBody: { error: 'Failed to fetch positions' },
+  });
+}
+
+// ============================================================
+// GET — live Schwab Trader API fetch (saves a row)
 // ============================================================
 async function handleSchwabFetch(
   req: VercelRequest,
@@ -334,55 +470,12 @@ async function handleSchwabFetch(
   done: RequestDone,
 ) {
   try {
-    const acctResult = await schwabTraderFetch<SchwabAccountNumber[]>(
-      '/accounts/accountNumbers',
-    );
-    if (!acctResult.ok) {
-      done({ status: acctResult.status });
-      return res.status(acctResult.status).json({ error: acctResult.error });
+    const schwab = await fetchSchwabLegs(today);
+    if (!schwab.ok) {
+      done({ status: schwab.status });
+      return res.status(schwab.status).json({ error: schwab.error });
     }
-    if (!acctResult.data || acctResult.data.length === 0) {
-      done({ status: 404 });
-      return res.status(404).json({ error: 'No linked accounts found' });
-    }
-    const accountHash = acctResult.data[0]!.hashValue;
-
-    const posResult = await schwabTraderFetch<SchwabAccount>(
-      `/accounts/${accountHash}?fields=positions`,
-    );
-    if (!posResult.ok) {
-      done({ status: posResult.status });
-      return res.status(posResult.status).json({ error: posResult.error });
-    }
-    const positions = posResult.data?.securitiesAccount?.positions ?? [];
-
-    const spxLegs: PositionLeg[] = [];
-    for (const pos of positions) {
-      const inst = pos.instrument;
-      if (
-        inst.assetType === 'OPTION' &&
-        inst.underlyingSymbol === '$SPX' &&
-        inst.expirationDate &&
-        isExpiringToday(inst.expirationDate, today) &&
-        inst.putCall &&
-        inst.strikePrice != null
-      ) {
-        const qty = (pos.longQuantity || 0) - (pos.shortQuantity || 0);
-        if (qty === 0) continue;
-        spxLegs.push({
-          putCall: inst.putCall,
-          symbol: inst.symbol,
-          strike: inst.strikePrice,
-          expiration: inst.expirationDate.slice(0, 10),
-          quantity: qty,
-          averagePrice: pos.averagePrice,
-          marketValue: pos.marketValue,
-          delta: undefined,
-          theta: undefined,
-          gamma: undefined,
-        });
-      }
-    }
+    const { accountHash, legs: spxLegs } = schwab;
 
     const spxPrice = parseSpxQuery(req.query.spx);
     const r = buildPositionResponse(spxLegs, spxPrice);
@@ -398,33 +491,64 @@ async function handleSchwabFetch(
     });
 
     const result = res.status(200).json({
-      positions: {
-        summary: r.summary,
-        legs: spxLegs,
-        spreads: r.spreads,
-        stats: {
-          totalSpreads: r.spreads.length,
-          callSpreads: r.callSpreadsCount,
-          putSpreads: r.putSpreadsCount,
-          netDelta: r.netDelta,
-          netTheta: r.netTheta,
-          netGamma: r.netGamma,
-          totalCredit: r.totalCredit,
-          currentValue: r.totalValue,
-          unrealizedPnl: r.totalPnl,
-        },
-      },
+      positions: livePositionsBody(r, spxLegs),
       saved,
       fetchTime,
     });
     done({ status: 200 });
     return result;
   } catch (err) {
-    done({ status: 500, error: 'positions_fetch_error' });
-    sendDbErrorResponse(res, err, {
-      label: 'positions',
-      serverErrorBody: { error: 'Failed to fetch positions' },
+    sendPositionsReadError(res, err, done);
+    return;
+  }
+}
+
+// ============================================================
+// GET ?readonly=1 — today's CSV, else Schwab; saves nothing
+// ============================================================
+async function handleReadonlyFetch(
+  res: VercelResponse,
+  today: string,
+  fetchTime: string,
+  done: RequestDone,
+) {
+  try {
+    // The CSV read comes first and its failure is an error, not a fall back
+    // to Schwab: falling back would silently switch the source on a database
+    // blip.
+    const csv = await getLatestCsvPositions(today);
+    if (csv) {
+      // Same rule as the Schwab path's filter, so only today's legs stand.
+      const legs = csv.legs.filter((leg) =>
+        isExpiringToday(leg.expiration, today),
+      );
+      const r = buildPositionResponse(legs);
+      const result = res.status(200).json({
+        positions: livePositionsBody(r, legs),
+        saved: false,
+        fetchTime: csv.fetchTime,
+        source: 'paperMoney',
+      });
+      done({ status: 200 });
+      return result;
+    }
+
+    const schwab = await fetchSchwabLegs(today);
+    if (!schwab.ok) {
+      done({ status: schwab.status });
+      return res.status(schwab.status).json({ error: schwab.error });
+    }
+    const r = buildPositionResponse(schwab.legs);
+    const result = res.status(200).json({
+      positions: livePositionsBody(r, schwab.legs),
+      saved: false,
+      fetchTime,
+      source: 'schwab',
     });
+    done({ status: 200 });
+    return result;
+  } catch (err) {
+    sendPositionsReadError(res, err, done);
     return;
   }
 }

@@ -13,6 +13,7 @@ vi.mock('../_lib/db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../_lib/db.js')>();
   return {
     savePositions: vi.fn(),
+    getLatestCsvPositions: vi.fn(),
     getDb: vi.fn(),
     withDbRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
       try {
@@ -52,7 +53,13 @@ import {
   rejectIfRateLimited,
   schwabTraderFetch,
 } from '../_lib/api-helpers.js';
-import { savePositions, getDb } from '../_lib/db.js';
+import {
+  savePositions,
+  getLatestCsvPositions,
+  getDb,
+  type PositionLeg,
+} from '../_lib/db.js';
+import { TransientDbError } from '../_lib/transient-db-error.js';
 import { Sentry } from '../_lib/sentry.js';
 
 describe('GET /api/positions', () => {
@@ -867,4 +874,594 @@ describe('POST /api/positions — CSV parse error', () => {
     // The transient optional lookup is soft-degraded, not Sentry-reported.
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
+});
+
+// ============================================================
+// Read-only mode: GET /api/positions?readonly=1 (ladder phase 4a)
+// ============================================================
+
+const DAY = '2026-06-08';
+const OTHER_DAY = '2026-06-09';
+
+function csvLeg(over: Partial<PositionLeg> = {}): PositionLeg {
+  return {
+    putCall: 'CALL',
+    symbol: 'SPXW  260608C06900000',
+    strike: 6900,
+    expiration: DAY,
+    quantity: -1,
+    averagePrice: 2,
+    marketValue: -150,
+    ...over,
+  };
+}
+
+/** A call credit spread: short 6900, long 6925. */
+const CSV_CALL_SPREAD: PositionLeg[] = [
+  csvLeg(),
+  csvLeg({
+    symbol: 'SPXW  260608C06925000',
+    strike: 6925,
+    quantity: 1,
+    averagePrice: 1,
+    marketValue: 60,
+  }),
+];
+
+function schwabOption(args: {
+  putCall: 'PUT' | 'CALL';
+  strike: number;
+  short?: number;
+  long?: number;
+  expiration?: string;
+}) {
+  const { putCall, strike, short = 0, long = 0, expiration = DAY } = args;
+  return {
+    shortQuantity: short,
+    longQuantity: long,
+    averagePrice: 2,
+    currentDayProfitLoss: 0,
+    currentDayProfitLossPercentage: 0,
+    marketValue: 100,
+    instrument: {
+      assetType: 'OPTION',
+      symbol: `SPXW${expiration.replaceAll('-', '')}${putCall[0]}${strike}`,
+      putCall,
+      underlyingSymbol: '$SPX',
+      strikePrice: strike,
+      expirationDate: `${expiration}T00:00:00.000+00:00`,
+    },
+  };
+}
+
+/** Queue Schwab's two answers: the account list, then the positions. */
+function queueSchwabPositions(positions: unknown[]) {
+  vi.mocked(schwabTraderFetch)
+    .mockResolvedValueOnce({
+      ok: true,
+      data: [{ accountNumber: '123', hashValue: 'hash1' }],
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      data: {
+        securitiesAccount: {
+          accountNumber: '123',
+          type: 'MARGIN',
+          positions,
+        },
+      },
+    });
+}
+
+interface PositionsBody {
+  positions: {
+    summary: string;
+    legs: PositionLeg[];
+    spreads: { type: string; shortLeg: { strike: number } }[];
+    stats: {
+      totalSpreads: number;
+      callSpreads: number;
+      putSpreads: number;
+    };
+  };
+  saved: boolean;
+  fetchTime: string;
+  source?: string;
+}
+
+function resetPositionMocks(mockSql: ReturnType<typeof vi.fn>) {
+  vi.restoreAllMocks();
+  vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
+  vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+  vi.mocked(getDb).mockReset();
+  vi.mocked(getDb).mockReturnValue(mockSql as never);
+  mockSql.mockReset();
+  mockSql.mockResolvedValue([]);
+  vi.mocked(schwabTraderFetch).mockReset();
+  vi.mocked(getLatestCsvPositions).mockReset();
+  vi.mocked(savePositions).mockReset();
+  vi.mocked(savePositions).mockResolvedValue(1);
+  vi.mocked(parseFullCSV).mockReset();
+  vi.mocked(Sentry.captureException).mockClear();
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+}
+
+describe('GET /api/positions?readonly=1', () => {
+  const mockSql = vi.fn();
+  const readonlyReq = (query: Record<string, string> = {}) =>
+    mockRequest({
+      method: 'GET',
+      query: { readonly: '1', date: DAY, ...query },
+    });
+
+  beforeEach(() => {
+    resetPositionMocks(mockSql);
+  });
+
+  // ── CSV first ────────────────────────────────────────────────
+
+  it('answers from the date’s newest CSV row: its legs, source and fetchTime, with no Schwab request and no save', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce({
+      legs: CSV_CALL_SPREAD,
+      fetchTime: '10:15',
+    });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as PositionsBody;
+    expect(json.source).toBe('paperMoney');
+    expect(json.fetchTime).toBe('10:15');
+    expect(json.saved).toBe(false);
+    expect(json.positions.legs).toEqual(CSV_CALL_SPREAD);
+    expect(json.positions.spreads).toHaveLength(1);
+    expect(json.positions.spreads[0]!.shortLeg.strike).toBe(6900);
+    expect(json.positions.stats).toMatchObject({
+      totalSpreads: 1,
+      callSpreads: 1,
+      putSpreads: 0,
+    });
+    // The plain GET's body shape, not the CSV upload's.
+    expect(json.positions).not.toHaveProperty('closedToday');
+    expect(getLatestCsvPositions).toHaveBeenCalledWith(DAY);
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+    expect(savePositions).not.toHaveBeenCalled();
+    // No snapshot lookup either: nothing is saved, so nothing links.
+    expect(getDb).not.toHaveBeenCalled();
+  });
+
+  it('a CSV row with no open legs still governs: empty answer, no Schwab fallback', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce({
+      legs: [],
+      fetchTime: '11:02',
+    });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as PositionsBody;
+    expect(json.source).toBe('paperMoney');
+    expect(json.fetchTime).toBe('11:02');
+    expect(json.positions.legs).toEqual([]);
+    expect(json.positions.spreads).toEqual([]);
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+    expect(savePositions).not.toHaveBeenCalled();
+  });
+
+  it('drops CSV legs that do not expire on the requested date', async () => {
+    const todayShort = csvLeg();
+    const todayLong = CSV_CALL_SPREAD[1]!;
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce({
+      legs: [
+        todayShort,
+        todayLong,
+        // A short put expiring tomorrow: not today's, so it must not reach
+        // the ladder as an open short strike.
+        csvLeg({
+          putCall: 'PUT',
+          strike: 6700,
+          expiration: OTHER_DAY,
+          quantity: -2,
+        }),
+        // A paperMoney expiration the parser could not read (it returns the
+        // raw text), which is not a date.
+        csvLeg({ putCall: 'PUT', strike: 6650, expiration: '9 JUN 26x' }),
+      ],
+      fetchTime: '10:15',
+    });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    const json = res._json as PositionsBody;
+    expect(json.positions.legs).toEqual([todayShort, todayLong]);
+    expect(json.positions.stats.putSpreads).toBe(0);
+    expect(json.positions.stats.totalSpreads).toBe(1);
+  });
+
+  it('a CSV whose legs all expire another day answers empty and still governs', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce({
+      legs: [csvLeg({ expiration: OTHER_DAY })],
+      fetchTime: '10:15',
+    });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    const json = res._json as PositionsBody;
+    expect(json.source).toBe('paperMoney');
+    expect(json.positions.legs).toEqual([]);
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+  });
+
+  it('ignores ?spx= on the CSV path (built with no spx)', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce({
+      legs: CSV_CALL_SPREAD,
+      fetchTime: '10:15',
+    });
+
+    const res = mockResponse();
+    await handler(readonlyReq({ spx: '6800' }), res);
+
+    const json = res._json as PositionsBody;
+    expect(json.positions.summary).toContain('CALL CREDIT SPREADS');
+    expect(json.positions.summary).not.toContain('Cushion:');
+    expect(json.positions.summary).not.toContain('SPX at fetch time');
+    expect(json.positions.summary).not.toContain('above SPX');
+  });
+
+  it('looks the CSV up by the ET date when no ?date= is given', async () => {
+    const todayET = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce(null);
+    queueSchwabPositions([]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { readonly: '1' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(getLatestCsvPositions).toHaveBeenCalledWith(todayET);
+  });
+
+  // ── Schwab when there is no CSV ──────────────────────────────
+
+  it('with no CSV row, answers from Schwab: its legs, source schwab, saved false, no save', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce(null);
+    queueSchwabPositions([
+      schwabOption({ putCall: 'PUT', strike: 6700, short: 2 }),
+      schwabOption({ putCall: 'PUT', strike: 6675, long: 2 }),
+      // Expires another day: the Schwab filter drops it.
+      schwabOption({
+        putCall: 'PUT',
+        strike: 6600,
+        short: 1,
+        expiration: OTHER_DAY,
+      }),
+    ]);
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as PositionsBody;
+    expect(json.source).toBe('schwab');
+    expect(json.saved).toBe(false);
+    expect(typeof json.fetchTime).toBe('string');
+    expect(json.positions.legs.map((l) => [l.strike, l.quantity])).toEqual([
+      [6700, -2],
+      [6675, 2],
+    ]);
+    expect(json.positions.spreads).toHaveLength(1);
+    expect(json.positions.spreads[0]!.type).toBe('PUT CREDIT SPREAD');
+    expect(json.positions.stats.putSpreads).toBe(1);
+    expect(schwabTraderFetch).toHaveBeenCalledTimes(2);
+    expect(savePositions).not.toHaveBeenCalled();
+    expect(getDb).not.toHaveBeenCalled();
+  });
+
+  it('ignores ?spx= on the Schwab path too (no cushion lines)', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce(null);
+    queueSchwabPositions([
+      schwabOption({ putCall: 'PUT', strike: 6700, short: 1 }),
+      schwabOption({ putCall: 'PUT', strike: 6675, long: 1 }),
+    ]);
+
+    const res = mockResponse();
+    await handler(readonlyReq({ spx: '6800' }), res);
+
+    const json = res._json as PositionsBody;
+    expect(json.positions.summary).toContain('PUT CREDIT SPREADS');
+    expect(json.positions.summary).not.toContain('Cushion:');
+    expect(json.positions.summary).not.toContain('SPX at fetch time');
+  });
+
+  it('a Schwab account with no positions array answers empty, saved false', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce(null);
+    vi.mocked(schwabTraderFetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        data: [{ accountNumber: '123', hashValue: 'hash1' }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { securitiesAccount: { accountNumber: '123', type: 'MARGIN' } },
+      });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as PositionsBody;
+    expect(json.source).toBe('schwab');
+    expect(json.saved).toBe(false);
+    expect(json.positions.legs).toEqual([]);
+  });
+
+  // ── Failure modes, each surfaced by name ─────────────────────
+
+  it('a transient CSV read failure answers 503 with Retry-After, no Schwab fallback, no Sentry event', async () => {
+    vi.mocked(getLatestCsvPositions).mockRejectedValueOnce(
+      new TransientDbError(new Error('fetch failed')),
+    );
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+    expect(savePositions).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a genuine CSV read failure answers an opaque 500 and is captured, with no Schwab fallback', async () => {
+    vi.mocked(getLatestCsvPositions).mockRejectedValueOnce(
+      new Error('relation "positions" does not exist'),
+    );
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Failed to fetch positions' });
+    expect(JSON.stringify(res._json)).not.toContain('relation');
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'relation "positions" does not exist',
+      }),
+    );
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+    expect(savePositions).not.toHaveBeenCalled();
+  });
+
+  it('passes Schwab’s 401 (logged out) through, with no save', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce(null);
+    vi.mocked(schwabTraderFetch).mockResolvedValueOnce({
+      ok: false,
+      error: 'Unauthorized',
+      status: 401,
+      code: 'SCHWAB_API_REJECTED',
+    });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(401);
+    expect(res._json).toEqual({ error: 'Unauthorized' });
+    expect(savePositions).not.toHaveBeenCalled();
+  });
+
+  it('passes a Schwab positions-call failure through (502), with no save', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce(null);
+    vi.mocked(schwabTraderFetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        data: [{ accountNumber: '123', hashValue: 'hash1' }],
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: 'Server error',
+        status: 502,
+        code: 'SCHWAB_API_502',
+      });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(502);
+    expect(res._json).toEqual({ error: 'Server error' });
+    expect(savePositions).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 when Schwab lists no linked account, with no save', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce(null);
+    vi.mocked(schwabTraderFetch).mockResolvedValueOnce({ ok: true, data: [] });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(404);
+    expect(res._json).toEqual({ error: 'No linked accounts found' });
+    expect(savePositions).not.toHaveBeenCalled();
+  });
+
+  it('a Schwab call that throws answers an opaque 500 and is captured, with no save', async () => {
+    vi.mocked(getLatestCsvPositions).mockResolvedValueOnce(null);
+    vi.mocked(schwabTraderFetch).mockRejectedValueOnce(
+      new Error('Network failure: secret-host.internal:5432 refused'),
+    );
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Failed to fetch positions' });
+    expect(JSON.stringify(res._json)).not.toContain('secret-host.internal');
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(savePositions).not.toHaveBeenCalled();
+  });
+
+  // ── The flag and the unchanged gates ─────────────────────────
+
+  it.each([['yes'], ['0'], ['true'], ['']])(
+    'readonly=%j is a 400, with no CSV read, no Schwab request and no save',
+    async (value) => {
+      const res = mockResponse();
+      await handler(readonlyReq({ readonly: value }), res);
+
+      expect(res._status).toBe(400);
+      expect(res._json).toEqual({ error: 'readonly must be 1' });
+      expect(getLatestCsvPositions).not.toHaveBeenCalled();
+      expect(schwabTraderFetch).not.toHaveBeenCalled();
+      expect(savePositions).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a repeated readonly (an array) is a 400', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { readonly: ['1', '1'], date: DAY },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(400);
+    expect(getLatestCsvPositions).not.toHaveBeenCalled();
+  });
+
+  it('the ?date= check still applies: a malformed date is a 400 before any read', async () => {
+    const res = mockResponse();
+    await handler(readonlyReq({ date: 'garbage' }), res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toEqual({ error: 'date must be YYYY-MM-DD' });
+    expect(getLatestCsvPositions).not.toHaveBeenCalled();
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+  });
+
+  it('a non-owner gets the guard’s 401 and nothing is read', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(401);
+    expect(getLatestCsvPositions).not.toHaveBeenCalled();
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the 20-a-minute limit: a limited call gets 429 and nothing is read', async () => {
+    vi.mocked(rejectIfRateLimited).mockImplementation(async (_req, res) => {
+      res.status(429).json({ error: 'Rate limited' });
+      return true;
+    });
+
+    const res = mockResponse();
+    await handler(readonlyReq(), res);
+
+    expect(res._status).toBe(429);
+    expect(rejectIfRateLimited).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'positions',
+      20,
+    );
+    expect(getLatestCsvPositions).not.toHaveBeenCalled();
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// The plain GET and POST keep saving
+// ============================================================
+
+describe('GET /api/positions without the flag (plain read) and POST', () => {
+  const mockSql = vi.fn();
+
+  beforeEach(() => {
+    resetPositionMocks(mockSql);
+  });
+
+  it('still saves, never reads the CSV row, and adds no source field', async () => {
+    queueSchwabPositions([]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { date: DAY } }), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as PositionsBody;
+    expect(json.saved).toBe(true);
+    expect(json).not.toHaveProperty('source');
+    expect(savePositions).toHaveBeenCalledWith(
+      expect.objectContaining({ date: DAY, accountHash: 'hash1' }),
+    );
+    expect(getLatestCsvPositions).not.toHaveBeenCalled();
+  });
+
+  it('reports saved:false when the conflict guard skips the write (savePositions → null)', async () => {
+    vi.mocked(savePositions).mockResolvedValue(null);
+    queueSchwabPositions([
+      schwabOption({ putCall: 'PUT', strike: 6700, short: 1 }),
+    ]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { date: DAY } }), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as PositionsBody;
+    expect(json.saved).toBe(false);
+    // The read itself is unharmed: the trader still sees their legs.
+    expect(json.positions.legs).toHaveLength(1);
+    expect(savePositions).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([['1'], ['yes']])(
+    'POST ignores readonly=%s: a CSV upload always saves, as paperMoney',
+    async (value) => {
+      vi.mocked(parseFullCSV).mockReturnValue({
+        openLegs: CSV_CALL_SPREAD,
+        closedSpreads: [],
+        allTrades: [],
+        dayPnl: null,
+        ytdPnl: null,
+        netLiquidatingValue: null,
+        startingBalance: null,
+        hasOptionsSection: true,
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: 'Options\nSPXW,...,...\n',
+          query: { readonly: value, date: DAY },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const json = res._json as PositionsBody;
+      expect(json.saved).toBe(true);
+      expect(json.source).toBe('paperMoney');
+      expect(savePositions).toHaveBeenCalledWith(
+        expect.objectContaining({ date: DAY, accountHash: 'paperMoney' }),
+      );
+      expect(getLatestCsvPositions).not.toHaveBeenCalled();
+    },
+  );
 });
