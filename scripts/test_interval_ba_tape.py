@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, fields, replace
@@ -48,6 +50,8 @@ import pytest
 from botocore.exceptions import ClientError
 
 ibr = sys.modules["interval_ba_replay"]
+# The deployed-code guard reads git, so the fixture patches it; one test runs the real one.
+REAL_DEPLOYED_CODE_GUARD = runs.refuse_unless_deployed_code
 
 CT = ZoneInfo("America/Chicago")
 # A Wednesday, 17:30 CT: outside both refusal windows.
@@ -560,6 +564,8 @@ class World:
     tapes: dict[str, str] = field(default_factory=dict)
     alerts: dict[date, list[Any]] = field(default_factory=dict)
     clock: Callable[[], datetime] = lambda: SAFE_NOW
+    guard_calls: int = 0  # how often the deployed-code guard ran
+    tape_connections: int = 0  # how many DuckDB connections over the tape were opened
 
     @property
     def runs(self) -> Path:
@@ -659,11 +665,21 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> World:
         if name != "DATABASE_URL":
             monkeypatch.setenv(name, "")
     monkeypatch.setattr(runs, "RUNS_DIR", w.runs)
-    monkeypatch.setattr(runs, "fulltape_connection", lambda **kwargs: CheckedDuck(w.db))
+
+    def tape_connection(**kwargs: Any) -> CheckedDuck:
+        w.tape_connections += 1
+        return CheckedDuck(w.db)
+
+    monkeypatch.setattr(runs, "fulltape_connection", tape_connection)
     monkeypatch.setattr(runs, "r2_url", lambda day: w.tapes[day])
     monkeypatch.setattr(psycopg2, "connect", w.db.connect)
     monkeypatch.setattr(runs.boto3, "client", lambda *a, **k: w.s3)
     monkeypatch.setattr(runs, "utc_now", lambda: w.clock())
+
+    def deployed_code() -> None:
+        w.guard_calls += 1
+
+    monkeypatch.setattr(runs, "refuse_unless_deployed_code", deployed_code)
     return w
 
 
@@ -792,6 +808,35 @@ def test_rebuild_refuses_days_outside_its_list(world: World, start: str, end: st
     assert refused in out
     assert world.db.dsns == []
     assert not world.runs.exists()
+
+
+def test_rebuild_with_no_range_works_the_rebuild_days(
+    world: World, monkeypatch: pytest.MonkeyPatch
+):
+    # The list is the two ranges and the two edge days, and no live day is in it.
+    days = tool.rebuild_days(None, None)
+    assert days == list(tool.REBUILD_DAYS) and len(days) == 124
+    assert all(tool.rebuild_kind(day) is not None for day in days)
+    assert not {date(2026, 5, 14), date(2026, 6, 1), date(2026, 7, 21), date(2026, 9, 8)} & set(
+        days
+    )
+    assert (days[0], days[-1]) == (date(2026, 1, 2), date(2026, 9, 4))
+
+    # The command with no --from or --to plans exactly that list (cut to two days for the tapes).
+    monkeypatch.setattr(tool, "REBUILD_DAYS", (FULL_A, FULL_A2))
+    two_full_days(world)
+    code, out = world.run("rebuild")
+    assert code == 0, out
+    (run,) = world.runs.glob("*")
+    assert list(runs.load_plan(run)["days"]) == ["2026-03-10", "2026-03-11"]
+
+
+def test_rebuild_with_one_end_given_still_refuses_a_span_that_holds_live_days(world: World):
+    code, out = world.run("rebuild", "--to", "2026-09-04")
+
+    assert code == 3
+    assert "2026-05-14" in out
+    assert world.db.dsns == [] and not world.runs.exists()
 
 
 def edge_first_world(world: World) -> dict[str, Any]:
@@ -1185,7 +1230,7 @@ def test_apply_refuses_changed_module_hash(
     world: World, monkeypatch: pytest.MonkeyPatch, which: str
 ):
     # Each code file in turn is a copy the test can edit: the replay module, and every file of
-    # the tool (the CLI and the shared machinery).
+    # the tool (the CLI, the shared machinery and the calendar it loads from nightly).
     copy_path = world.tmp / "code" / Path(which).name
     copy_path.parent.mkdir()
     if which == "replay module":
@@ -1205,6 +1250,7 @@ def test_apply_refuses_changed_module_hash(
         == {
             "scripts/interval_ba_tape.py",
             "scripts/interval_ba_tape_runs.py",
+            "nightly/src/calendar_nyse.py",
         }
     )
     with copy_path.open("a", encoding="utf-8") as handle:
@@ -2276,6 +2322,286 @@ def test_heal_and_export_refuse_the_nightly_window(world: World, command: str):
     assert world.db.dsns == [] and world.s3.puts == [] and not world.runs.exists()
 
 
+# --- export --per-day -------------------------------------------------------------------------
+
+DAYS_PREFIX = "research/interval-ba/replay/"
+IN_THE_NIGHTLY_WINDOW = datetime(2026, 11, 26, 7, 20, tzinfo=UTC)
+
+
+def day_key(day: date) -> str:
+    return f"{DAYS_PREFIX}{day.isoformat()}.parquet"
+
+
+def per_day(world: World, start: date, end: date | None = None, *extra: str):
+    """`export --per-day` over start..end: the code, the output and the run folder it made."""
+    return world.dry_run(start, end, command="export", extra=["--per-day", *extra])
+
+
+def stored_day(world: World, day: date) -> tuple[pa.Table, dict[str, str]]:
+    """A day file as R2 holds it: the table with its footer, and the object's user metadata."""
+    body, user_metadata = world.s3.objects[("bucket-sekret", day_key(day))]
+    return pq.read_table(io.BytesIO(body)), user_metadata
+
+
+def test_export_per_day_writes_one_file_per_day_and_overwrites(world: World):
+    export_days(world)
+
+    code, out, run = per_day(world, FULL_A, FULL_A2)
+
+    assert code == 0, out
+    assert world.guard_calls == 1
+    assert world.db.dsns == [] and world.db.statements == []  # never Neon
+    assert world.s3.puts == [day_key(FULL_A), day_key(FULL_A2)]
+    for day in (FULL_A, FULL_A2):
+        table, user_metadata = stored_day(world, day)
+        footer = {
+            "day": day.isoformat(),
+            "rows": len(world.alerts[day]),
+            "rule": RULE,
+            "created_at": SAFE_NOW.isoformat(),
+        }
+        # The nightly step's file: the module's own table and footer, and no object metadata.
+        assert user_metadata == {}
+        assert json.loads(table.schema.metadata[b"interval_ba"]) == footer
+        assert table.equals(ibr.export_table(world.alerts[day], footer))  # schema and values
+    assert not list(run.glob("*.parquet"))  # no local copy, unlike the snapshot
+    record = json.loads((run / "export.json").read_text(encoding="utf-8"))
+    assert (record["per_day"], record["from"], record["to"]) == (True, "2026-03-10", "2026-03-11")
+    first, second = record["days"]
+    body = world.s3.objects[("bucket-sekret", day_key(FULL_A))][0]
+    assert first == {
+        "day": "2026-03-10",
+        "key": day_key(FULL_A),
+        "rows": len(world.alerts[FULL_A]),
+        "bytes": len(body),
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "root_label_mismatch": 0,
+    }
+    assert second["day"] == "2026-03-11"
+
+    # A second run over 03-10, on a tape that changed, rewrites its file and no other.
+    kept = world.s3.objects[("bucket-sekret", day_key(FULL_A2))]
+    changed = world.tape(FULL_A, fires(FULL_A, ("14:00:00", chain("SPY", "P", 640, FULL_A))))
+    code, out, _ = per_day(world, FULL_A)
+    assert code == 0, out
+    assert world.s3.puts == [day_key(FULL_A), day_key(FULL_A2), day_key(FULL_A)]
+    table, _ = stored_day(world, FULL_A)
+    assert table.column("option_chain").to_pylist() == [a.option_chain for a in changed]
+    assert world.s3.objects[("bucket-sekret", day_key(FULL_A2))] == kept
+
+
+def test_export_per_day_ignores_an_existing_snapshot_key(world: World):
+    export_days(world)
+    world.s3.objects[("bucket-sekret", EXPORT_KEY)] = (b"the snapshot", {})
+
+    code, out, _ = per_day(world, FULL_A, FULL_A2)
+
+    assert code == 0, out
+    assert world.s3.puts == [day_key(FULL_A), day_key(FULL_A2)]
+    assert world.s3.objects[("bucket-sekret", EXPORT_KEY)] == (b"the snapshot", {})
+
+
+def test_export_per_day_rechecks_the_windows_before_each_put(world: World):
+    export_days(world)
+    # The run reaches the nightly window once 03-10's file is put.
+    world.clock = lambda: IN_THE_NIGHTLY_WINDOW if world.s3.puts else SAFE_NOW
+
+    code, out = world.run("export", "--per-day", "--from", "2026-03-10", "--to", "2026-03-11")
+
+    assert code == 3
+    assert "07:15" in out and "2026-03-11" in out
+    assert world.s3.puts == [day_key(FULL_A)]
+    assert ("bucket-sekret", day_key(FULL_A2)) not in world.s3.objects
+    assert not world.runs.exists()  # no record of a run that did not finish
+
+
+@pytest.mark.parametrize(
+    ("now", "allow", "code"),
+    [
+        (ct(TUESDAY, "10:00:00"), False, 3),
+        (ct(TUESDAY, "10:00:00"), True, 0),
+        (IN_THE_NIGHTLY_WINDOW, True, 3),
+    ],
+)
+def test_export_per_day_refuses_the_windows_at_the_start(
+    world: World, now: datetime, allow: bool, code: int
+):
+    world.tape(FULL_A, fires(FULL_A, ("15:00:00", chain("SPY", "C", 670, FULL_A))))
+    world.clock = lambda: now
+    extra = ["--allow-market-hours"] if allow else []
+
+    got, out = world.run(
+        "export", "--per-day", "--from", "2026-03-10", "--to", "2026-03-10", *extra
+    )
+
+    assert got == code, out
+    if code == 3:
+        assert ("07:15" in out) or ("08:15" in out)
+        # Refused at the start, before any tape is opened, not after the first replay.
+        assert world.tape_connections == 0
+        assert world.s3.puts == [] and not world.runs.exists()
+    else:
+        assert world.s3.puts == [day_key(FULL_A)]
+
+
+def test_export_per_day_flags_a_day_that_fired_nothing(world: World):
+    world.tape(FULL_A, [])  # a tape with a kept print and no alert
+
+    code, out, run = per_day(world, FULL_A)
+
+    # A zero-row file is written, so "no alerts" and "not written" stay apart, but it is a
+    # fault (every session fires at least 19): the run says so and exits 1.
+    assert code == 1
+    assert "FLAG" in out and "2026-03-10" in out and "no alerts" in out
+    table, _ = stored_day(world, FULL_A)
+    assert table.num_rows == 0
+    assert json.loads(table.schema.metadata[b"interval_ba"])["rows"] == 0
+    assert (run / "export.json").exists()
+
+
+def test_export_per_day_stops_on_a_day_it_cannot_replay(world: World):
+    export_days(world)
+    write_tape(Path(world.tapes["2026-03-11"]), [filler(FULL_A)])  # holds no 03-11 row
+
+    code, out = world.run("export", "--per-day", "--from", "2026-03-10", "--to", "2026-03-11")
+
+    assert code == 1
+    assert "2026-03-11" in out and "ValueError" in out
+    # The day before it is written; running again over both resumes, as every put overwrites.
+    assert world.s3.puts == [day_key(FULL_A)]
+    assert not world.runs.exists()
+
+
+def test_export_per_day_names_a_failed_put_by_its_class_alone(world: World):
+    export_days(world)
+    world.s3.fail["put_object"] = ClientError(
+        {"Error": {"Code": "403", "Message": "Forbidden for bucket-sekret"}}, "PutObject"
+    )
+
+    code, out = world.run("export", "--per-day", "--from", "2026-03-10", "--to", "2026-03-10")
+
+    assert code == 1
+    assert "ClientError" in out and "Forbidden" not in out and "bucket-sekret" not in out
+    assert world.s3.puts == [] and not world.runs.exists()
+
+
+@pytest.mark.parametrize(
+    ("tamper", "named"), [({"ETag": '"0123"'}, "ETag"), ({"ContentLength": 1}, "size")]
+)
+def test_export_per_day_upload_that_does_not_verify_stops(
+    world: World, tamper: dict[str, Any], named: str
+):
+    export_days(world)
+    world.s3.tamper = tamper
+
+    code, out = world.run("export", "--per-day", "--from", "2026-03-10", "--to", "2026-03-11")
+
+    assert code == 1
+    assert "R2" in out and named in out and "2026-03-10" in out
+    assert world.s3.puts == [day_key(FULL_A)]  # stopped at the first day
+    assert not world.runs.exists()
+
+
+# The replay module the tool loads, as a checkout holds it: an `origin` and a clone with its
+# `origin/main`. The guard reads git, so these are real repositories in tmp_path.
+_GIT = ("git", "-c", "user.name=Test", "-c", "user.email=test@example.com")
+_MODULE_RELATIVE = "nightly/src/interval_ba_replay.py"
+
+
+def git(repo: Path, *args: str) -> None:
+    subprocess.run([*_GIT, "-C", str(repo), *args], check=True, capture_output=True)
+
+
+@dataclass
+class Checkout:
+    tmp: Path
+    origin: Path
+    repo: Path
+    module: Path
+
+
+@pytest.fixture
+def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Checkout:
+    origin, repo = tmp_path / "origin.git", tmp_path / "repo"
+    subprocess.run(
+        [*_GIT, "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True
+    )
+    repo.mkdir()
+    git(repo, "init", "-b", "main")
+    module = repo / _MODULE_RELATIVE
+    module.parent.mkdir(parents=True)
+    module.write_bytes(b"REPLAY_VERSION = '1'\n")
+    git(repo, "add", "--", _MODULE_RELATIVE)
+    git(repo, "commit", "-m", "the replay module")
+    git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "origin", "main")
+    monkeypatch.setattr(runs, "REPO_ROOT", repo)
+    monkeypatch.setattr(runs, "MODULE_PATH", module)
+    return Checkout(tmp_path, origin, repo, module)
+
+
+def _edit(c: Checkout) -> None:
+    c.module.write_bytes(b"REPLAY_VERSION = '2'\n")
+
+
+def _stage(c: Checkout) -> None:
+    _edit(c)
+    git(c.repo, "add", "--", _MODULE_RELATIVE)
+
+
+def _commit(c: Checkout) -> None:
+    _stage(c)
+    git(c.repo, "commit", "-m", "a local change nobody pushed")
+
+
+def _origin_moved_on(c: Checkout) -> None:
+    other = c.tmp / "other"
+    subprocess.run(
+        [*_GIT, "clone", "--quiet", str(c.origin), str(other)], check=True, capture_output=True
+    )
+    (other / _MODULE_RELATIVE).write_bytes(b"REPLAY_VERSION = '3'\n")
+    git(other, "commit", "-a", "-m", "the deployed module moved on")
+    git(other, "push", "origin", "main")
+
+
+def _no_origin(c: Checkout) -> None:
+    git(c.repo, "remote", "remove", "origin")
+
+
+@pytest.mark.parametrize(
+    ("change", "refused"),
+    [
+        pytest.param(lambda c: None, None, id="clean"),
+        pytest.param(_edit, "uncommitted", id="an uncommitted edit"),
+        pytest.param(_stage, "uncommitted", id="a staged edit"),
+        pytest.param(_commit, "not origin/main's", id="a commit that is not on origin/main"),
+        pytest.param(_origin_moved_on, "not origin/main's", id="an origin/main that moved on"),
+        pytest.param(_no_origin, "fetch", id="no origin to fetch"),
+    ],
+)
+def test_a_per_day_write_refuses_unless_the_replay_module_is_origin_mains(
+    world: World,
+    checkout: Checkout,
+    monkeypatch: pytest.MonkeyPatch,
+    change: Callable[[Checkout], None],
+    refused: str | None,
+):
+    export_days(world)
+    monkeypatch.setattr(runs, "refuse_unless_deployed_code", REAL_DEPLOYED_CODE_GUARD)
+    change(checkout)
+
+    code, out = world.run("export", "--per-day", "--from", "2026-03-10", "--to", "2026-03-10")
+
+    if refused is None:
+        assert code == 0, out
+        assert world.s3.puts == [day_key(FULL_A)]
+        return
+    assert code == 3, out
+    assert refused in out and "checkout at origin/main" in out
+    # Refused before any tape is opened or object put.
+    assert world.tape_connections == 0 and world.s3.puts == [] and not world.runs.exists()
+
+
 # --- undo -------------------------------------------------------------------------------------
 
 
@@ -2669,6 +2995,9 @@ def test_heal_export_and_undo_never_print_secrets(world: World):
     assert code == 0, out
     export_days(world)
     code, out, _ = world.dry_run(FULL_A, FULL_A2, command="export")
+    outputs.append(out)
+    assert code == 0, out
+    code, out, _ = per_day(world, FULL_A, FULL_A2)
     outputs.append(out)
     assert code == 0, out
 

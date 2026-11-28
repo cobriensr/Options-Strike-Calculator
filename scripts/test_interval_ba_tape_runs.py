@@ -8,6 +8,7 @@ scripts/test_interval_ba_tape.py. Run from the repo root with ml/.venv:
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import interval_ba_tape_runs as runs
@@ -78,10 +79,50 @@ def test_code_blobs_cover_every_file_of_the_tool():
     assert set(blobs["tool_blobs"]) == set(runs.TOOL_FILES)
     for name, path in runs.TOOL_FILES.items():
         assert path.is_file() and path.as_posix().endswith(name)
-    # A new file of the tool beside these is hashed only once it is listed.
+    # A new file of the tool beside these is hashed only once it is listed. The calendar it
+    # loads by path from nightly decides which days a range holds, so it is listed too.
     beside = {path.name for path in Path(runs.__file__).parent.glob("interval_ba_tape*.py")}
-    assert beside == {Path(name).name for name in runs.TOOL_FILES}
+    assert {Path(name).name for name in runs.TOOL_FILES} == beside | {"calendar_nyse.py"}
+    assert "nightly/src/calendar_nyse.py" in runs.TOOL_FILES
     assert blobs["module_blob"] == runs.blob_hash(runs.MODULE_PATH)
+
+
+def test_trading_days_follow_the_nightly_calendar_past_2026():
+    # 2027: New Year's Day (Fri 01-01) and Martin Luther King Jr. Day (Mon 01-18) are closed.
+    assert runs.trading_days(date(2026, 12, 30), date(2027, 1, 5)) == [
+        date(2026, 12, 30),
+        date(2026, 12, 31),
+        date(2027, 1, 4),
+        date(2027, 1, 5),
+    ]
+    assert runs.trading_days(date(2027, 1, 15), date(2027, 1, 19)) == [
+        date(2027, 1, 15),
+        date(2027, 1, 19),
+    ]
+    # 2025 was refused by the old 2026-only table; Thanksgiving (11-27) is closed.
+    assert runs.trading_days(date(2025, 11, 26), date(2025, 11, 28)) == [
+        date(2025, 11, 26),
+        date(2025, 11, 28),
+    ]
+    # 2026 as the old table had it: Thanksgiving, the Friday after, a Saturday.
+    assert runs.trading_days(date(2026, 11, 25), date(2026, 11, 30)) == [
+        date(2026, 11, 25),
+        date(2026, 11, 27),
+        date(2026, 11, 30),
+    ]
+    # It is nightly's module, loaded by its path, and not a copy.
+    assert Path(runs.calendar_nyse.__file__).resolve() == runs.CALENDAR_PATH.resolve()
+    assert runs.CALENDAR_PATH == runs.REPO_ROOT / "nightly" / "src" / "calendar_nyse.py"
+
+
+def test_trading_days_name_a_range_the_calendar_does_not_cover_or_that_runs_backwards():
+    # Past the table (2025-2028) the calendar raises rather than guess a holiday.
+    with pytest.raises(runs.UsageError, match="2029"):
+        runs.trading_days(date(2029, 1, 2), date(2029, 1, 3))
+    with pytest.raises(runs.UsageError, match="2024"):
+        runs.trading_days(date(2024, 12, 30), date(2025, 1, 3))
+    with pytest.raises(runs.UsageError, match="--from 2026-03-11 is after --to 2026-03-10"):
+        runs.trading_days(date(2026, 3, 11), date(2026, 3, 10))
 
 
 def test_blob_hash_is_gits(tmp_path: Path):

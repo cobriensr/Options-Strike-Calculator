@@ -2,8 +2,11 @@
 
 The tool's modes (verify, rebuild, heal, export and undo) share what is here:
 
-- loading the replay module nightly/src/interval_ba_replay.py by its path;
-- the refusal windows and the 2026 trading calendar;
+- loading the replay module nightly/src/interval_ba_replay.py and the trading calendar
+  nightly/src/calendar_nyse.py, each by its path;
+- the refusal windows and the trading calendar;
+- the deployed-code guard: a write of replay day files runs only when the replay module is the
+  one on origin/main, which is the code the nightly job runs;
 - output that never shows a secret, the env file, and the Neon, DuckDB and R2 connections;
 - run folders, plans, blob hashes, the per-day `.applied` and `.undone` markers;
 - the verified backup, local and in R2, and a verified R2 put for any object;
@@ -32,12 +35,13 @@ import itertools
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
@@ -55,11 +59,14 @@ from urllib3.exceptions import InsecureRequestWarning
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "nightly" / "src" / "interval_ba_replay.py"
+CALENDAR_PATH = REPO_ROOT / "nightly" / "src" / "calendar_nyse.py"
 # Every file of the tool, by its repo path. plan.json records each one's blob hash, and an apply
-# refuses when any of them, or the replay module, changed since the dry run.
+# refuses when any of them, or the replay module, changed since the dry run. The calendar is the
+# tool's too: it decides which days a range holds.
 TOOL_FILES: dict[str, Path] = {
     "scripts/interval_ba_tape.py": REPO_ROOT / "scripts" / "interval_ba_tape.py",
     "scripts/interval_ba_tape_runs.py": Path(__file__).resolve(),
+    "nightly/src/calendar_nyse.py": CALENDAR_PATH,
 }
 RUNS_DIR = REPO_ROOT / "docs" / "tmp" / "interval-ba-rebuild"
 
@@ -73,17 +80,16 @@ from anchor_backfill_extract import parse_env_file, resolve_env_file  # noqa: E4
 from utils.r2 import fulltape_connection, r2_url  # noqa: E402
 
 
-def _load_replay_module() -> ModuleType:
-    """nightly/src/interval_ba_replay.py, by its path. nightly/src never goes on sys.path: its
-    other modules would shadow this suite's. The module is registered under its name before it
-    runs, because @dataclass under `from __future__ import annotations` looks it up there."""
-    name = "interval_ba_replay"
+def _load_nightly_module(name: str, path: Path) -> ModuleType:
+    """A module of nightly/src, by its path. nightly/src never goes on sys.path: its other
+    modules would shadow this suite's. The module is registered under its name before it runs,
+    because @dataclass under `from __future__ import annotations` looks it up there."""
     loaded = sys.modules.get(name)
-    if loaded is not None and Path(loaded.__file__ or "").resolve() == MODULE_PATH.resolve():
+    if loaded is not None and Path(loaded.__file__ or "").resolve() == path.resolve():
         return loaded
-    spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {MODULE_PATH}")
+        raise ImportError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     try:
@@ -94,7 +100,10 @@ def _load_replay_module() -> ModuleType:
     return module
 
 
-ibr = _load_replay_module()
+ibr = _load_nightly_module("interval_ba_replay", MODULE_PATH)
+# The calendar the nightly job plans its days with. Standard library only, so the tool takes
+# nothing else of nightly.
+calendar_nyse = _load_nightly_module("calendar_nyse", CALENDAR_PATH)
 
 
 class UsageError(Exception):
@@ -120,25 +129,6 @@ CT = ZoneInfo("America/Chicago")
 # Refusal windows: weekdays in CT, every day in UTC (the nightly run).
 _MARKET_START, _MARKET_END = time(8, 15), time(16, 0)
 _NIGHTLY_START, _NIGHTLY_END = time(7, 15), time(12, 30)
-
-# NYSE full-day closures in 2026, copied from MARKET_CLOSED_DATES in src/data/marketHours.ts.
-# The tool covers 2026 only and refuses other years.
-_CLOSED_2026 = frozenset(
-    date.fromisoformat(day)
-    for day in (
-        "2026-01-01",
-        "2026-01-19",
-        "2026-02-16",
-        "2026-04-03",
-        "2026-05-25",
-        "2026-06-19",
-        "2026-07-03",
-        "2026-09-07",
-        "2026-11-26",
-        "2026-12-25",
-    )
-)
-_CALENDAR_YEAR = 2026
 
 
 def utc_now() -> datetime:
@@ -177,17 +167,14 @@ def refuse_in_window(allow_market_hours: bool, label: str = "") -> None:
 
 
 def trading_days(start: date, end: date) -> list[date]:
-    """The NYSE trading days from start to end, both included."""
+    """The NYSE trading days from start to end, both included, by nightly's calendar. A range
+    past the years its holiday table covers is a bad argument: it refuses to guess a holiday."""
     if start > end:
         raise UsageError(f"--from {start} is after --to {end}")
-    if start.year != _CALENDAR_YEAR or end.year != _CALENDAR_YEAR:
-        raise UsageError(f"the tool's holiday table covers {_CALENDAR_YEAR} only")
-    days, day = [], start
-    while day <= end:
-        if day.weekday() < 5 and day not in _CLOSED_2026:
-            days.append(day)
-        day += timedelta(days=1)
-    return days
+    try:
+        return calendar_nyse.trading_days(start, end)
+    except calendar_nyse.CalendarExhausted as exc:
+        raise UsageError(str(exc)) from None
 
 
 # --- Output -----------------------------------------------------------------------------------
@@ -410,6 +397,75 @@ def check_code_blobs(plan: dict[str, Any]) -> None:
         raise RefusedError(
             f"{', '.join(changed)}: the blob hash is not the plan's: the tool changed since the"
             " dry run. Run a new one"
+        )
+
+
+# --- The deployed-code guard ------------------------------------------------------------------
+
+_DEPLOYED_REMOTE, _DEPLOYED_BRANCH = "origin", "main"
+_DEPLOYED_REF = f"{_DEPLOYED_REMOTE}/{_DEPLOYED_BRANCH}"
+_GIT_TIMEOUT_SECONDS = 60
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    """`git -C <repo> <args>` with its output captured, never stopping to ask for credentials.
+    Its own output is not shown by callers: a remote's URL can carry them."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(REPO_ROOT), *args],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            check=False,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RefusedError(
+            f"git did not run ({type(exc).__name__}), so the replay module cannot be checked"
+            f" against {_DEPLOYED_REF}"
+        ) from None
+
+
+def refuse_unless_deployed_code() -> None:
+    """Refuse (RefusedError) unless the replay module is the code the nightly job runs: no
+    uncommitted change to it, and its git blob the one `origin/main` holds (replay-days spec,
+    "Deployed code only").
+
+    Every write of a replay day file runs this first. A work-in-progress change to what
+    `replay_day` outputs, without a `REPLAY_VERSION` bump, would pass the readers' rule check
+    and stay in R2 for good. `origin/main` is fetched first, so a stale remote-tracking branch
+    cannot pass a module the nightly job no longer runs. The blob is git's own
+    (`git hash-object`), not a hash of the bytes on disk, so a checkout's line-ending
+    conversion does not count as a change.
+    """
+    rel = MODULE_PATH.relative_to(REPO_ROOT).as_posix()
+    hint = f"Run from a checkout at {_DEPLOYED_REF}."
+    fetch = _git(
+        "fetch",
+        "--quiet",
+        _DEPLOYED_REMOTE,
+        f"+refs/heads/{_DEPLOYED_BRANCH}:refs/remotes/{_DEPLOYED_REF}",
+    )
+    if fetch.returncode != 0:
+        raise RefusedError(
+            f"git fetch {_DEPLOYED_REMOTE} {_DEPLOYED_BRANCH} failed (exit {fetch.returncode}),"
+            f" so {rel} cannot be checked against {_DEPLOYED_REF}. {hint}"
+        )
+    status = _git("status", "--porcelain", "--untracked-files=all", "--", rel)
+    if status.returncode != 0:
+        raise RefusedError(f"git status failed (exit {status.returncode}) on {rel}. {hint}")
+    if status.stdout.strip():
+        raise RefusedError(
+            f"{rel} has an uncommitted change, so it is not the deployed code. {hint}"
+        )
+    local = _git("hash-object", "--", rel)
+    deployed = _git("rev-parse", "--verify", "--quiet", f"{_DEPLOYED_REF}:{rel}")
+    if local.returncode != 0 or deployed.returncode != 0:
+        raise RefusedError(f"{rel} cannot be read, here or at {_DEPLOYED_REF}. {hint}")
+    if local.stdout.strip() != deployed.stdout.strip():
+        raise RefusedError(
+            f"{rel} is not {_DEPLOYED_REF}'s (blob {local.stdout.strip()[:12]}, deployed"
+            f" {deployed.stdout.strip()[:12]}): the nightly job runs {_DEPLOYED_REF}'s. {hint}"
         )
 
 

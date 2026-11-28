@@ -82,9 +82,12 @@ jobs:
               # zero_gamma_levels table's CREATE out of this file.
               - 'api/_lib/db-migrations.ts'
               # scripts/test_interval_ba_tape.py loads the tape replay module by
-              # path (scripts/interval_ba_tape.py runs in ml/.venv), so an edit
-              # to it must run this job (nightly/** alone starts only nightly).
+              # path (scripts/interval_ba_tape.py runs in ml/.venv), and so does
+              # scripts/interval_ba_tape_runs.py with nightly's trading calendar,
+              # so an edit to either must run this job (nightly/** alone starts
+              # only nightly).
               - 'nightly/src/interval_ba_replay.py'
+              - 'nightly/src/calendar_nyse.py'
               # ml/tests/test_anchor_backfill_extract.py reads the multileg
               # trade codes out of this file.
               - 'api/_lib/multileg-codes.ts'
@@ -320,6 +323,16 @@ jobs:
       # write mode, which would repair drift on the runner and pass.
       - name: Format check
         run: cd ml && python -m ruff format --check .
+
+      # The loopback S3 tests in scripts/ (s3_connection in
+      # scripts/_ba_test_support.py) LOAD DuckDB's httpfs extension with
+      # autoinstall off and skip when it is missing, which on a fresh runner
+      # is every time. This installs it, so the real-HTTP checks run here. It
+      # reaches the extension host now, not during the test run, and DuckDB
+      # loads only signed extensions unless told otherwise. No secret is in
+      # the step.
+      - name: Install DuckDB httpfs
+        run: python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
 
       # The root scripts/ tests carry their own copy of the no-database guard
       # (scripts/conftest.py), and nothing else in CI runs it.

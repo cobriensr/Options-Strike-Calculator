@@ -1,8 +1,10 @@
 """Interval B/A history from the UW Full Tape: compare it with the table, rebuild the days the
 live feed never covered, heal the live days, export the full-year replay, and undo a run.
 
-Spec: docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md, sections 6.4 and 6.5.
-The detector is the shared replay module nightly/src/interval_ba_replay.py, loaded by its path.
+Spec: docs/superpowers/specs/2026-11-24-interval-ba-rebuild-design.md, sections 6.4 and 6.5;
+export --per-day: docs/superpowers/specs/2026-11-26-interval-ba-replay-days-design.md.
+The detector is the shared replay module nightly/src/interval_ba_replay.py, and the trading
+calendar is nightly's nightly/src/calendar_nyse.py (2025 to 2028), each loaded by its path.
 The tape is read from R2 through DuckDB's httpfs (ml/src/utils/r2.py); the table is production
 Neon. The mode-agnostic machinery (connections, windows, run folders, the backup, verified R2
 puts and the apply driver) is in interval_ba_tape_runs.py beside this file; this file holds the
@@ -16,7 +18,9 @@ Modes:
   only the rebuild's window (below) against the day's replay rows. Prints a per-day table and
   each differing row. Exit 0 when every day matches, 1 when any differs.
 - `rebuild [--from D --to D]`: a dry run of the delete-and-insert over the days with no live
-  rows (spec 5.1). Writes a run folder with the plan and changes nothing.
+  rows (spec 5.1). Writes a run folder with the plan and changes nothing. With neither --from
+  nor --to it works every rebuild day (the two ranges and the two edge days, below) and never a
+  live day; a range that holds a live day is refused.
 - `rebuild --apply --run <folder> --expect-delete N --expect-insert N`: applies that plan.
 - `heal --from D --to D [--assume-default-settings]`: a dry run of heal_day (spec 6.4) over the
   live days, 2026-05-13 on; it refuses an earlier day. It fixes the two flags and a blank SPXW
@@ -37,6 +41,17 @@ Modes:
   (the constants and the replay version, `ibr.rule()`); the object's also sha256 and rows. The
   table is built by the replay module (`ibr.export_table`), as the nightly step builds each
   session's day file.
+- `export --per-day --from D --to D`: the same replay, written as one file per session, the
+  files the nightly step writes (the replay-days spec): R2 `research/interval-ba/replay/
+  <day>.parquet`, built by the replay module (`ibr.export_table`, footer `ibr.day_meta`), put and
+  checked. It overwrites, because a day file is an output that a re-run rewrites; it does not
+  look at the snapshot's key. It never touches Neon. It is `write_replay_days(days, *,
+  allow_market_hours)`, which the studies' readers also call to repair a missing or stale day.
+  Every such write refuses unless nightly/src/interval_ba_replay.py has no uncommitted change
+  and is the blob origin/main holds (fetched first), because that is the code the nightly job
+  runs: run it from a checkout at origin/main. A run's record is export.json in a run folder
+  (the day, key, rows, size and sha256 of each file). A day that fired no alerts still gets its
+  zero-row file, and the run ends 1 and names it.
 - `undo --run <folder>`: puts a rebuild or heal run's days back to its backup: the days marked
   `.applied`, and those whose rows equal the plan's end state. A rebuild day's replay rows
   become the backup's, ids and all. A heal day's inserts are deleted (only rows the backup never
@@ -88,7 +103,8 @@ Any failed day stops the run; the days before it keep their markers, so a rerun 
 
 Refusal windows, for every mode but verify: weekdays 08:15 to 16:00 CT (`--allow-market-hours`
 overrides it, for a market holiday) and every day 07:15 to 12:30 UTC, the nightly run. An apply
-and an undo check them again before each day's write.
+and an undo check them again before each day's write, and export --per-day before each day's
+put.
 
 Secrets: DATABASE_URL and the four R2_* names come from --env-file, else this checkout's
 .env.local, else the main checkout's. No value is ever printed; every line of output is
@@ -109,6 +125,8 @@ Usage, from the repo root, with ml/.venv (Windows):
         --expect-flags N --expect-spot N
     ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py export \\
         --from 2026-01-02 --to 2026-11-24
+    ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py export --per-day \\
+        --from 2026-01-02 --to 2026-11-24
     ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py undo \\
         --run docs/tmp/interval-ba-rebuild/<stamp>-heal
 
@@ -120,6 +138,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import io
 import json
 import sys
 import traceback
@@ -188,8 +207,12 @@ REBUILD_DAYS: tuple[date, ...] = tuple(
 
 
 def rebuild_days(start: date | None, end: date | None) -> list[date]:
-    """The trading days from start to end (the whole list by default). Refuses a range that
-    holds any day outside the rebuild's list."""
+    """The rebuild's own days, all of them, when no range is given: its two ranges and its two
+    edge days, which the live days between them are not part of. A range, even one end of it,
+    is the trading days from start to end (a missing end is the list's first or last day), and
+    it is refused when it holds any day outside the rebuild's list."""
+    if start is None and end is None:
+        return list(REBUILD_DAYS)
     days = runs.trading_days(start or REBUILD_DAYS[0], end or REBUILD_DAYS[-1])
     outside = [day for day in days if rebuild_kind(day) is None]
     if outside:
@@ -1361,6 +1384,10 @@ def _refuse_overwrite(r2: runs.R2Bucket, key: str) -> None:
 
 
 def _export(args: argparse.Namespace, out: runs.Output) -> int:
+    return _export_per_day(args, out) if args.per_day else _export_snapshot(args, out)
+
+
+def _export_snapshot(args: argparse.Namespace, out: runs.Output) -> int:
     """Read-only for Neon: it never connects. Replays every day with today's rule and writes
     the alerts to the run folder and to R2, verified."""
     days = runs.trading_days(args.start, args.end)
@@ -1435,6 +1462,144 @@ def _export(args: argparse.Namespace, out: runs.Output) -> int:
         },
     )
     out.say(f"export: {rows} alerts over {len(days)} days in {path}; R2 copy {key}, verified")
+    return 0
+
+
+# --- export --per-day: one replay file per session, the files the nightly step writes ---------
+
+_PARQUET = "application/vnd.apache.parquet"
+
+
+@dataclass(frozen=True)
+class DayFile:
+    """One day file as put and checked: its day and key, its alert count, its size and sha256,
+    and the kept tape rows whose underlying_symbol was not their OCC root."""
+
+    day: date
+    key: str
+    rows: int
+    size: int
+    sha256: str
+    root_label_mismatch: int
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "day": self.day.isoformat(),
+            "key": self.key,
+            "rows": self.rows,
+            "bytes": self.size,
+            "sha256": self.sha256,
+            "root_label_mismatch": self.root_label_mismatch,
+        }
+
+
+def _put_day_file(r2: runs.R2Bucket, replay: Any) -> DayFile:
+    """The replay as its day's file: the replay module's table and footer, as the nightly step
+    builds them, put to the day's key and checked (size and ETag). An existing object is
+    overwritten, because a day file is an output that a re-run rewrites. The nightly step's put
+    sets no object metadata, so this one sets none: the footer holds the day, rows, rule and
+    time."""
+    meta = ibr.day_meta(replay.day, len(replay.alerts), runs.utc_now())
+    buffer = io.BytesIO()
+    pq.write_table(ibr.export_table(replay.alerts, meta), buffer)
+    body = buffer.getvalue()
+    key = ibr.day_key(replay.day)
+    runs.put_verified(r2, key, body, {}, content_type=_PARQUET, what="day file")
+    return DayFile(
+        replay.day,
+        key,
+        len(replay.alerts),
+        len(body),
+        hashlib.sha256(body).hexdigest(),
+        replay.root_label_mismatch,
+    )
+
+
+def write_replay_days(
+    days: Sequence[date],
+    *,
+    allow_market_hours: bool,
+    env_file: str | None = None,
+    out: runs.Output | None = None,
+) -> list[DayFile]:
+    """Replay each of `days` from its tape and write it as its day's file in R2,
+    `research/interval-ba/replay/{day}.parquet`, the file the nightly step writes. The caller
+    gives the trading days; a failed day stops the run, and the days before it keep their
+    files, so running again over the same days resumes.
+
+    It never touches Neon, and it overwrites. It refuses (RefusedError) when:
+    - the replay module is not the one on origin/main, which is the code the nightly job runs
+      (`runs.refuse_unless_deployed_code`);
+    - a refusal window is open at the start, and again before each day's put: a run of many
+      minutes must not write into the nightly window, where the step may rewrite a re-landed
+      day and a late put of this run would bring back the old tape's file.
+
+    `allow_market_hours` lifts the market-hours window only, as for the other writing modes.
+    The readers' repair calls this with it set: it writes research files, never Neon.
+    """
+    if not days:
+        return []
+    out = out or runs.Output()
+    runs.refuse_unless_deployed_code()
+    runs.refuse_in_window(allow_market_hours)
+    env = runs.load_env(env_file)
+    out.hide(env)
+    r2 = runs.r2_bucket(env)
+    written: list[DayFile] = []
+    con = runs.tape_connection()
+    try:
+        for day in days:
+            with runs.stops_at(out, day):
+                replay = ibr.replay_day(con, runs.tape_url(day), day)
+                runs.refuse_in_window(allow_market_hours, f"{day}: ")  # the replay took a while
+                done = _put_day_file(r2, replay)
+            written.append(done)
+            out.say(f"{day}: {done.rows} alerts, {done.size} bytes, {done.key}")
+    finally:
+        con.close()
+    return written
+
+
+def _export_per_day(args: argparse.Namespace, out: runs.Output) -> int:
+    """`export --per-day`: write_replay_days over the range's trading days, then a record of
+    the run. A day that fired no alerts still has its zero-row file, but it is a fault (no
+    session has fired fewer than 19), so the run ends 1 and names it."""
+    days = runs.trading_days(args.start, args.end)
+    if not days:
+        raise UsageError("no trading day in that range")
+    written = write_replay_days(
+        days, allow_market_hours=args.allow_market_hours, env_file=args.env_file, out=out
+    )
+    blobs = runs.code_blobs()
+    run = runs.new_run("export-days")
+    rows = sum(done.rows for done in written)
+    runs.write_json(
+        run / "export.json",
+        {
+            "per_day": True,
+            "from": args.start.isoformat(),
+            "to": args.end.isoformat(),
+            "rows": rows,
+            "module_blob": blobs["module_blob"],
+            "tool_blobs": blobs["tool_blobs"],
+            "rule": ibr.rule(),
+            "days": [done.to_json() for done in written],
+            "exported_at": runs.utc_now().isoformat(),
+        },
+    )
+    out.say(
+        f"export --per-day: {rows} alerts in {len(written)} day files under"
+        f" {ibr.REPLAY_DAYS_PREFIX}, each put and checked; record {run / 'export.json'}"
+    )
+    empty = [done.day.isoformat() for done in written if done.rows == 0]
+    if empty:
+        out.say(
+            f"FLAG: {', '.join(empty)} fired no alerts, and a zero-row file was written for"
+            " each. Every session fires at least 19, so the replay or the tape read is at fault:"
+            " fix the cause, then write the day again with export --per-day",
+            err=True,
+        )
+        return 1
     return 0
 
 
@@ -1941,6 +2106,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     export.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
     export.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
+    export.add_argument(
+        "--per-day",
+        action="store_true",
+        help="write one file per day, research/interval-ba/replay/<day>.parquet, as the nightly"
+        " step does, overwriting; only from a checkout at origin/main",
+    )
     export.set_defaults(handler=_export)
 
     undo = commands.add_parser(
