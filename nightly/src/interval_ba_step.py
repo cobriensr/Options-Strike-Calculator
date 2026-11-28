@@ -102,12 +102,12 @@ from interval_ba_replay import (
     INSERT_MISSED_FROM,
     DayPlan,
     day_key,
+    day_meta,
     default_settings,
     export_table,
     heal_day,
     read_covering_settings,
     replay_day,
-    rule,
 )
 from research_store import ResearchStore
 from resources import connect_db, open_reader
@@ -306,12 +306,7 @@ def _put_day_file(ctx: StepContext, store: ResearchStore, replay: Replay) -> Non
     """
     day = replay.day
     path = INTERVAL_BA_CACHE_DIR / f"replay-{day.isoformat()}.parquet"
-    meta = {
-        "day": day.isoformat(),
-        "rows": len(replay.alerts),
-        "rule": rule(),
-        "created_at": ctx.now_utc.isoformat(),
-    }
+    meta = day_meta(day, len(replay.alerts), ctx.now_utc)
     try:
         pq.write_table(export_table(replay.alerts, meta), path)
         store.put_file(day_key(day), path)

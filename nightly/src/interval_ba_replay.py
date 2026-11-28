@@ -216,6 +216,18 @@ def rule() -> dict[str, str]:
     }
 
 
+def day_meta(day: date, rows: int, created_at: datetime) -> dict[str, Any]:
+    """The `interval_ba` footer of `day`'s file, for `export_table`: the day, its row count, the
+    rule and when the file was made. One builder for both writers (the nightly step and the
+    one-off tool), so two files of one rule never differ in the footer a reader checks."""
+    return {
+        "day": day.isoformat(),
+        "rows": rows,
+        "rule": rule(),
+        "created_at": created_at.isoformat(),
+    }
+
+
 def _epoch_us(at: datetime) -> int:
     return (at - _EPOCH) // timedelta(microseconds=1)
 

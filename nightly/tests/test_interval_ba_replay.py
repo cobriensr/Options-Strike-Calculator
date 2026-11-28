@@ -42,6 +42,7 @@ from interval_ba_replay import (
     Replay,
     TapeAlert,
     day_key,
+    day_meta,
     export_table,
     insert_alerts,
     replay_day,
@@ -1043,6 +1044,24 @@ def test_day_key_is_the_session_date():
     assert day_key(date(2026, 1, 2)) == "research/interval-ba/replay/2026-01-02.parquet"
     # The snapshot's keys (research/interval-ba/replay-<end>.parquet) are not under the prefix.
     assert not "research/interval-ba/replay-2026-11-25.parquet".startswith(REPLAY_DAYS_PREFIX)
+
+
+@pytest.mark.parametrize("rows", [0, 71])
+def test_day_meta_is_the_day_files_footer(rows):
+    created = datetime(2026, 11, 28, 7, 20, 15, tzinfo=UTC)
+
+    meta = day_meta(date(2026, 11, 25), rows, created)
+
+    assert meta == {
+        "day": "2026-11-25",
+        "rows": rows,
+        "rule": rule(),
+        "created_at": "2026-11-28T07:20:15+00:00",
+    }
+    # The one dict both writers (the nightly step and the one-off tool) give `export_table`: it
+    # reads back from the file's footer as written, and a reader's rule check sees `rule()`.
+    footer = export_table((), meta).schema.metadata[b"interval_ba"]
+    assert json.loads(footer) == meta
 
 
 def test_replay_day_sets_the_day_on_its_replay(tmp_path, layout, con):
