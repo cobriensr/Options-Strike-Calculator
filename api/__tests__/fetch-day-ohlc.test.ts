@@ -93,10 +93,12 @@ describe('fetch-day-ohlc handler', () => {
     process.env = originalEnv;
   });
 
-  it('bails when cronGuard rejects', async () => {
+  it('bails when cronGuard rejects, ?date= or not', async () => {
     vi.mocked(cronGuard).mockReturnValue(null);
     const res = mockResponse();
-    await handler(makeCronReq(), res);
+    // A valid past date: were it acted on before the guard, the read below
+    // would be called with it.
+    await handler(makeCronReq({ date: '2026-04-14' }), res);
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockedReadOhlcPg).not.toHaveBeenCalled();
     expect(mockSql).not.toHaveBeenCalled();

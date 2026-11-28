@@ -62,6 +62,9 @@ import {
   type CronContext,
 } from '../_lib/cron-instrumentation.js';
 
+/** The cron's name: its check-in, its error prefixes and its log lines. */
+const JOB = 'fetch-day-ohlc';
+
 /**
  * Skip a trading day the feed failed on, loudly: warn log, metric and a
  * Sentry warning (the 07-23 → 09-07 SPX hole went unseen for six weeks
@@ -72,9 +75,9 @@ function feedFailureSkip(
   reason: 'no_bars' | 'incomplete_day',
   detail: { targetDate: string; barCount: number; expectedBars: number },
 ): CronResult {
-  logger.warn(detail, `fetch-day-ohlc: ${reason}, not labelling`);
+  logger.warn(detail, `${JOB}: ${reason}, not labelling`);
   metrics.increment(`fetch_day_ohlc.${reason}`);
-  Sentry.captureMessage(`fetch-day-ohlc: ${reason}, day not labelled`, {
+  Sentry.captureMessage(`${JOB}: ${reason}, day not labelled`, {
     level: 'warning',
     extra: detail,
   });
@@ -86,7 +89,7 @@ function feedFailureSkip(
 }
 
 export default withCronInstrumentation(
-  'fetch-day-ohlc',
+  JOB,
   async (ctx): Promise<CronResult> => {
     const { logger } = ctx;
     // ctx.today is the ET date; a 6 PM CT run is still "today" in ET.
@@ -94,16 +97,13 @@ export default withCronInstrumentation(
       ctx.req?.query.date,
       ctx.today,
       priorTradingDay,
-      'fetch-day-ohlc',
+      JOB,
     );
     // The schedule only ever targets a trading day. A `?date=` can name a
     // weekend or a holiday, which has no bars because it has no session:
     // not a feed failure, so no warning.
     if (!isTradingDay(targetDate)) {
-      logger.info(
-        { targetDate },
-        'fetch-day-ohlc: target is not a trading day',
-      );
+      logger.info({ targetDate }, `${JOB}: target is not a trading day`);
       metrics.increment('fetch_day_ohlc.not_trading_day');
       return {
         status: 'skipped',
@@ -170,7 +170,7 @@ export default withCronInstrumentation(
       // the alert. A later run targets a later day and won't revisit.
       logger.info(
         { targetDate },
-        'fetch-day-ohlc: no day_embeddings row for target date',
+        `${JOB}: no day_embeddings row for target date`,
       );
       return {
         status: 'skipped',
@@ -197,7 +197,7 @@ export default withCronInstrumentation(
         upExc: ohlc.upExc,
         downExc: ohlc.downExc,
       },
-      'fetch-day-ohlc: updated',
+      `${JOB}: updated`,
     );
 
     return {
