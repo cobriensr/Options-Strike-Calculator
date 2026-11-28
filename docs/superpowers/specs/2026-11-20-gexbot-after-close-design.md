@@ -41,8 +41,24 @@ during it:
   wakes after its armed instant.
 - **Cleanup.** A missing or malformed newest-session bound fails that table
   by name and deletes nothing.
-- **Periscope header.** The closed header reads `Slot Fri 3:00 PM CT · CLOSED`,
-  with no expiry. The live toggle drops its dot and green accent.
+- **One CLOSED badge (2026-11-27, owner).** All three panels render the
+  shared `ClosedBadge` (`src/components/ui/ClosedBadge.tsx`) in their
+  header: `CLOSED · as of Fri 3:00 PM CT`, as a muted pill. Plan:
+  `docs/superpowers/plans/2026-11-27-gexbot-closed-badge.md`.
+  - Periscope's body header keeps its in-session form,
+    `Slot 3:00 PM CT · 2026-11-20`. The badge sits beside the slot picker,
+    and never shows over an error body.
+  - Every badge is dated from its panel's live-route `asOf`. The Periscope
+    hook returns `asOf` as null while it still holds a picked slot's
+    response. So "Return to live" after the close never labels the picked
+    time CLOSED, and in session the slot picker never shows it next to
+    "● live".
+  - A closed live response with no SPX spot shows the badge above
+    "Waiting for SPX spot…", so the panel says the session is over.
+  - `closedLabelOrNull` (`src/utils/closed-session.ts`) is the one rule for
+    whether a label exists. The badge and the landscape's LIVE/DELAYED hiding
+    both use it.
+  - The live toggle drops its dot and green accent.
 
 **Live checks (read-only, production):**
 
@@ -66,8 +82,10 @@ during it:
   shows the earlier session until its next poll. This predates the build
   and is the same in all three hooks.
 - **The level ladder** on main reads `expected-move` and isn't covered here.
-- **The CLOSED label** looks different in each panel: plain text, a pill,
-  and a header suffix.
+- **Badge position.** The badge sits in a slightly different spot in each
+  header: the landscape's status slot, the right of the Taker Flow header,
+  and left of Periscope's slot controls. The owner accepted this on
+  2026-11-27.
 
 ## Goal
 
@@ -345,8 +363,9 @@ date (checked in review), so it needs no change.
     - The block sits in the per-request context, outside the cached
       system prompt; the `analyze-prompt-reviewer` agent checks that phase.
     - A scrubbed landscape view sends what it sends today.
-- **Periscope Exposure:** `Slot 3:00 PM CT · CLOSED` style header on the
-  live route; the slot dropdown lists the closed session's slots.
+- **Periscope Exposure:** a CLOSED label on the live route; the slot
+  dropdown lists the closed session's slots. As built, this is the shared
+  `CLOSED · as of …` badge in the section header (see "As built").
   `PeriscopePanel` has no `marketOpen` prop today; it is threaded from
   `src/App.tsx` like its other props.
 - **Label format:** weekday + time in CT, from the capture time, e.g.
