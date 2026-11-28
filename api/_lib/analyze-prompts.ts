@@ -109,24 +109,24 @@ When API data includes a computed "Direction" and "Pattern" summary, treat these
 If an API data section is present in the context for a given source (e.g., "SPX Aggregate GEX Panel (from API)"), that source IS provided — do not mark the corresponding chartConfidence field as "NOT PROVIDED" just because no screenshot was uploaded. Extract the signal from the API data. (Exception: chartConfidence.periscope/periscopeCharm — a GEXBot block does not count; see SOURCE SCOPE.)
 </api_data_priority>
 <ml_signal_hierarchy>
-Backtested feature importance analysis (39 trading days) reveals two tiers of predictive signal for structure correctness. Use this hierarchy when signals conflict:
+Re-checked 2026-11-27. Structure-correctness labels: 52 days (2026-01-02 to 04-20), only 3 wrong. Range data: about 210 days to 2026-11-25. No signal below has been shown to predict structure correctness; the only supported effect is range risk.
 
-TIER 1 — Universal predictors (strong main effects, validated by both statistical correlation and ML model gain):
-- Gamma Asymmetry: the single strongest predictor of structure correctness. When the per-strike gamma profile is heavily lopsided (65%+ of gamma on one side of ATM), the undefended side is where failures occur. The "Gamma Asymmetry" line in the Per-Strike Greek Profile quantifies this. Highly asymmetric profiles should reduce confidence by one level and bias toward the defended side.
-- GEX Volume (gex_vol): how much new gamma is being added intraday via volume. Divergence between OI gamma (structural) and volume gamma (flow-driven) signals regime change.
-- Previous day range and VIX change: wide-range days and VIX spikes tend to cluster. After a 100+ pt range day or a VIX jump of 2+ pts, the next day is higher-risk for structure calls.
-- Flow agreement: when 6+ of 9 flow sources agree, conviction is highest. Below 4, structure calls are unreliable.
+What the data supports:
+- Range risk: judge it in multiples of today's VIX-implied move (in the Previous Session section), not in fixed points; 100 pts is about 1.5× the implied move at VIX 15 but 0.8× at VIX 28. These multiples measure the session's whole high-to-low range, not how far price travels from the open toward one short strike. Over 207 sessions (2026-01-28 to 11-25) the median day's range was 0.79× its implied move; 27% reached 1.0×, 13.5% reached 1.25× (about 12% when the prior VIX close was below 19, 17% above it) and 6.8% reached 1.5×. Once VIX is known, a 100+ pt previous day and a 2+ pt VIX rise add nothing measurable; don't treat either as a flag.
 
-TIER 2 — Conditional predictors (captured by ML through non-linear interactions, weak in isolation):
+Context only (no demonstrated edge):
+- Gamma asymmetry: its link to structure errors rests on one wrong day of 21 (2026-03-23) and shows nothing on 41 days. Don't lower confidence on the skew alone.
+- GEX volume: no test supports it as a correctness predictor, and it adds nothing to OI gamma for range. A sign mismatch with OI gamma went with somewhat wider days (85 vs 74 pts, not adjusted for VIX); a mild flag only.
+- Flow agreement count (how many of the flow sources agree): it hasn't been shown to predict correctness or direction. Don't rate confidence or size on the count.
+
+Other signals (untested or context-only):
 - Dark pool distance to top cluster and total premium: not yet testable at entry time. The stored full-day versions rise with the same day's range (146 days through 2026-11-25), but they include prints after entry, so that is not evidence they predict anything. The idea that a dark pool floor near price helps in deeply negative GEX has no support in the full-day data. Use dark pool levels as context only.
 - Max pain: only predictive in the final 2 hours when combined with gamma wall alignment. In isolation it has near-zero predictive power.
-
-When Tier 1 signals conflict with Tier 2, trust Tier 1.
 </ml_signal_hierarchy>
 <ml_calibration>
 Self-calibration context (end-of-day review labels, 52 days, 2026-01-02 to 2026-04-20; no labels since):
 - The review graded 94% of days correct (49/52). Three losses are too few to calibrate on.
-- Stated confidence has not been shown to separate outcomes: HIGH 31/32 (97%) vs MODERATE 17/19 (89%), Fisher p = 0.55, Wilson 95% intervals overlap. Do not size on confidence alone.
+- Stated confidence has not been shown to separate outcomes: HIGH 31/32 (97%) vs MODERATE 17/19 (89%), Fisher p = 0.55, Wilson 95% intervals overlap. Do not size on confidence alone: the confidence label caps size per <sizing_tiers>, but does not raise it on its own.
 - There is no stored repeat-yesterday correctness baseline and no real sizing backtest; do not cite one.
 </ml_calibration>
 <chart_types>
@@ -820,7 +820,6 @@ futures — context only; when it disagrees with the live ratio, weight the live
   do not read it as CONTANGO.
 - BACKWARDATION = market expects vol to peak TODAY (spot above 3-month). Straddle
   cones may be understated. Widen IC strikes by 5-10 pts or avoid IC entirely.
-  Require flow agreement ≥ 7/9 before entering any structure.
 - A "Shift:" line (prior close band → live band) toward backwardation (CONTANGO →
   FLAT, FLAT → BACKWARDATION, or CONTANGO → BACKWARDATION) = regime transition in
   progress. Treat as high-uncertainty — reduce to MODERATE confidence regardless of
@@ -830,8 +829,8 @@ futures — context only; when it disagrees with the live ratio, weight the live
 ZN Flight-to-Safety:
 - ZN rallying (yields falling) + ES selling = institutional capital leaving equities
   for duration. This is a TRENDING day signal — the selloff has institutional sponsorship
-  and is unlikely to reverse on flow signals alone. Require HIGH confidence + ≥ 7/9
-  agreement to enter, or SIT OUT.
+  and is unlikely to reverse on flow signals alone. Require HIGH confidence to
+  enter, or SIT OUT.
 - ZN selling + ES selling = liquidity crisis or forced selling. Different animal — more
   likely to produce a snapback reversal. Standard rules apply.
 - ZN flat while ES moves = equity-specific event (earnings, sector rotation). Macro

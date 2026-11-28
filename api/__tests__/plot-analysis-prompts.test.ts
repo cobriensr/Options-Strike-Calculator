@@ -414,6 +414,76 @@ describe('plot-analysis-prompts.ts', () => {
   });
 
   // ============================================================
+  // Guidance that took the old Tier 1 / Tier 2 hierarchy as correct
+  // (docs/superpowers/specs/2026-11-27-analyze-prev-day-range-vix-design.md)
+  // ============================================================
+  describe('guidance does not presume the live hierarchy', () => {
+    /** The analysis_guidance text of one plot_reference block. */
+    function guidance(name: string): string {
+      const start = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf(
+        `<plot_reference name="${name}">`,
+      );
+      expect(start).toBeGreaterThan(-1);
+      const end = PLOT_ANALYSIS_SYSTEM_PROMPT.indexOf(
+        '</plot_reference>',
+        start,
+      );
+      const block = PLOT_ANALYSIS_SYSTEM_PROMPT.slice(start, end);
+      const open = block.indexOf('<analysis_guidance>');
+      const close = block.indexOf('</analysis_guidance>');
+      expect(open).toBeGreaterThan(-1);
+      return block.slice(open + '<analysis_guidance>'.length, close);
+    }
+
+    it('names no Tier 1, 2 or 3 anywhere in the prompt', () => {
+      expect(PLOT_ANALYSIS_SYSTEM_PROMPT).not.toMatch(/Tier [123]/);
+    });
+
+    it('prev_day_transition asks whether range persistence survives once VIX is known', () => {
+      const g = guidance('prev_day_transition');
+
+      expect(g).toContain(
+        'A wide-range day often follows a high-VIX day, so also ask whether the persistence survives once VIX is known: compare days at a similar VIX level before calling it an effect',
+      );
+      expect(g).toContain(
+        'report what the plot shows, without assuming that prev_day_range_pts predicts failures',
+      );
+      expect(g).toContain('whether that holds once the VIX level is known');
+      expect(g).not.toContain('as a Tier 1 predictor');
+      expect(g).not.toContain('would confirm VIX change as a caution signal');
+    });
+
+    it('feature_importance_comparison asks which features rank on top, not whether the hierarchy holds', () => {
+      const g = guidance('feature_importance_comparison');
+
+      expect(g).toContain(
+        'which features rank at the top, and whether gamma_asymmetry and gex_vol (which the live system prompt treats as context only) deserve more weight than that',
+      );
+      expect(g).toContain('do not assume either belongs near the top');
+      expect(g).not.toContain('signal hierarchy in the live system prompt');
+      expect(g).not.toContain('if the hierarchy is correct');
+    });
+
+    it('flow_by_vix asks whether the plot supports a different ranking by VIX bucket', () => {
+      const g = guidance('flow_by_vix');
+
+      expect(g).toContain(
+        'say whether the plot supports ranking the sources differently by VIX bucket, without assuming the live prompt ranking is right.',
+      );
+      expect(g).not.toContain('signal hierarchy needs conditional branching');
+    });
+
+    it('nope_mt_agreement asks whether the plot supports the conjunction claim', () => {
+      const g = guidance('nope_mt_agreement');
+
+      expect(g).toContain(
+        'the conjunction filter may add real value and would be worth testing as a live-prompt signal; say whether the plot supports that claim, given its sample sizes',
+      );
+      expect(g).not.toContain('should be implemented as a');
+    });
+  });
+
+  // ============================================================
   // Plot reference blocks — all 21 must be present
   // ============================================================
   describe('plot reference blocks', () => {

@@ -649,9 +649,35 @@ const DARK_POOL_LINE =
 const CALIBRATION_LINES = [
   'Self-calibration context (end-of-day review labels, 52 days, 2026-01-02 to 2026-04-20; no labels since):',
   '- The review graded 94% of days correct (49/52). Three losses are too few to calibrate on.',
-  '- Stated confidence has not been shown to separate outcomes: HIGH 31/32 (97%) vs MODERATE 17/19 (89%), Fisher p = 0.55, Wilson 95% intervals overlap. Do not size on confidence alone.',
+  '- Stated confidence has not been shown to separate outcomes: HIGH 31/32 (97%) vs MODERATE 17/19 (89%), Fisher p = 0.55, Wilson 95% intervals overlap. Do not size on confidence alone: the confidence label caps size per <sizing_tiers>, but does not raise it on its own.',
   '- There is no stored repeat-yesterday correctness baseline and no real sizing backtest; do not cite one.',
 ];
+
+// The owner-approved range-risk text (docs/superpowers/specs/
+// 2026-11-27-analyze-prev-day-range-vix-design.md, approved 18:15 CT with the
+// range bullet corrected 22:24 CT). It replaces the two-tier hierarchy, whose
+// Tier 1 rested on a 39-day backtest and one outlier day. The cached system
+// text carries it, so it is pinned word for word.
+const HIERARCHY_LINES = [
+  'Re-checked 2026-11-27. Structure-correctness labels: 52 days (2026-01-02 to 04-20), only 3 wrong. Range data: about 210 days to 2026-11-25. No signal below has been shown to predict structure correctness; the only supported effect is range risk.',
+  '',
+  'What the data supports:',
+  "- Range risk: judge it in multiples of today's VIX-implied move (in the Previous Session section), not in fixed points; 100 pts is about 1.5× the implied move at VIX 15 but 0.8× at VIX 28. These multiples measure the session's whole high-to-low range, not how far price travels from the open toward one short strike. Over 207 sessions (2026-01-28 to 11-25) the median day's range was 0.79× its implied move; 27% reached 1.0×, 13.5% reached 1.25× (about 12% when the prior VIX close was below 19, 17% above it) and 6.8% reached 1.5×. Once VIX is known, a 100+ pt previous day and a 2+ pt VIX rise add nothing measurable; don't treat either as a flag.",
+  '',
+  'Context only (no demonstrated edge):',
+  "- Gamma asymmetry: its link to structure errors rests on one wrong day of 21 (2026-03-23) and shows nothing on 41 days. Don't lower confidence on the skew alone.",
+  '- GEX volume: no test supports it as a correctness predictor, and it adds nothing to OI gamma for range. A sign mismatch with OI gamma went with somewhat wider days (85 vs 74 pts, not adjusted for VIX); a mild flag only.',
+  "- Flow agreement count (how many of the flow sources agree): it hasn't been shown to predict correctness or direction. Don't rate confidence or size on the count.",
+  '',
+  'Other signals (untested or context-only):',
+  DARK_POOL_LINE,
+  '- Max pain: only predictive in the final 2 hours when combined with gamma wall alignment. In isolation it has near-zero predictive power.',
+];
+
+// The :1144 directional check is NOT changed by the range-risk work: the owner
+// approved dropping "7/9" from the two entry gates only.
+const DIRECTIONAL_CHECK_LINE =
+  '2. Directional flow agreement from ML-validated sources: Market Tide + at least 2 of (QQQ Net Flow, SPY ETF Tide, QQQ ETF Tide) agree on direction at MODERATE+ confidence. NOTE: For directional conviction, do NOT rely on SPX Net Flow — ML validation across 36 sessions shows it predicts settlement direction only 31% of the time (anti-signal). The reliable directional sources are QQQ Net Flow (61%), Market Tide (61%), SPY ETF Tide (59%), QQQ ETF Tide (59%). This weighting applies ONLY to directionalOpportunity — Rule 8 credit spread weighting is unchanged.';
 
 describe('analyze system prompt — the IV Spike Alert is gone', () => {
   it('has no IV Spike Alert paragraph and none of its figures', () => {
@@ -685,13 +711,14 @@ describe('analyze system prompt — the signal hierarchy keeps no unmeasured PCR
     expect(hierarchy).not.toMatch(/\bPCR\b/);
   });
 
-  it('keeps the max pain line, the one it sat beside, and the closing rule', () => {
+  it('keeps the max pain line, and no longer ends on a rule that ranks tiers', () => {
     expect(hierarchy).toContain(
       '- Max pain: only predictive in the final 2 hours when combined with gamma wall alignment.',
     );
-    expect(hierarchy).toContain(
-      'When Tier 1 signals conflict with Tier 2, trust Tier 1.',
-    );
+    // The tiers are gone, so "When Tier 1 signals conflict with Tier 2, trust
+    // Tier 1." has nothing left to rank.
+    expect(hierarchy).not.toContain('When Tier 1 signals conflict');
+    expect(hierarchy).not.toContain('trust Tier 1');
   });
 
   it('states the dark-pool line as not yet testable at entry time, word for word', () => {
@@ -701,7 +728,94 @@ describe('analyze system prompt — the signal hierarchy keeps no unmeasured PCR
   });
 });
 
+describe('analyze system prompt — the hierarchy judges range risk in multiples of the implied move', () => {
+  const hierarchy = section('ml_signal_hierarchy');
+
+  it('is the owner-approved block, word for word', () => {
+    expect(hierarchy).toBe(
+      `<ml_signal_hierarchy>\n${HIERARCHY_LINES.join('\n')}\n`,
+    );
+  });
+
+  it('drops the tier text and the figures behind it', () => {
+    for (const gone of [
+      'Backtested feature importance analysis (39 trading days)',
+      'TIER 1',
+      'TIER 2',
+      'Universal predictors',
+      'Conditional predictors',
+      'validated by both statistical correlation and ML model gain',
+      'captured by ML through non-linear interactions',
+      'the single strongest predictor',
+      'bias toward the defended side',
+      'After a 100+ pt range day',
+      'Below 4, structure calls are unreliable',
+      'trust Tier 1',
+      '32%',
+      '36% vs 16%',
+    ]) {
+      expect(hierarchy, gone).not.toContain(gone);
+    }
+    expect(hierarchy).not.toMatch(/\bTier\b|\bTIER\b/);
+  });
+
+  it('renames the second group, and it keeps its two bullets', () => {
+    expect(hierarchy).toContain(
+      'Other signals (untested or context-only):\n- Dark pool distance',
+    );
+    expect(hierarchy).toContain('\n- Max pain: only predictive');
+  });
+
+  it('points at the section the context carries by the name it is given there', () => {
+    expect(hierarchy).toContain('(in the Previous Session section)');
+  });
+});
+
+describe('analyze system prompt — the two entry gates no longer ask for 7/9 flow agreement', () => {
+  it('has no 7/9 anywhere', () => {
+    expect(PROMPT).not.toContain('7/9');
+  });
+
+  it('keeps the BACKWARDATION widening advice, without its agreement sentence', () => {
+    expect(PROMPT).toContain(
+      '  cones may be understated. Widen IC strikes by 5-10 pts or avoid IC entirely.\n- A "Shift:" line',
+    );
+    expect(PROMPT).not.toContain('Require flow agreement');
+  });
+
+  it('asks for HIGH confidence alone on the ZN flight-to-safety gate', () => {
+    expect(PROMPT).toContain(
+      'Require HIGH confidence to\n  enter, or SIT OUT.\n- ZN selling + ES selling',
+    );
+    expect(PROMPT).not.toContain('HIGH confidence + ');
+  });
+
+  it('leaves the directional check exactly as it was', () => {
+    // Not approved for change: it still asks for Market Tide plus 2 of 3.
+    expect(PROMPT).toContain(DIRECTIONAL_CHECK_LINE);
+  });
+});
+
 describe('analyze system prompt — the calibration block states what the 52 labeled days support', () => {
+  it('extends the do-not-size line with the sizing_tiers clause, on that line', () => {
+    const block = section('ml_calibration')!;
+    const line = block
+      .split('\n')
+      .find((l) => l.includes('Do not size on confidence alone'));
+
+    expect(line).toMatch(
+      /Wilson 95% intervals overlap\. Do not size on confidence alone: the confidence label caps size per <sizing_tiers>, but does not raise it on its own\.$/,
+    );
+    // One line, not a new bullet: the block is still a header and 3 bullets.
+    expect(block.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(3);
+  });
+
+  it('does not use the 18:15 wording that contradicted four sizing rules', () => {
+    expect(PROMPT).not.toContain('Sizing follows <sizing_tiers>');
+    expect(PROMPT).not.toContain('also requires the primary signals to agree');
+    expect(PROMPT).not.toContain("by itself doesn't change size");
+  });
+
   it('is the four owner-approved lines and nothing else', () => {
     expect(section('ml_calibration')).toBe(
       `<ml_calibration>\n${CALIBRATION_LINES.join('\n')}\n`,
