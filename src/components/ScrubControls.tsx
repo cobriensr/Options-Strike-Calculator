@@ -7,7 +7,7 @@
  */
 
 import { theme } from '../themes';
-import { formatClosedLabel } from '../utils/closed-session';
+import { closedLabelOrNull } from '../utils/closed-session';
 import { tint } from '../utils/ui-utils';
 import { ClosedBadge } from './ui/ClosedBadge';
 import { DateInput } from './ui/DateInput';
@@ -96,14 +96,12 @@ export function ScrubControls({
   hideDatePicker = false,
   closedAsOf,
 }: ScrubControlsProps) {
-  // `ClosedBadge` draws the pill; this decides whether it takes the badge slot.
-  // An empty label (a capture time that does not parse) shows no closed pill,
-  // so a bare "CLOSED · as of" never dangles; the LIVE / DELAYED badge shows as
-  // it does without `closedAsOf`.
+  // `ClosedBadge` draws the pill; this decides whether it takes the badge slot,
+  // by the same rule it draws by (`closedLabelOrNull`). No label (a capture time
+  // that does not parse) shows no closed pill, so a bare "CLOSED · as of" never
+  // dangles; the LIVE / DELAYED badge shows as it does without `closedAsOf`.
   const showClosed =
-    closedAsOf != null &&
-    !isScrubbed &&
-    formatClosedLabel(closedAsOf, new Date()) !== '';
+    !isScrubbed && closedLabelOrNull(closedAsOf, new Date()) != null;
   const isStale =
     isLive && lastDataAgeMs != null && lastDataAgeMs >= staleThresholdMs;
   const staleMinutes =

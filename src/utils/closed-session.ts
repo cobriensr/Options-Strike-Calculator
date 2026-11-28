@@ -147,6 +147,22 @@ export function formatClosedLabel(asOf: string, now: Date): string {
 }
 
 /**
+ * The one rule for "is there a closed label": `formatClosedLabel(asOf, now)`
+ * when `asOf` is set and the label is not empty, else null. `ClosedBadge`
+ * draws nothing on null, and a panel that swaps its LIVE badge for the closed
+ * one (`ScrubControls`) asks this same function, so the two can't disagree and
+ * leave a panel with neither badge.
+ */
+export function closedLabelOrNull(
+  asOf: string | null | undefined,
+  now: Date,
+): string | null {
+  if (asOf == null) return null;
+  const label = formatClosedLabel(asOf, now);
+  return label === '' ? null : label;
+}
+
+/**
  * A failure another try can clear: network, timeout or abort (status 0), 408,
  * 429 and 5xx. Any other 4xx is the request itself being refused.
  */

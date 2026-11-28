@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   asOfFrom,
+  closedLabelOrNull,
   formatClosedLabel,
   HttpStatusError,
   isCarriedOver,
@@ -230,6 +231,45 @@ describe('formatClosedLabel', () => {
     expect(formatClosedLabel('garbage', new Date('2026-11-21T15:00:00Z'))).toBe(
       '',
     );
+  });
+});
+
+// The one rule for "is there a closed label": the CLOSED badge draws nothing on
+// null, and a panel that hides its LIVE badge for the closed one asks the same
+// function, so it can never hide LIVE and show nothing in its place.
+describe('closedLabelOrNull', () => {
+  const SATURDAY = new Date('2026-11-21T15:00:00Z');
+
+  it.each([
+    { label: 'null', asOf: null, now: SATURDAY, expected: null },
+    { label: 'undefined', asOf: undefined, now: SATURDAY, expected: null },
+    { label: 'an empty string', asOf: '', now: SATURDAY, expected: null },
+    {
+      label: 'text that is not a time',
+      asOf: 'not a time',
+      now: SATURDAY,
+      expected: null,
+    },
+    {
+      label: 'a capture from the last session',
+      asOf: '2026-11-20T21:00:49Z',
+      now: SATURDAY,
+      expected: 'Fri 3:00 PM CT',
+    },
+    {
+      label: 'a capture exactly 6 days old',
+      asOf: '2026-11-20T21:00:49Z',
+      now: new Date('2026-11-26T21:00:49Z'),
+      expected: 'Fri 3:00 PM CT',
+    },
+    {
+      label: 'a capture more than 6 days old',
+      asOf: '2026-11-20T21:00:49Z',
+      now: new Date('2026-11-26T21:00:50Z'),
+      expected: 'Fri Nov 20 3:00 PM CT',
+    },
+  ])('$label gives $expected', ({ asOf, now, expected }) => {
+    expect(closedLabelOrNull(asOf, now)).toBe(expected);
   });
 });
 
