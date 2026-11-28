@@ -412,7 +412,8 @@ describe('PeriscopePanel: spot header', () => {
 //
 // After the close the hook holds the last session's live view and the server
 // sends that session's slots (spec: gexbot-after-close-design). The panel
-// says so in its header, with the capture time; a picked slot never does.
+// says so with the shared CLOSED badge in its section header, with the capture
+// time; a picked slot never does, nor does an error body.
 
 describe('PeriscopePanel: closed session', () => {
   // Friday 2026-11-20 (CST, UTC-6): the 15:00 CT slot is 21:00Z.
@@ -442,7 +443,7 @@ describe('PeriscopePanel: closed session', () => {
     vi.useRealTimers();
   });
 
-  it("closed on a Saturday, labels Friday's view CLOSED with its capture time", () => {
+  it('shows the shared badge in the header and the normal slot header', () => {
     setNow(SATURDAY);
     render(
       <PeriscopePanel
@@ -453,11 +454,43 @@ describe('PeriscopePanel: closed session', () => {
         availableSlots={FRIDAY_SLOTS}
       />,
     );
+    expect(screen.getByTestId('periscope-closed-badge').textContent).toBe(
+      'CLOSED · as of Fri 3:00 PM CT',
+    );
+    // The body header reads as it does in session, expiry and all.
     expect(
-      screen.getByText('Slot Fri 3:00 PM CT · CLOSED'),
+      screen.getByText(/^Slot 3:00\sPM CT · 2026-11-20$/),
     ).toBeInTheDocument();
-    // The expiry stays on the open header, not here: "Fri" already dates it.
-    expect(screen.queryByText(/2026-11-20/)).toBeNull();
+    expect(screen.queryByText(/· CLOSED/)).toBeNull();
+  });
+
+  it('puts the badge beside the slot picker in a spaced, wrapping row inside the section header', () => {
+    setNow(SATURDAY);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView()}
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    const badge = screen.getByTestId('periscope-closed-badge');
+    // SectionBox's header row is the toggle button's parent.
+    const headerRow = screen.getByRole('button', {
+      name: /^Toggle /,
+    }).parentElement;
+    expect(headerRow).not.toBeNull();
+    expect(headerRow).toContainElement(badge);
+    expect(badge.parentElement).toHaveClass(
+      'flex',
+      'flex-wrap',
+      'items-center',
+      'justify-end',
+      'gap-2',
+    );
+    expect(badge.parentElement).toContainElement(
+      screen.getByRole('combobox', { name: 'Periscope slot time' }),
+    );
   });
 
   it('adds the date once the capture is more than 6 days old', () => {
@@ -470,23 +503,47 @@ describe('PeriscopePanel: closed session', () => {
         availableSlots={FRIDAY_SLOTS}
       />,
     );
-    expect(
-      screen.getByText('Slot Fri Nov 20 3:00 PM CT · CLOSED'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('periscope-closed-badge').textContent).toBe(
+      'CLOSED · as of Fri Nov 20 3:00 PM CT',
+    );
   });
 
-  it('keeps the plain slot header when the capture time does not parse', () => {
+  it('an unparseable capture time shows no badge and the normal header', () => {
     setNow(SATURDAY);
     render(
       <PeriscopePanel
         {...baseProps}
         marketOpen={false}
-        view={makeView({ capturedAt: 'not-a-date' })}
+        view={makeView({ capturedAt: 'not a time' })}
       />,
     );
     // No label to show, so no dangling CLOSED.
+    expect(screen.queryByTestId('periscope-closed-badge')).toBeNull();
     expect(screen.queryByText(/CLOSED/)).toBeNull();
     expect(screen.getByText(/^Slot\s+CT · 2026-05-08$/)).toBeInTheDocument();
+  });
+
+  it('no badge over an error body', () => {
+    setNow(SATURDAY);
+    // Pick 14:50, click live, get a 500: the hook still holds the picked
+    // slot's view while the live route errors. It is not "the close".
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView('2026-11-20T20:50:00Z')}
+        error="HTTP 500"
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    expect(screen.getByText('HTTP 500')).toBeInTheDocument();
+    expect(screen.queryByTestId('periscope-closed-badge')).toBeNull();
+  });
+
+  it('no badge while there is no view to date it', () => {
+    setNow(SATURDAY);
+    render(<PeriscopePanel {...baseProps} marketOpen={false} />);
+    expect(screen.queryByTestId('periscope-closed-badge')).toBeNull();
   });
 
   it("lists the session's slots in the time dropdown, on the view's date", () => {
@@ -578,13 +635,14 @@ describe('PeriscopePanel: closed session', () => {
       screen.getByText(/^Slot 3:00\sPM CT · 2026-11-20$/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/CLOSED/)).toBeNull();
+    expect(screen.queryByTestId('periscope-closed-badge')).toBeNull();
     expect(
       screen.getByRole('button', { name: 'Return to live' }),
     ).toHaveTextContent('● live');
     expect(screen.getByText(/^3:00\sPM CT$/)).toBeInTheDocument();
   });
 
-  it('a picked slot is never labelled CLOSED', () => {
+  it('a picked slot after the close shows no badge', () => {
     setNow(SATURDAY);
     render(
       <PeriscopePanel
@@ -595,6 +653,7 @@ describe('PeriscopePanel: closed session', () => {
         selectedSlot={{ date: '2026-11-20', time: '14:50' }}
       />,
     );
+    expect(screen.queryByTestId('periscope-closed-badge')).toBeNull();
     expect(screen.queryByText(/CLOSED/)).toBeNull();
     expect(
       screen.getByText(/^Slot 2:50\sPM CT · 2026-11-20$/),

@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 
 import type { GexbotView, SnapshotsLatestRow } from '../hooks/useGexbotData';
+import type { PeriscopeView } from '../hooks/usePeriscopeExposure';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -16,6 +17,8 @@ vi.mock('../hooks/useGexbotData', async () => {
 });
 
 import { GexbotSection } from '../components/Gexbot';
+import { PeriscopePanel } from '../components/Periscope/PeriscopePanel';
+import { ScrubControls } from '../components/ScrubControls';
 import { dealerClaims } from './helpers/dealer-claims';
 import { makeWinner } from './helpers/makeWinner';
 
@@ -128,6 +131,38 @@ describe('<GexbotSection> after the close', () => {
     };
   }
 
+  /** Friday's live Periscope view: the fields the panel reads, no more. */
+  function periscopeView(): PeriscopeView {
+    return {
+      capturedAt: FRIDAY_CLOSE,
+      priorCapturedAt: '2026-11-20T20:50:00.000Z',
+      expiry: '2026-11-20',
+      spot: 6600,
+      gamma: {
+        ceiling: { strike: 6625, value: 5_000_000, ptsFromSpot: 25 },
+        floor: { strike: 6575, value: 4_000_000, ptsFromSpot: -25 },
+        accelTop: [],
+        topByAbsNear: [],
+      },
+      charm: {
+        tallyNear50: 1_500_000,
+        tallyWide100: 2_500_000,
+        topByAbs: [],
+        charmZeroStrike: 6610,
+      },
+      vanna: { topByAbs: [] },
+      signFlips: [],
+      cone: {
+        coneUpper: 6650,
+        coneLower: 6550,
+        coneWidth: 100,
+        asymmetryPts: 0,
+        spotAtCalc: 6600,
+      },
+      breaches: [],
+    };
+  }
+
   /** Answers each view with its own body; any view not named reads empty. */
   function answerViews(
     bodies: Partial<
@@ -168,6 +203,22 @@ describe('<GexbotSection> after the close', () => {
     expect(mockUseGexbotData).toHaveBeenCalledWith(
       { view: 'snapshots-latest' },
       false,
+    );
+  });
+
+  it('puts the label in the section header, beside the title', () => {
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+    });
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
+    const headerRow = screen.getByRole('button', {
+      name: 'Toggle GEXBot Taker Flow',
+    }).parentElement;
+    expect(headerRow).toContainElement(
+      screen.getByTestId('gexbot-closed-label'),
     );
   });
 
@@ -286,5 +337,64 @@ describe('<GexbotSection> after the close', () => {
     });
     render(<GexbotSection marketOpen={false} spxSpot={null} />);
     expect(screen.getByTestId('charm-clock-closed')).toBeInTheDocument();
+  });
+
+  it('the three closed badges share one className and style', () => {
+    answerViews({
+      'snapshots-latest': {
+        rows: [snapshotRow('SPX', 6600)],
+        asOf: FRIDAY_CLOSE,
+      },
+    });
+    render(
+      <>
+        <GexbotSection marketOpen={false} spxSpot={null} />
+        <ScrubControls
+          timestamp={FRIDAY_CLOSE}
+          timestamps={[FRIDAY_CLOSE]}
+          selectedDate="2026-11-20"
+          onDateChange={vi.fn()}
+          isLive={false}
+          isScrubbed={false}
+          canScrubPrev={false}
+          canScrubNext={false}
+          onScrubPrev={vi.fn()}
+          onScrubNext={vi.fn()}
+          onScrubTo={vi.fn()}
+          onScrubLive={vi.fn()}
+          onRefresh={vi.fn()}
+          loading={false}
+          sectionLabel="GEX landscape"
+          closedAsOf={FRIDAY_CLOSE}
+        />
+        <PeriscopePanel
+          marketOpen={false}
+          view={periscopeView()}
+          emptyReason={null}
+          asOf={FRIDAY_CLOSE}
+          loading={false}
+          error={null}
+          onRefresh={vi.fn()}
+          availableSlots={[FRIDAY_CLOSE]}
+          selectedSlot={null}
+          onSelectSlot={vi.fn()}
+        />
+      </>,
+    );
+    const badges = [
+      'gexbot-closed-label',
+      'scrub-closed-badge',
+      'periscope-closed-badge',
+    ].map((id) => screen.getByTestId(id));
+    const [first, ...rest] = badges;
+    // Guard against the comparison passing on three empty pills.
+    expect(first?.className).not.toBe('');
+    expect(first?.style.color).not.toBe('');
+    expect(first?.style.background).not.toBe('');
+    for (const badge of rest) {
+      expect(badge.textContent).toBe(first?.textContent);
+      expect(badge.className).toBe(first?.className);
+      expect(badge.style.cssText).toBe(first?.style.cssText);
+    }
   });
 });

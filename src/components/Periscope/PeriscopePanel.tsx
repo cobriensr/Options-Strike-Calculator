@@ -15,16 +15,17 @@
  * Empty states are explicit: "no SPX spot yet" or "no GEXBot capture
  * for today yet" — never a blank panel.
  *
- * After the close the live route holds the last session's map: the body
- * header then reads "Slot Fri 3:00 PM CT · CLOSED" and the slot list is that
- * session's. A picked slot is a past slice by choice and is never labelled
- * CLOSED.
+ * After the close the live route holds the last session's map: the section
+ * header then carries the shared CLOSED badge ("CLOSED · as of Fri 3:00 PM
+ * CT") beside the slot picker, the body header keeps its in-session "Slot
+ * 3:00 PM CT · <expiry>" form, and the slot list is that session's. A picked
+ * slot is a past slice by choice and never gets the badge, nor does an error
+ * body.
  */
 
 import { memo } from 'react';
-import { SectionBox } from '../ui';
+import { ClosedBadge, SectionBox } from '../ui';
 import { theme } from '../../themes';
-import { formatClosedLabel } from '../../utils/closed-session';
 import { formatTimeCT } from '../../utils/component-formatters';
 import { getCTTime } from '../../utils/timezone';
 import type {
@@ -145,32 +146,47 @@ function PeriscopePanelInner({
       </p>
     );
   } else {
-    // A picked slot is a past slice by choice, never "the close".
-    body = <PeriscopeBody view={view} closed={isLive && !marketOpen} />;
+    body = <PeriscopeBody view={view} />;
   }
 
   const source = view == null ? null : periscopeSourceAt(view.capturedAt);
+
+  // The live route after the close holds the last session's map. A picked slot
+  // is a past slice by choice, never "the close", and a held view over an error
+  // body (a picked slot's, while the live route fails) is not the close either.
+  const showClosedBadge =
+    isLive && !marketOpen && view != null && error == null;
 
   return (
     <SectionBox
       label={PANEL_TITLE[source ?? 'unknown']}
       headerRight={
-        <SlotPicker
-          displayedDate={displayedDate}
-          displayedTime={displayedTime}
-          availableSlots={availableSlots}
-          currentSlotIso={currentSlotIso}
-          currentIdx={currentIdx}
-          canPrev={canPrev}
-          canNext={canNext}
-          isLive={isLive}
-          marketOpen={marketOpen}
-          asOf={asOf}
-          loading={loading}
-          onSelectSlot={onSelectSlot}
-          onRefresh={onRefresh}
-          stepTo={stepTo}
-        />
+        // SectionBox's header row has only a row gap, so the badge and the
+        // picker get their own spaced, wrapping, right-aligned row.
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {showClosedBadge && (
+            <ClosedBadge
+              asOf={view.capturedAt}
+              testId="periscope-closed-badge"
+            />
+          )}
+          <SlotPicker
+            displayedDate={displayedDate}
+            displayedTime={displayedTime}
+            availableSlots={availableSlots}
+            currentSlotIso={currentSlotIso}
+            currentIdx={currentIdx}
+            canPrev={canPrev}
+            canNext={canNext}
+            isLive={isLive}
+            marketOpen={marketOpen}
+            asOf={asOf}
+            loading={loading}
+            onSelectSlot={onSelectSlot}
+            onRefresh={onRefresh}
+            stepTo={stepTo}
+          />
+        </div>
       }
       collapsible
     >
@@ -179,32 +195,12 @@ function PeriscopePanelInner({
   );
 }
 
-function PeriscopeBody({
-  view,
-  closed,
-}: {
-  view: PeriscopeView;
-  /** True on the live route after the close: the view is the last session's. */
-  closed: boolean;
-}) {
-  // The clock is read at render and only decides whether the label carries a
-  // date (a capture more than 6 days old), so a tab left closed needs no tick.
-  // An empty label (a capture time that does not parse) keeps the plain
-  // header, so a bare "· CLOSED" never dangles.
-  const closedLabel = closed
-    ? formatClosedLabel(view.capturedAt, new Date())
-    : '';
+function PeriscopeBody({ view }: { view: PeriscopeView }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between font-mono text-[11px]">
         <span style={{ color: theme.textSecondary }}>
-          {closedLabel === '' ? (
-            <>
-              Slot {formatTimeCT(view.capturedAt)} CT · {view.expiry}
-            </>
-          ) : (
-            <>Slot {closedLabel} · CLOSED</>
-          )}
+          Slot {formatTimeCT(view.capturedAt)} CT · {view.expiry}
         </span>
         <span style={{ color: theme.text }}>spot {view.spot.toFixed(2)}</span>
       </div>
