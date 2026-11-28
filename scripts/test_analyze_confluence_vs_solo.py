@@ -29,7 +29,7 @@ from __future__ import annotations
 import csv
 import re
 import sys
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -932,6 +932,59 @@ def test_an_analysis_that_repaired_nothing_has_no_such_note(run, day_files):
     acs.main([])
 
     assert 'Rewritten after' not in report(run / 'out', days=True)
+
+
+def write_priced_summary(run, stamp: datetime) -> None:
+    """The summary enrich writes beside DAYS_CSV, with its day-files stamp."""
+    files = days.DayFiles(
+        days=(DAY,), urls=('u',), repaired=(), unavailable=(), replay_version='1',
+        modified={DAY: stamp},
+    )  # fmt: skip
+    summary = run / 'out' / DAYS_CSV.replace('outcomes-', 'outcomes-summary-').replace('.csv', '.md')
+    summary.write_text(f'# Interval B/A\n\n{files.priced_line()}\n', encoding='utf-8')
+
+
+def test_an_analysis_names_a_day_file_the_nightly_rewrote_after_the_csv_was_priced(
+    run, day_files, day_world, capsys
+):
+    """The day's file is from 11-18 08:45Z; enrich priced the CSV from the file as it was on
+    11-17 12:00Z. Changed ids would just not join, and show only as a lower count."""
+    write_priced_summary(run, datetime(2026, 11, 17, 12, 0, tzinfo=UTC))
+    note = (
+        'Rewritten after the outcomes CSV was priced: 2026-11-17. Re-run '
+        'enrich_interval_ba_outcomes.py for those days.'
+    )
+
+    acs.main([])
+
+    assert day_world.write.call_count == 0  # the file was not repaired by this run
+    assert note in report(run / 'out', days=True)
+    out = capsys.readouterr().out
+    assert f'NOTE: {note}' in out
+    assert 'no outcomes summary with a day-files stamp' not in out
+
+
+def test_an_analysis_of_a_csv_priced_from_the_files_as_they_are_says_nothing(
+    run, day_files, day_world, capsys
+):
+    write_priced_summary(run, day_world.landed(DAY) + timedelta(hours=1))  # the file's own time
+
+    acs.main([])
+
+    assert 'Rewritten after' not in report(run / 'out', days=True)
+    out = capsys.readouterr().out
+    assert 'Rewritten after' not in out
+    assert 'no outcomes summary with a day-files stamp' not in out
+
+
+def test_an_analysis_with_no_stamp_beside_its_csv_says_it_cannot_check(run, day_files, capsys):
+    acs.main([])  # day_files writes the CSV and no summary
+
+    assert (
+        f'NOTE: {DAYS_CSV} has no outcomes summary with a day-files stamp beside it, so it '
+        'cannot be checked whether a day file was rewritten after it was priced.'
+    ) in capsys.readouterr().out
+    assert 'cannot be checked' not in report(run / 'out', days=True)
 
 
 def test_a_snapshot_csv_with_the_day_files_names_the_mistake(run, day_files):

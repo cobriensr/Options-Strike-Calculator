@@ -586,7 +586,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             con.close()
         print(f'  {len(alerts)} alerts total')
         source_note = f' Alerts from {files.describe()}.'
-        if note := files.analysis_note():  # the CSV was priced from the files as they were
+        # The CSV was priced from the day files as they were: name the days rewritten since.
+        priced = days.priced_at(csv_path)
+        if priced is None:
+            print(f'  NOTE: {days.NO_STAMP_NOTE.format(csv=csv_path.name)}')
+        if note := files.analysis_note(priced):
             print(f'  NOTE: {note}')
             source_note += f' {note}'
     elif source == days.EXPORT:
