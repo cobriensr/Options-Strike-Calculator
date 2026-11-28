@@ -1641,6 +1641,54 @@ describe('restoreRows', () => {
       expect(await dumpFires()).toEqual(before);
     });
 
+    it('refuses a backed-up fire whose journal entry the live fire holds with other values', async () => {
+      const a = await addFire({
+        fired_at: '2026-03-26T14:00:00Z',
+        trade_notes: 'took it',
+      });
+      const backup = await backupFires();
+      await pg.query(
+        `UPDATE ${GAMMA} SET trade_notes = 'took it, stopped out' WHERE id = $1`,
+        [a],
+      );
+      const before = await dumpFires();
+
+      await expect(restoreGamma(backup)).rejects.toThrow(
+        new RegExp(`journal entry the backup does not hold.*${a}`, 's'),
+      );
+      expect(await dumpFires()).toEqual(before);
+    });
+
+    it('restore refuses a backed-up fire whose journal was cleared after the backup', async () => {
+      const a = await addFire({
+        fired_at: '2026-03-26T14:00:00Z',
+        trade_taken: true,
+        trade_notes: 'took it',
+        trade_premium_cost: '1.5',
+      });
+      const backup = await backupFires();
+      // The owner clears the entry: restoring would put the old one back.
+      await pg.query(
+        `UPDATE ${GAMMA}
+         SET trade_taken = false, trade_notes = NULL, trade_premium_cost = NULL
+         WHERE id = $1`,
+        [a],
+      );
+      const before = await dumpFires();
+
+      await expect(restoreGamma(backup)).rejects.toThrow(
+        new RegExp(
+          `journal entry in the backup that was cleared since.*${a}`,
+          's',
+        ),
+      );
+      // A dry run checks the same, and nothing was written either way.
+      await expect(
+        restoreRows(sql, { table: GAMMA, backupPath: backup.path }),
+      ).rejects.toThrow(/journal entry in the backup that was cleared since/);
+      expect(await dumpFires()).toEqual(before);
+    });
+
     it('restores when the live journal is the backup journal, and brings a backed-up one back', async () => {
       const journal = {
         trade_taken: true,
@@ -1697,21 +1745,45 @@ describe('restoreRows', () => {
       },
     );
 
-    it('a journal entry written on a backed-up fire between the check and the delete is not deleted: the restore fails and changes nothing', async () => {
+    it('a journal entry written on a backed-up fire between the check and the delete is not deleted: the restore refuses and changes nothing', async () => {
       const a = await addFire({ fired_at: '2026-03-26T14:00:00Z' });
       const backup = await backupFires();
       beforeWriteOnce('DELETE FROM', () =>
         pg.query(`UPDATE ${GAMMA} SET trade_taken = true WHERE id = $1`, [a]),
       );
 
-      // The delete skips the fire, so putting it back collides with itself.
+      // The delete skips the fire, so a check right after it finds it still
+      // there, before the insert could collide with it.
       await expect(restoreGamma(backup)).rejects.toThrow(
-        /ws_gamma_setup_fires_pkey/,
+        /changed during the restore.*Nothing was changed/s,
       );
       const { rows } = await pg.query(
         `SELECT id::text AS id, trade_taken FROM ${GAMMA}`,
       );
       expect(rows).toEqual([{ id: a, trade_taken: true }]);
+    });
+
+    it('a journal entry cleared on a backed-up fire between the check and the delete is not overwritten: the restore refuses and changes nothing', async () => {
+      const a = await addFire({
+        fired_at: '2026-03-26T14:00:00Z',
+        trade_taken: true,
+        trade_notes: 'took it',
+      });
+      const backup = await backupFires();
+      beforeWriteOnce('DELETE FROM', () =>
+        pg.query(
+          `UPDATE ${GAMMA} SET trade_taken = false, trade_notes = NULL WHERE id = $1`,
+          [a],
+        ),
+      );
+
+      await expect(restoreGamma(backup)).rejects.toThrow(
+        /changed during the restore.*Nothing was changed/s,
+      );
+      const { rows } = await pg.query(
+        `SELECT id::text AS id, trade_taken, trade_notes FROM ${GAMMA}`,
+      );
+      expect(rows).toEqual([{ id: a, trade_taken: false, trade_notes: null }]);
     });
   });
 

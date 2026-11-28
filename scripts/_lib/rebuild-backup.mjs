@@ -55,7 +55,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-import { getETDateStr } from '../../src/utils/timezone.ts';
+import { getETDateStr, getETToday } from '../../src/utils/timezone.ts';
 import { EXIT_FAILED, EXIT_OK } from './backfill-cli.mjs';
 import {
   parseBackupText,
@@ -101,8 +101,10 @@ const RETURN_COLUMNS = Object.freeze([
  * row in its backup's dates, so the scope must stay a slice of a table, never
  * the table: 62 days is two months (the runbook's widest window is 51 days),
  * and no span of that size reaches back over a table's whole history. It also
- * bounds the size of every statement. A production probe measured 370 days of
- * day_embeddings, the widest rows, at about 6.5 MB; Neon's cap is 64 MB.
+ * bounds the size of every statement. A read-only production probe measured
+ * the latest 370 rows of day_embeddings, the widest rows, at 9,310,574 bytes
+ * (about 9.3 MB, the embedding text alone), so 62 days are about 1.6 MB;
+ * Neon's cap is 64 MB.
  */
 export const MAX_DATES = 62;
 
@@ -729,7 +731,7 @@ async function runGuarded(run, refusal) {
 export async function backupRows(sql, { table, dates, backupDir }) {
   assertAllowedTable(table);
   const days = normalizeDates(dates);
-  const today = getETDateStr(new Date());
+  const today = getETToday();
   const open = days.filter((d) => d >= today);
   if (open.length > 0) {
     throw new RebuildRefusal(
@@ -969,10 +971,15 @@ const journalColumnsOf = (info) =>
   info.columns.filter((c) => JOURNAL_COLUMNS.includes(c.name));
 
 /**
- * Refuse a restore of ws_gamma_setup_fires that would delete a live fire in
- * the backup's scope whose journal entry the backup does not hold: a fire with
- * a journal entry, that is not in the backup or is there with other journal
- * values (a restore puts the backup's journal back, so it must be the live one).
+ * Refuse a restore of ws_gamma_setup_fires that would overwrite the live
+ * journal. A restore puts the backup's journal columns back, so for every fire
+ * in the backup's scope the live journal must be the backup's, in both
+ * directions:
+ *   - a live fire with a journal entry that is not in the backup, or is there
+ *     with other journal values: the restore would delete or replace it;
+ *   - a backed-up fire that is still live with no journal entry while the
+ *     backup holds one (the entry was cleared since the backup): the restore
+ *     would put the old entry back over the clear.
  */
 async function assertJournalSurvives(sql, info, days, backup) {
   const live = await readScopeRows(sql, info, days);
@@ -982,23 +989,41 @@ async function assertJournalSurvives(sql, info, days, backup) {
       hasJournalEntry(row) &&
       !JOURNAL_COLUMNS.every((c) => row[c] === kept.get(row.id)?.[c]),
   );
+  const cleared = live.filter(
+    (row) => !hasJournalEntry(row) && hasJournalEntry(kept.get(row.id) ?? {}),
+  );
+  const problems = [];
   if (lost.length > 0) {
     const n = lost.length;
-    throw new RebuildRefusal(
+    problems.push(
       `${n} of the ${count(live.length, 'fire')} in the restore's scope ` +
         `${n === 1 ? 'carries' : 'carry'} a journal entry the backup does not ` +
         `hold (ids ${listSome(lost.map((r) => r.id))}), and a restore would ` +
-        'delete it. Nothing was changed.',
+        'delete it',
     );
+  }
+  if (cleared.length > 0) {
+    const n = cleared.length;
+    problems.push(
+      `${count(n, 'backed-up fire')} ${n === 1 ? 'has' : 'have'} a journal ` +
+        'entry in the backup that was cleared since ' +
+        `(ids ${listSome(cleared.map((r) => r.id))}), and a restore would put ` +
+        'the old entry back',
+    );
+  }
+  if (problems.length > 0) {
+    throw new RebuildRefusal(`${problems.join('; ')}. Nothing was changed.`);
   }
 }
 
 /**
  * The restore's DELETE: every row in the backup's dates or on a backed-up key.
- * For ws_gamma_setup_fires a fire is kept when it has a journal entry and the
- * backup does not hold its journal columns with the same values (compared by
- * the same SHA-256 as the writers); the final count check of the transaction
- * then raises. RETURNING the keys, as text.
+ * For ws_gamma_setup_fires a fire is deleted only if its journal is what the
+ * restore leaves in place: a backed-up fire whose journal columns still equal
+ * the backup's (compared by the same SHA-256 as the writers), or a fire not in
+ * the backup that has no journal entry. Any other fire is kept, whichever way
+ * its journal changed (an entry added, changed or cleared), and the check that
+ * follows the DELETE raises. RETURNING the keys, as text.
  */
 function restoreDeleteStatement(sql, info, backup) {
   const days = backup.manifest.dates;
@@ -1015,15 +1040,18 @@ function restoreDeleteStatement(sql, info, backup) {
   return sql`DELETE FROM ws_gamma_setup_fires AS f
       WHERE (${sql.unsafe(info.scopeExpr)} = ANY(${days}::date[])
              OR f.id = ANY(${keys}::bigint[]))
-        AND NOT (
-          (f.trade_taken OR f.trade_premium_cost IS NOT NULL
-           OR f.trade_premium_close IS NOT NULL
-           OR f.trade_pnl_dollars IS NOT NULL OR f.trade_notes IS NOT NULL)
-          AND NOT EXISTS (
+        AND (
+          EXISTS (
             SELECT 1
             FROM unnest(${keys}::bigint[], ${journalHashes}::text[]) AS b(id, hash)
             WHERE b.id = f.id
-              AND ${sql.unsafe(rowHashSql(journal, 'f'))} = b.hash))
+              AND ${sql.unsafe(rowHashSql(journal, 'f'))} = b.hash)
+          OR (
+            NOT (f.id = ANY(${keys}::bigint[]))
+            AND NOT (f.trade_taken OR f.trade_premium_cost IS NOT NULL
+                     OR f.trade_premium_close IS NOT NULL
+                     OR f.trade_pnl_dollars IS NOT NULL
+                     OR f.trade_notes IS NOT NULL)))
       RETURNING f.id::text AS key`;
 }
 
@@ -1041,11 +1069,13 @@ function restoreDeleteStatement(sql, info, backup) {
  * that fails its checksum.
  *
  * ws_gamma_setup_fires carries manual journal entries, which deleteGammaFires
- * never deletes, so the restore does not either: it refuses (before the
- * transaction, and in a dry run too) when a live fire in the scope has a
- * journal entry that the backup does not hold with the same values, and inside
- * the transaction its DELETE skips such a fire, so the final count check
- * raises and rolls everything back.
+ * never deletes, and a restore must not overwrite them either way: it refuses
+ * (before the transaction, and in a dry run too) when a live fire in the scope
+ * has a journal entry the backup does not hold with the same values, or when
+ * a backed-up fire's journal entry was cleared since the backup. Inside the
+ * transaction its DELETE skips any fire whose journal is not what the restore
+ * leaves in place, in either direction, and the check after the DELETE raises,
+ * rolling everything back.
  *
  * Without `apply` it does the checks and stops: a dry run. Returns `{ restored,
  * deleted }` (a dry run `{ restored: 0, wouldRestore, wouldDelete, notInBackup,
@@ -1086,6 +1116,14 @@ export async function restoreRows(sql, { table, backupPath, apply = false }) {
     () =>
       sql.transaction([
         restoreDeleteStatement(sql, info, backup),
+        // Right after the DELETE, before any insert could collide with a row
+        // it left: nothing of the scope may remain.
+        sql`SELECT CAST(CASE WHEN EXISTS (
+                SELECT 1 FROM ${sql.unsafe(info.tableIdent)}
+                WHERE ${sql.unsafe(info.scopeExpr)} = ANY(${days}::date[])
+                   OR ${sql.unsafe(info.keyIdent)} = ANY(${keys}::${keyArray})
+              ) THEN ${guardMessage(`${table} still holds rows of the backup's scope after the delete`)}::text
+              ELSE '0' END AS integer) AS guard`,
         ...batches.map((batch) => restoreInsertStatement(sql, info, batch)),
         sql`SELECT CAST(CASE WHEN (
                 SELECT count(*) FROM ${sql.unsafe(info.tableIdent)}
@@ -1098,8 +1136,9 @@ export async function restoreRows(sql, { table, backupPath, apply = false }) {
     `${table} changed during the restore (a row appeared in the backup's ` +
       'scope, or a fire gained a journal entry). Nothing was changed.',
   );
+  // results: the DELETE, its check, one result per insert batch, the final check.
   const restored = results
-    .slice(1, 1 + batches.length)
+    .slice(2, 2 + batches.length)
     .reduce((n, rows) => n + rows.length, 0);
   return { restored, deleted: results[0].length };
 }
