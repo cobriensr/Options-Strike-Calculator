@@ -170,7 +170,7 @@ function MinuteScrubberInner({
         value={display}
         onChange={(e) => onChange(Number.parseInt(e.target.value, 10))}
         aria-label="Snapshot minute (Central Time)"
-        className="flex-1 cursor-pointer accent-emerald-400"
+        className="min-w-0 flex-1 cursor-pointer accent-emerald-400"
       />
       {value != null && (
         <button
