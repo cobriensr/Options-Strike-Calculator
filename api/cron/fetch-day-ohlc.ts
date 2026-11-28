@@ -1,5 +1,5 @@
 /**
- * GET /api/cron/fetch-day-ohlc
+ * GET /api/cron/fetch-day-ohlc[?date=YYYY-MM-DD]
  *
  * Nightly cron that populates the OHLC + excursion columns on the
  * day_embeddings row for the most recent trading day. The source is the
@@ -18,8 +18,23 @@
  * Sat's run labels Fri. (The old Mon–Fri "yesterday" schedule labelled
  * Sunday on Mondays and never reached a Friday.)
  *
- * The target is always a trading day, so a day with no bars, or fewer
- * regular-session bars than the session has, means the feed failed:
+ * Manual rebuild: `GET ...?date=2026-09-21` with the CRON_SECRET bearer
+ * labels that ET date instead of the prior trading day. It exists for a
+ * day whose bars were repaired after the nightly run labelled it (or
+ * after embed-yesterday wrote its row): nothing else ever targets a past
+ * day again. Triggered by hand; Vercel's scheduler sends no query. The
+ * date is validated like embed-yesterday's (`api/_lib/cron-target-date.ts`):
+ * a real YYYY-MM-DD calendar date strictly BEFORE today (ET). Anything
+ * else (a bad format, today, a later day, a repeated param) throws before
+ * any source is read, and the wrapper answers 500 `{ error }` naming the
+ * cause. The override runs the same path as the nightly target: the
+ * same skips below, the same Postgres read and UPDATE. It cannot force a
+ * partial day through. Re-running a day is safe: the UPDATE is idempotent.
+ * A weekend or market holiday skips as `not_trading_day`, with no
+ * warning, because it has no session rather than a failed feed.
+ *
+ * The scheduled target is always a trading day, so a day with no bars, or
+ * fewer regular-session bars than the session has, means the feed failed:
  * the run skips with a Sentry warning rather than writing a label from
  * it. A DB reject while reading fails the run.
  *
@@ -29,11 +44,16 @@
  * Environment: CRON_SECRET, DATABASE_URL
  */
 
+import {
+  InvalidDateParamError,
+  resolveTargetDate,
+} from '../_lib/cron-target-date.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { readDayOhlcFromPostgres } from '../_lib/postgres-day-summary.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import {
   cashSessionMinutes,
+  isTradingDay,
   priorTradingDay,
 } from '../../src/data/marketHours.js';
 import {
@@ -70,7 +90,27 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const { logger } = ctx;
     // ctx.today is the ET date; a 6 PM CT run is still "today" in ET.
-    const targetDate = priorTradingDay(ctx.today);
+    const targetDate = resolveTargetDate(
+      ctx.req?.query.date,
+      ctx.today,
+      priorTradingDay,
+      'fetch-day-ohlc',
+    );
+    // The schedule only ever targets a trading day. A `?date=` can name a
+    // weekend or a holiday, which has no bars because it has no session:
+    // not a feed failure, so no warning.
+    if (!isTradingDay(targetDate)) {
+      logger.info(
+        { targetDate },
+        'fetch-day-ohlc: target is not a trading day',
+      );
+      metrics.increment('fetch_day_ohlc.not_trading_day');
+      return {
+        status: 'skipped',
+        message: 'not_trading_day',
+        metadata: { targetDate, skipped: true, reason: 'not_trading_day' },
+      };
+    }
     // The one source of the OHLC; kept in the run result and the log so
     // the key stays continuous with earlier runs.
     const source = 'postgres';
@@ -165,5 +205,15 @@ export default withCronInstrumentation(
       metadata: { targetDate, source, updated },
     };
   },
-  { marketHours: false, requireApiKey: false },
+  {
+    marketHours: false,
+    requireApiKey: false,
+    // `?date=` is read from the request.
+    passReq: true,
+    // A rejected `?date=` says why and names no date: no day was targeted.
+    // Any other error returns {}, which keeps the wrapper's own
+    // `{ job, error: 'Internal error' }` body.
+    errorPayload: (err) =>
+      err instanceof InvalidDateParamError ? { error: err.message } : {},
+  },
 );

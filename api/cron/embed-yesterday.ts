@@ -51,6 +51,10 @@
 
 import { vixBucketOf } from '../_lib/analog-range-forecast.js';
 import {
+  InvalidDateParamError,
+  resolveTargetDate,
+} from '../_lib/cron-target-date.js';
+import {
   DAY_EMBEDDING_DIMS,
   upsertDayEmbedding,
 } from '../_lib/day-embeddings.js';
@@ -68,7 +72,6 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import {
   cashSessionMinutes,
   isTradingDay,
-  parseIsoDate,
 } from '../../src/data/marketHours.js';
 
 // maxDuration (60s) is set in vercel.json's `functions{}` block
@@ -101,35 +104,14 @@ class EmbedYesterdayError extends Error {
   }
 }
 
-/** A rejected `?date=`: no day was targeted, so the payload carries no date. */
-class InvalidDateParamError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'InvalidDateParamError';
-  }
-}
-
 /**
  * The ET date to embed: `?date=` when given and valid, else the prior
  * weekday of `today`. Weekday-only stepping keeps the Tue–Sat schedule →
  * Mon–Fri mapping; a holiday is skipped by the handler rather than
  * re-embedding the day before.
  */
-function resolveTargetDate(dateParam: unknown, today: string): string {
-  if (dateParam === undefined) return priorWeekday(today);
-  // Any defined non-string (e.g. a repeated ?date= array) is invalid too.
-  if (typeof dateParam !== 'string' || parseIsoDate(dateParam) == null) {
-    throw new InvalidDateParamError(
-      'embed-yesterday: invalid date param (expected YYYY-MM-DD)',
-    );
-  }
-  // A day is embedded once it is over, the same as the nightly run.
-  if (dateParam >= today) {
-    throw new InvalidDateParamError(
-      `embed-yesterday: date ${dateParam} is not before today (${today})`,
-    );
-  }
-  return dateParam;
+function targetDateOf(dateParam: unknown, today: string): string {
+  return resolveTargetDate(dateParam, today, priorWeekday, 'embed-yesterday');
 }
 
 type SkipReason = 'not_trading_day' | 'no_summary' | 'incomplete_day';
@@ -165,7 +147,7 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const { today, logger: log } = ctx;
     const dateParam = ctx.req?.query.date;
-    const date = resolveTargetDate(dateParam, today);
+    const date = targetDateOf(dateParam, today);
     log.info(
       { date, invokedOn: today, override: dateParam !== undefined },
       'embed-yesterday start',
@@ -270,7 +252,7 @@ export default withCronInstrumentation(
       // Any other throw came after the handler resolved its target, so
       // resolving again from the same ctx cannot throw.
       return {
-        date: resolveTargetDate(ctx.req?.query.date, ctx.today),
+        date: targetDateOf(ctx.req?.query.date, ctx.today),
         error: msg,
       };
     },
