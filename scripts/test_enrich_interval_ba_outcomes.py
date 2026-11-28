@@ -1096,6 +1096,50 @@ def test_readers_default_to_the_day_files(run, monkeypatch, day_world, capsys):
     assert 'from the day files → interval-ba-outcomes-days-' in out
 
 
+def test_the_summary_carries_the_newest_day_file_time_it_read_for_the_analysis_to_compare(
+    run, day_world
+):
+    """An analysis of the CSV compares this with its own listing (days.priced_at), and names the
+    day files the nightly rewrote after the pricing."""
+    after = DAY + timedelta(days=1)
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY, after)
+    day_world.file(DAY, DAY_ALERT)  # an hour after its tape
+    day_world.file(after, [day_alert(after, '20:50:00', spot='6701.00')], at=day_world.now)
+    write_tape(run, [tick('20:50:00', SPXW_C, '6701.00')], day=after)
+
+    mod.main(['--from-date', DAY_ISO, '--to-date', after.isoformat()])
+
+    (summary,) = (run / 'out').glob('interval-ba-outcomes-summary-days-2*.md')
+    # The newest of the two files read is the later day's, written at `now`.
+    assert f'_Day files read: newest LastModified {day_world.now.isoformat()}_' in (
+        summary.read_text('utf-8')
+    )
+    assert days.priced_at(outcome_csv(run / 'out', days=True)) == day_world.now
+
+
+def test_a_repaired_days_new_time_is_the_one_the_summary_carries(run, day_world):
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY)  # missing: written at `now` by the repair
+    day_world.alerts[DAY] = DAY_ALERT
+
+    mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO])
+
+    assert days.priced_at(outcome_csv(run / 'out', days=True)) == day_world.now
+
+
+def test_the_snapshot_and_table_summaries_carry_no_day_file_time(run, monkeypatch):
+    write_tape(run, CLOSE_TAPE)
+    write_export(run, [export_row(SPXW_C, '20:50:00', '6701.00')])
+    fake_table(monkeypatch, [table_row(7, SPXW_C, '20:50:00', '6701.00')])
+
+    mod.main(['--export-end', DAY_ISO])
+    mod.main(['--source', 'table'])
+
+    for summary in (run / 'out').glob('interval-ba-outcomes-summary-*.md'):
+        assert 'Day files read' not in summary.read_text('utf-8')
+
+
 def test_the_default_range_runs_from_2026_01_02_through_the_newest_tape(
     run, monkeypatch, day_world
 ):

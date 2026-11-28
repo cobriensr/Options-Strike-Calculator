@@ -662,6 +662,10 @@ def enrich(
     # Aggregate summary tables.
     md_lines = ['# Interval B/A — forward-return experiment\n']
     md_lines.append(f'_Generated {stamp} UTC. Source: {source_header}_\n')
+    if files is not None:
+        # Read back by the analysis scripts (days.priced_at): a day file the nightly rewrites
+        # after this run is newer than this, and an analysis of the CSV names it.
+        md_lines.append(files.priced_line() + '\n')
     md_lines.append(
         f'\nReplays the {ticker} spot path in 5-min increments from each alert\'s '
         f'``fired_at`` to the close (15:00 CT, 12:00 CT on an early-close day). Each step is '
