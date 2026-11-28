@@ -13,7 +13,11 @@ vi.mock('../_lib/db.js', () => ({
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
-import { savePositions, getLatestPositions } from '../_lib/db-positions.js';
+import {
+  savePositions,
+  getLatestPositions,
+  getLatestCsvPositions,
+} from '../_lib/db-positions.js';
 import type { PositionInput } from '../_lib/db-positions.js';
 import { getDb } from '../_lib/db.js';
 
@@ -21,6 +25,22 @@ function mockSqlReturning(rows: unknown[]) {
   const tag = vi.fn().mockResolvedValueOnce(rows);
   vi.mocked(getDb).mockReturnValue(tag as unknown as ReturnType<typeof getDb>);
   return tag;
+}
+
+/**
+ * The text of the tagged-template call (each `${}` shown as `?`) and its
+ * bound values, so a test can pin the clauses the real SQL must carry. The
+ * clauses themselves run against Postgres in positions-upsert-pglite.test.ts.
+ */
+function firstCall(tag: ReturnType<typeof vi.fn>): {
+  text: string;
+  values: unknown[];
+} {
+  const [strings, ...values] = tag.mock.calls[0] as [
+    TemplateStringsArray,
+    ...unknown[],
+  ];
+  return { text: strings.join('?'), values };
 }
 
 const baseInput: PositionInput = {
@@ -57,6 +77,122 @@ describe('savePositions', () => {
     mockSqlReturning([]);
     const id = await savePositions(baseInput);
     expect(id).toBeNull();
+  });
+
+  it('returns null when the conflict guard skips the upsert (no RETURNING row)', async () => {
+    // The guard (see the next test) makes Postgres skip the DO UPDATE, so
+    // RETURNING yields nothing; the caller reads null as "not saved".
+    const tag = mockSqlReturning([]);
+    const id = await savePositions({ ...baseInput, accountHash: 'hash1' });
+    expect(id).toBeNull();
+    expect(tag).toHaveBeenCalledTimes(1);
+  });
+
+  it('guards the upsert so a Schwab save never replaces a paperMoney row', async () => {
+    const tag = mockSqlReturning([{ id: 7 }]);
+    await savePositions(baseInput);
+    const { text, values } = firstCall(tag);
+
+    expect(text).toMatch(/ON CONFLICT \(date, fetch_time\) DO UPDATE SET/);
+    // WHERE sits after the SET list and before RETURNING.
+    expect(text).toMatch(
+      /unrealized_pnl = EXCLUDED\.unrealized_pnl\s+WHERE positions\.account_hash <> \?\s+OR EXCLUDED\.account_hash = \?\s+RETURNING id/,
+    );
+    // Both comparands are the CSV marker, bound after the 16 insert values.
+    expect(values.slice(-2)).toEqual(['paperMoney', 'paperMoney']);
+  });
+});
+
+describe('getLatestCsvPositions', () => {
+  beforeEach(() => {
+    vi.mocked(getDb).mockReset();
+  });
+
+  it('reads the date’s newest paperMoney row, newest first', async () => {
+    const tag = mockSqlReturning([]);
+    await getLatestCsvPositions('2026-06-07');
+
+    expect(tag).toHaveBeenCalledTimes(1);
+    const { text, values } = firstCall(tag);
+    expect(values).toEqual(['2026-06-07', 'paperMoney']);
+    expect(text).toMatch(/FROM positions\s+WHERE date = \?/);
+    expect(text).toMatch(/AND account_hash = \?/);
+    expect(text).toMatch(/ORDER BY created_at DESC\s+LIMIT 1/);
+  });
+
+  it('returns null when the date has no paperMoney row', async () => {
+    mockSqlReturning([]);
+    expect(await getLatestCsvPositions('2026-06-07')).toBeNull();
+  });
+
+  it('parses legs stored as a JSON string and returns the row’s fetch_time', async () => {
+    mockSqlReturning([
+      {
+        legs: JSON.stringify([
+          {
+            putCall: 'CALL',
+            symbol: 'SPXW',
+            strike: 6900,
+            expiration: '2026-06-07',
+            quantity: -1,
+            averagePrice: 2,
+            marketValue: -150,
+          },
+        ]),
+        fetch_time: '10:15',
+      },
+    ]);
+    const out = await getLatestCsvPositions('2026-06-07');
+    expect(out).toEqual({
+      fetchTime: '10:15',
+      legs: [
+        {
+          putCall: 'CALL',
+          symbol: 'SPXW',
+          strike: 6900,
+          expiration: '2026-06-07',
+          quantity: -1,
+          averagePrice: 2,
+          marketValue: -150,
+        },
+      ],
+    });
+  });
+
+  it('passes legs already parsed as an array through unchanged', async () => {
+    const legs = [
+      {
+        putCall: 'PUT',
+        symbol: 'SPXW',
+        strike: 6700,
+        expiration: '2026-06-07',
+        quantity: 1,
+        averagePrice: 1,
+        marketValue: 90,
+      },
+    ];
+    mockSqlReturning([{ legs, fetch_time: '09:40' }]);
+    const out = await getLatestCsvPositions('2026-06-07');
+    expect(out?.legs).toEqual(legs);
+    expect(out?.fetchTime).toBe('09:40');
+  });
+
+  it('returns an empty legs array for a CSV row with no open legs (it still counts as a row)', async () => {
+    mockSqlReturning([{ legs: '[]', fetch_time: '11:02' }]);
+    expect(await getLatestCsvPositions('2026-06-07')).toEqual({
+      legs: [],
+      fetchTime: '11:02',
+    });
+  });
+
+  it('lets a database error through (the endpoint maps it to 503 or 500)', async () => {
+    const tag = vi.fn().mockRejectedValueOnce(new Error('connection lost'));
+    vi.mocked(getDb).mockReturnValue(
+      tag as unknown as ReturnType<typeof getDb>,
+    );
+    await expect(getLatestCsvPositions('2026-06-07')).rejects.toThrow(
+      'connection lost',
+    );
   });
 });
 

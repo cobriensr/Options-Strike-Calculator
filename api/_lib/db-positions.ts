@@ -47,8 +47,27 @@ export interface PositionInput {
 // ============================================================
 
 /**
+ * `positions.account_hash` of a row saved from a thinkorswim paperMoney CSV
+ * upload. A Schwab save stores the live account's own hash instead, so this
+ * value is what tells the two apart: `savePositions` never lets a Schwab save
+ * replace it, and `getLatestCsvPositions` reads only rows that carry it.
+ */
+export const PAPER_MONEY_ACCOUNT_HASH = 'paperMoney';
+
+/** `positions.legs` is JSONB; some drivers hand it back as text. */
+function legsFromRow(raw: unknown): PositionLeg[] {
+  return (typeof raw === 'string' ? JSON.parse(raw) : raw) as PositionLeg[];
+}
+
+/**
  * Save current positions. Uses ON CONFLICT DO UPDATE so re-fetching
- * the same date+time replaces the previous snapshot.
+ * the same date+time replaces the previous snapshot, except that a Schwab
+ * save never replaces a paperMoney CSV row in the same (date, CT minute): the
+ * DO UPDATE runs only when the stored row is not a CSV row, or when this save
+ * is itself a CSV. A CSV still replaces any row in its minute.
+ *
+ * Returns the row id, or null when the guard skipped the update (RETURNING
+ * yields no row then), which callers read as "not saved".
  */
 export async function savePositions(
   input: PositionInput,
@@ -87,6 +106,8 @@ export async function savePositions(
       total_credit = EXCLUDED.total_credit,
       current_value = EXCLUDED.current_value,
       unrealized_pnl = EXCLUDED.unrealized_pnl
+    WHERE positions.account_hash <> ${PAPER_MONEY_ACCOUNT_HASH}
+       OR EXCLUDED.account_hash = ${PAPER_MONEY_ACCOUNT_HASH}
     RETURNING id
   `,
     2,
@@ -94,6 +115,38 @@ export async function savePositions(
   );
 
   return result.length > 0 ? ((result[0]?.id as number) ?? null) : null;
+}
+
+/**
+ * The date's newest paperMoney CSV row: its legs and the CT minute it was
+ * saved under. Null when no CSV was uploaded for the date.
+ *
+ * A row with no open legs still counts, so the caller can tell "the CSV says
+ * flat" from "no CSV today".
+ */
+export async function getLatestCsvPositions(
+  date: string,
+): Promise<{ legs: PositionLeg[]; fetchTime: string } | null> {
+  const sql = getDb();
+  const rows = await withDbRetry(
+    () => sql`
+    SELECT legs, fetch_time
+    FROM positions
+    WHERE date = ${date}
+      AND account_hash = ${PAPER_MONEY_ACCOUNT_HASH}
+    ORDER BY created_at DESC
+    LIMIT 1
+  `,
+    2,
+    10_000,
+  );
+
+  if (rows.length === 0) return null;
+  const row = rows[0]!;
+  return {
+    legs: legsFromRow(row.legs),
+    fetchTime: row.fetch_time as string,
+  };
 }
 
 /**
@@ -134,9 +187,7 @@ export async function getLatestPositions(date: string): Promise<{
   const row = rows[0]!;
   return {
     summary: row.summary as string,
-    legs: (typeof row.legs === 'string'
-      ? JSON.parse(row.legs)
-      : row.legs) as PositionLeg[],
+    legs: legsFromRow(row.legs),
     fetchTime: row.fetch_time as string,
     stats: {
       totalSpreads: row.total_spreads as number,
