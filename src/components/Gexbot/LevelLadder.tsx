@@ -31,7 +31,7 @@
  * Spec: docs/superpowers/specs/gexbot-level-ladder-2026-11-22.md
  */
 
-import { memo, useMemo, type ReactNode } from 'react';
+import { Fragment, memo, useMemo, type ReactNode } from 'react';
 
 import { useGexbotData } from '../../hooks/useGexbotData';
 import type { MarketSession } from '../../hooks/useMarketData';
@@ -235,29 +235,40 @@ const MarkerRowItem = memo(function MarkerRowItem({
 });
 
 /**
- * What fell outside the window on one side, as the model prints it. A short
- * strike out there keeps its odds in that line, away from the column header
- * that calls them priced, so a line that prints a probability says so itself
- * (a breached strike prints none, only how far past it spot is).
+ * What fell outside the window on one side: the model's items, "; "-joined
+ * after the side word, as the model's own `edge.text` reads. A short strike
+ * out there keeps its odds in its item, away from the column header that calls
+ * them priced, so each item that prints a probability carries " · priced odds"
+ * right after its own parenthesis, before the next item. That way the word
+ * sits next to the odds it describes and not after a level that follows. A
+ * breached strike prints no probability (only how far past it spot is), and a
+ * level or bound has none, so those items get no suffix.
  */
 function EdgeLine({
   testId,
+  side,
   edge,
   className,
 }: {
   testId: string;
+  side: 'Above' | 'Below';
   edge: LadderEdge;
   className: string;
 }) {
   if (edge.text == null) return null;
-  const printsOdds = edge.items.some((item) => item.odds?.finishBeyond != null);
   return (
     <div
       data-testid={testId}
       className={`text-tertiary text-[10px] break-words ${className}`}
     >
-      {edge.text}
-      {printsOdds && ' · priced odds'}
+      {`${side}: `}
+      {edge.items.map((item, i) => (
+        <Fragment key={item.text}>
+          {i > 0 && '; '}
+          {item.text}
+          {item.odds?.finishBeyond != null && ' · priced odds'}
+        </Fragment>
+      ))}
     </div>
   );
 }
@@ -423,6 +434,7 @@ function LevelLadderInner({
 
       <EdgeLine
         testId="level-ladder-edge-above"
+        side="Above"
         edge={above}
         className="px-3 pt-2"
       />
@@ -440,6 +452,7 @@ function LevelLadderInner({
       </ul>
       <EdgeLine
         testId="level-ladder-edge-below"
+        side="Below"
         edge={below}
         className="px-3 pb-2"
       />

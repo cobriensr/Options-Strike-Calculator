@@ -323,16 +323,45 @@ describe('<LevelLadder> layout', () => {
     );
   });
 
-  it('says "priced" once on an edge line that also holds levels', () => {
+  // The word sits right after the short strike's own odds, before the next
+  // item, whichever side of it the level falls; it never trails a level.
+  it.each([
+    [
+      'a level after the call',
+      7700,
+      'Above: Call 7,670 (CLEAR 1.33σ · touch 18% · finish beyond 9%) · priced odds; Classic major positive · OI 7,700',
+    ],
+    [
+      'a level before the call',
+      7660,
+      'Above: Classic major positive · OI 7,660; Call 7,670 (CLEAR 1.33σ · touch 18% · finish beyond 9%) · priced odds',
+    ],
+  ])(
+    'puts "priced" beside the short strike\'s odds on a mixed edge line: %s',
+    (_where, level, expected) => {
+      answer(
+        ready(snapshot({ majorPosOi: level })),
+        ready(expectedMove({ expectedMove: 61.5 })),
+      );
+      renderLadder({ allDeltas: [deltaRow(10, 7670, 7510)] });
+      const text = screen.getByTestId('level-ladder-edge-above').textContent;
+      expect(text).toBe(expected);
+      expect(text?.match(/priced/g)).toHaveLength(1);
+      // The level carries no suffix of its own.
+      expect(text).not.toMatch(/OI [\d,]+ · priced/);
+    },
+  );
+
+  it('joins several edge items with "; " and carries no "priced" without odds', () => {
+    // Two levels above the window: the model's own line format, no odds.
     answer(
-      ready(snapshot({ majorPosOi: 7700 })),
-      ready(expectedMove({ expectedMove: 61.5 })),
+      ready(snapshot({ majorPosOi: 7700, zeroMcall: 7720 })),
+      ready(expectedMove()),
     );
-    renderLadder({ allDeltas: [deltaRow(10, 7670, 7510)] });
-    const text = screen.getByTestId('level-ladder-edge-above').textContent;
-    expect(text).toContain('Classic major positive · OI 7,700');
-    expect(text).toContain('Call 7,670 (CLEAR');
-    expect(text?.match(/priced/g)).toHaveLength(1);
+    renderLadder({ allDeltas: null });
+    expect(screen.getByTestId('level-ladder-edge-above').textContent).toBe(
+      'Above: Classic major positive · OI 7,700; State major call 7,720',
+    );
   });
 
   it('prints no "priced" for a breached strike on an edge line', () => {
