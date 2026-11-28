@@ -60,7 +60,7 @@ import {
   type PositionLeg,
 } from '../_lib/db.js';
 import { TransientDbError } from '../_lib/transient-db-error.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 describe('GET /api/positions', () => {
   const mockSql = vi.fn();
@@ -1206,6 +1206,8 @@ describe('GET /api/positions?readonly=1', () => {
   // ── Failure modes, each surfaced by name ─────────────────────
 
   it('a transient CSV read failure answers 503 with Retry-After, no Schwab fallback, no Sentry event', async () => {
+    const doneSpy = vi.fn();
+    vi.mocked(metrics.request).mockReturnValueOnce(doneSpy);
     vi.mocked(getLatestCsvPositions).mockRejectedValueOnce(
       new TransientDbError(new Error('fetch failed')),
     );
@@ -1219,12 +1221,17 @@ describe('GET /api/positions?readonly=1', () => {
       error: 'temporarily unavailable',
       transient: true,
     });
+    // The request metric records the 503 that was sent, not a guessed 500.
+    expect(doneSpy).toHaveBeenCalledTimes(1);
+    expect(doneSpy).toHaveBeenCalledWith({ status: 503 });
     expect(schwabTraderFetch).not.toHaveBeenCalled();
     expect(savePositions).not.toHaveBeenCalled();
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('a genuine CSV read failure answers an opaque 500 and is captured, with no Schwab fallback', async () => {
+    const doneSpy = vi.fn();
+    vi.mocked(metrics.request).mockReturnValueOnce(doneSpy);
     vi.mocked(getLatestCsvPositions).mockRejectedValueOnce(
       new Error('relation "positions" does not exist'),
     );
@@ -1240,6 +1247,8 @@ describe('GET /api/positions?readonly=1', () => {
         message: 'relation "positions" does not exist',
       }),
     );
+    expect(doneSpy).toHaveBeenCalledTimes(1);
+    expect(doneSpy).toHaveBeenCalledWith({ status: 500 });
     expect(schwabTraderFetch).not.toHaveBeenCalled();
     expect(savePositions).not.toHaveBeenCalled();
   });
@@ -1395,6 +1404,42 @@ describe('GET /api/positions without the flag (plain read) and POST', () => {
 
   beforeEach(() => {
     resetPositionMocks(mockSql);
+  });
+
+  // The plain GET shares its catch with the read-only mode, so the request
+  // metric must record the status actually sent here too.
+  it('a transient error records 503 in the request metric and answers 503', async () => {
+    const doneSpy = vi.fn();
+    vi.mocked(metrics.request).mockReturnValueOnce(doneSpy);
+    vi.mocked(schwabTraderFetch).mockRejectedValueOnce(
+      new TransientDbError(new Error('fetch failed')),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { date: DAY } }), res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(doneSpy).toHaveBeenCalledTimes(1);
+    expect(doneSpy).toHaveBeenCalledWith({ status: 503 });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a genuine error records 500 in the request metric and answers an opaque 500', async () => {
+    const doneSpy = vi.fn();
+    vi.mocked(metrics.request).mockReturnValueOnce(doneSpy);
+    vi.mocked(schwabTraderFetch).mockRejectedValueOnce(
+      new Error('Network failure: secret-host.internal:5432 refused'),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { date: DAY } }), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Failed to fetch positions' });
+    expect(doneSpy).toHaveBeenCalledTimes(1);
+    expect(doneSpy).toHaveBeenCalledWith({ status: 500 });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('still saves, never reads the CSV row, and adds no source field', async () => {

@@ -43,25 +43,17 @@ import {
   type PositionInput,
   type PositionLeg,
 } from '../_lib/db.js';
-import { applyMigration } from './pglite-migrations';
+import { applyMigration, neonOverPglite } from './pglite-migrations';
 
 let pg: PGlite;
 const originalUrl = process.env.DATABASE_URL;
-
-/** Neon-shaped tagged template over pglite: resolves to the rows. */
-function taggedSql(db: PGlite) {
-  return async (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const text = strings.reduce((acc, part, i) => `${acc}$${i}${part}`);
-    return (await db.query(text, values)).rows;
-  };
-}
 
 /** The migration that creates the positions table. */
 const POSITIONS_TABLE_ID = 1;
 
 beforeAll(async () => {
   pg = await PGlite.create();
-  holder.sql = taggedSql(pg);
+  holder.sql = neonOverPglite(pg);
   process.env.DATABASE_URL = 'postgres://pglite';
   _resetDb();
   await initDb();

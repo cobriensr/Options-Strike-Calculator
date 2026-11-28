@@ -445,17 +445,18 @@ function livePositionsBody(r: PositionResponse, legs: PositionLeg[]) {
 
 /**
  * The GET catch: a transient Neon blip is a 503, anything else an opaque 500
- * that goes to Sentry.
+ * that goes to Sentry. `done` is passed through so the request metric records
+ * the status actually sent, not a guessed 500.
  */
 function sendPositionsReadError(
   res: VercelResponse,
   err: unknown,
   done: RequestDone,
 ) {
-  done({ status: 500, error: 'positions_fetch_error' });
   sendDbErrorResponse(res, err, {
     label: 'positions',
     serverErrorBody: { error: 'Failed to fetch positions' },
+    done,
   });
 }
 
