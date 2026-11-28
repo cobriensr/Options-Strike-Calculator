@@ -418,8 +418,8 @@ describe('--dry-run', () => {
 
 // ── detection (no flag) ─────────────────────────────────────────────────────
 
-describe('a run with no flags', () => {
-  it('inserts every candidate, fills outcomes table-wide and prints the summary', async () => {
+describe('a detection run', () => {
+  beforeEach(() => {
     world.bars = barRows('2026-04-14');
     world.snapshots = [
       {
@@ -431,7 +431,24 @@ describe('a run with no flags', () => {
     ];
     world.pending = [PENDING_FIRE];
     mockDetectE1.mockImplementation(cannedE1);
+  });
 
+  it('bounds its outcome fill to the explicit window, as Runbook C runs it', async () => {
+    expect(await run('--from', '2026-04-14', '--to', '2026-04-14')).toBe(0);
+
+    // An unbounded fill would also touch every NULL-ret_30m fire outside the
+    // window, and so outside the backup taken for it.
+    const fills = callsMatching(/WHERE ret_30m IS NULL/);
+    expect(fills).toHaveLength(1);
+    expect(fills[0]?.values).toEqual([
+      '2026-04-14T04:00:00.000Z',
+      '2026-04-15T04:00:00.000Z',
+    ]);
+    expect(callsMatching(/INSERT INTO ws_gamma_setup_fires/)).toHaveLength(3);
+    expect(joined(log)).toMatch(/outcome backfill updated 1 rows/);
+  });
+
+  it('with no flags inserts every candidate, fills outcomes table-wide and prints the summary', async () => {
     expect(await run()).toBe(0);
 
     // insertFires keeps its per-row loop (a pure move; batching is out of scope).
@@ -792,6 +809,26 @@ describe('--context-only', () => {
       expect(joined(error)).toMatch(/no SPX candles for 2026-09-14/);
       expect(callsMatching(/UPDATE/)).toEqual([]);
     });
+
+    it.each([
+      ['no prior close', 0],
+      ['an unreadable prior close', Number.NaN],
+    ])(
+      'refuses a date with %s instead of writing a zero gap, and writes no earlier date either',
+      async (_label, priorClose) => {
+        // 09-14 is fine, 09-15 has no prior close: all reads come first.
+        mockLoadDayContext.mockImplementation(async (_sql, now: Date) =>
+          now.toISOString().startsWith(TUE)
+            ? dayContext({ prior_close: priorClose, open_gap_pct: 0 })
+            : dayContext(),
+        );
+
+        expect(await run('--context-only', '--from', MON, '--to', TUE)).toBe(1);
+
+        expect(joined(error)).toMatch(/no prior-day SPX close for 2026-09-15/);
+        expect(callsMatching(/UPDATE/)).toEqual([]);
+      },
+    );
 
     it('refuses a weekend date, which has no tier', async () => {
       world.contextFires = [storedFire('2026-09-19')];

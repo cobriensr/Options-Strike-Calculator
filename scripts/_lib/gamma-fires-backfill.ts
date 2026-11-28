@@ -999,7 +999,10 @@ interface NewContext {
   confidence_tier: ConfidenceTier;
 }
 
-/** A value as printed, six-ish digits: the CHANGED flag compares these. */
+/**
+ * A value as printed, to eight significant digits: the CHANGED flag compares
+ * these.
+ */
 function formatValue(value: string | number | boolean | null): string {
   if (value == null) return 'null';
   if (typeof value === 'boolean') return String(value);
@@ -1067,6 +1070,12 @@ async function runContextOnly(
     if (!Number.isFinite(ctx.day_open) || ctx.day_open <= 0) {
       throw new Error(
         `no SPX candles for ${date}; refusing to overwrite its day context`,
+      );
+    }
+    // loadDayContext reports a gap of 0 when the prior close is missing.
+    if (!Number.isFinite(ctx.prior_close) || ctx.prior_close <= 0) {
+      throw new Error(
+        `no prior-day SPX close for ${date}; refusing to write a zero open gap`,
       );
     }
     planned.push({
