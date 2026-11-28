@@ -17,10 +17,12 @@
  *
  * After the close the live route holds the last session's map: the section
  * header then carries the shared CLOSED badge ("CLOSED · as of Fri 3:00 PM
- * CT") beside the slot picker, the body header keeps its in-session "Slot
- * 3:00 PM CT · <expiry>" form, and the slot list is that session's. A picked
- * slot is a past slice by choice and never gets the badge, nor does an error
- * body.
+ * CT", from the live response's `asOf`, as the other two GEXBot panels' are)
+ * beside the slot picker, the body header keeps its in-session "Slot 3:00 PM
+ * CT · <expiry>" form, and the slot list is that session's. A picked slot is a
+ * past slice by choice and never gets the badge, nor does an error body, nor
+ * the picked slot's view still held after "Return to live" (the hook has no
+ * `asOf` for it until the live read lands).
  */
 
 import { memo } from 'react';
@@ -154,8 +156,11 @@ function PeriscopePanelInner({
   // The live route after the close holds the last session's map. A picked slot
   // is a past slice by choice, never "the close", and a held view over an error
   // body (a picked slot's, while the live route fails) is not the close either.
+  // The badge is dated by the live response's own `asOf`, which the hook
+  // withholds while it holds a picked slot's response (a "Return to live" whose
+  // read is still out), so that response never dates the live map.
   const showClosedBadge =
-    isLive && !marketOpen && view != null && error == null;
+    isLive && !marketOpen && asOf != null && error == null;
 
   return (
     <SectionBox
@@ -165,10 +170,7 @@ function PeriscopePanelInner({
         // picker get their own spaced, wrapping, right-aligned row.
         <div className="flex flex-wrap items-center justify-end gap-2">
           {showClosedBadge && (
-            <ClosedBadge
-              asOf={view.capturedAt}
-              testId="periscope-closed-badge"
-            />
+            <ClosedBadge asOf={asOf} testId="periscope-closed-badge" />
           )}
           <SlotPicker
             displayedDate={displayedDate}

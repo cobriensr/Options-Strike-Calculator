@@ -464,6 +464,66 @@ describe('PeriscopePanel: closed session', () => {
     expect(screen.queryByText(/· CLOSED/)).toBeNull();
   });
 
+  it('dates the badge from asOf, not from the view’s capture time', () => {
+    setNow(SATURDAY);
+    // The held view is the 2:50 slice; the live response's own capture is 3:00.
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView('2026-11-20T20:50:00Z')}
+        asOf={FRIDAY_LAST}
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    expect(screen.getByTestId('periscope-closed-badge').textContent).toBe(
+      'CLOSED · as of Fri 3:00 PM CT',
+    );
+  });
+
+  it('shows the badge over an empty map the live response dated (no_spot)', () => {
+    setNow(SATURDAY);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        emptyReason="no_spot"
+        asOf={FRIDAY_LAST}
+        availableSlots={FRIDAY_SLOTS}
+      />,
+    );
+    expect(screen.getByTestId('periscope-closed-badge').textContent).toBe(
+      'CLOSED · as of Fri 3:00 PM CT',
+    );
+    expect(
+      screen.getByText('Waiting for SPX spot from index_candles_1m.'),
+    ).toBeInTheDocument();
+  });
+
+  // The hook holds a picked slot's view, with asOf null, until the live read
+  // lands after "Return to live": the panel is live and closed with a view and
+  // nothing to date it by.
+  it('no badge while the view held is no live response’s: live and closed, asOf null', () => {
+    setNow(SATURDAY);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        marketOpen={false}
+        view={fridayView('2026-11-20T20:50:00Z')}
+        asOf={null}
+        loading={true}
+        availableSlots={FRIDAY_SLOTS}
+        selectedSlot={null}
+      />,
+    );
+    expect(screen.queryByTestId('periscope-closed-badge')).toBeNull();
+    expect(screen.queryByText(/CLOSED/)).toBeNull();
+    // The held view still renders: only its dating is withheld.
+    expect(
+      screen.getByText(/^Slot 2:50\sPM CT · 2026-11-20$/),
+    ).toBeInTheDocument();
+  });
+
   it('puts the badge beside the slot picker in a spaced, wrapping row inside the section header', () => {
     setNow(SATURDAY);
     render(
@@ -471,6 +531,7 @@ describe('PeriscopePanel: closed session', () => {
         {...baseProps}
         marketOpen={false}
         view={fridayView()}
+        asOf={FRIDAY_LAST}
         availableSlots={FRIDAY_SLOTS}
       />,
     );
@@ -500,6 +561,7 @@ describe('PeriscopePanel: closed session', () => {
         {...baseProps}
         marketOpen={false}
         view={fridayView()}
+        asOf={FRIDAY_LAST}
         availableSlots={FRIDAY_SLOTS}
       />,
     );
@@ -515,6 +577,7 @@ describe('PeriscopePanel: closed session', () => {
         {...baseProps}
         marketOpen={false}
         view={makeView({ capturedAt: 'not a time' })}
+        asOf="not a time"
       />,
     );
     // No label to show, so no dangling CLOSED.
@@ -532,6 +595,7 @@ describe('PeriscopePanel: closed session', () => {
         {...baseProps}
         marketOpen={false}
         view={fridayView('2026-11-20T20:50:00Z')}
+        asOf={FRIDAY_LAST}
         error="HTTP 500"
         availableSlots={FRIDAY_SLOTS}
       />,
@@ -649,6 +713,7 @@ describe('PeriscopePanel: closed session', () => {
         {...baseProps}
         marketOpen={false}
         view={fridayView('2026-11-20T20:50:00Z')}
+        asOf={FRIDAY_LAST}
         availableSlots={FRIDAY_SLOTS}
         selectedSlot={{ date: '2026-11-20', time: '14:50' }}
       />,

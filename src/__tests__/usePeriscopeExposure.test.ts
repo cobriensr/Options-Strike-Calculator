@@ -937,7 +937,7 @@ describe('usePeriscopeExposure: the open flip', () => {
 describe('usePeriscopeExposure: a picked slot ignores the after-close rules', () => {
   const SLOT = { date: '2026-11-20', time: '15:00' };
 
-  it('keeps a body from before today’s open, with its asOf and slots, and reads /api/periscope-exposure', async () => {
+  it('keeps a body from before today’s open, with its slots but no asOf, and reads /api/periscope-exposure', async () => {
     fakeClock(MON_JUST_OPEN);
     mockFetchSequence(answerWith(closedBody()));
     const { result } = renderHook(() =>
@@ -947,7 +947,8 @@ describe('usePeriscopeExposure: a picked slot ignores the after-close rules', ()
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(mockFetch.mock.calls[0]![0]).toMatch(/^\/api\/periscope-exposure\?/);
     expect(result.current.view?.spot).toBe(6000);
-    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+    // A picked slice is a past one by choice: its capture time dates nothing.
+    expect(result.current.asOf).toBeNull();
     expect(result.current.availableSlots).toEqual(FRI_SLOTS);
     expect(result.current.emptyReason).toBeNull();
   });
@@ -1047,6 +1048,130 @@ describe('usePeriscopeExposure: a picked slot ignores the after-close rules', ()
 
     await advance(10 * 60_000);
     expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// `asOf` dates the live route's last session: the panel labels its CLOSED
+// badge from it, and the slot picker shows it beside "live". A response from a
+// picked slot, held while the route changes, must never date either one.
+describe('usePeriscopeExposure: asOf dates only a live-route response', () => {
+  const SLOT = { date: '2026-11-20', time: '14:50' };
+  const PICKED_AT = '2026-11-20T20:50:00.000Z';
+  const LIVE_AT = '2026-11-20T21:02:10.000Z';
+  type SlotProps = { slot: typeof SLOT | null };
+  const useRoute = ({ slot }: SlotProps) =>
+    usePeriscopeExposure({ marketOpen: false, selectedSlot: slot });
+
+  it('has no asOf while the picked slot’s own response is held', async () => {
+    fakeClock(FRI_LATER);
+    mockFetchSequence(
+      answerWith(closedBody({ asOf: PICKED_AT, availableSlots: FRI_SLOTS })),
+    );
+    const { result } = renderHook(useRoute, {
+      initialProps: { slot: SLOT } as SlotProps,
+    });
+    await advance(0);
+    expect(mockFetch.mock.calls[0]![0]).toMatch(/^\/api\/periscope-exposure\?/);
+    expect(result.current.view).not.toBeNull();
+    expect(result.current.asOf).toBeNull();
+  });
+
+  it('has no asOf from the moment a slot is picked, though a live response is held', async () => {
+    fakeClock(FRI_LATER);
+    let landPicked: ((r: Response) => void) | undefined;
+    mockFetchSequence(
+      answerWith(closedBody()),
+      () =>
+        new Promise<Response>((resolve) => {
+          landPicked = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(useRoute, {
+      initialProps: { slot: null } as SlotProps,
+    });
+    await advance(0);
+    expect(result.current.asOf).toBe(FRI_CLOSE_AT);
+
+    // The picked slot's read is out, the live response still held: the held
+    // map is not the picked slot's, so it dates nothing.
+    rerender({ slot: SLOT });
+    await advance(0);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(result.current.view?.spot).toBe(6000);
+    expect(result.current.asOf).toBeNull();
+
+    await act(async () => {
+      landPicked?.(
+        jsonResponse(closedBody({ asOf: PICKED_AT, data: makeView() })),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.asOf).toBeNull();
+  });
+
+  it('has no asOf from "Return to live" until the live read lands, then the live response’s', async () => {
+    fakeClock(FRI_LATER);
+    let landLive: ((r: Response) => void) | undefined;
+    mockFetchSequence(
+      answerWith(closedBody({ asOf: PICKED_AT })),
+      () =>
+        new Promise<Response>((resolve) => {
+          landLive = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(useRoute, {
+      initialProps: { slot: SLOT } as SlotProps,
+    });
+    await advance(0);
+    expect(result.current.view?.spot).toBe(6000);
+    expect(result.current.asOf).toBeNull();
+
+    // Back to live: the picked slot's response stays in place while the live
+    // read is out, with no error. Its capture time must not date the live map.
+    rerender({ slot: null });
+    await advance(0);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[1]![0]).toBe('/api/periscope-map');
+    expect(result.current.view?.spot).toBe(6000);
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(true);
+    expect(result.current.asOf).toBeNull();
+
+    await act(async () => {
+      landLive?.(jsonResponse(closedBody({ asOf: LIVE_AT })));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.asOf).toBe(LIVE_AT);
+  });
+
+  it('has no asOf in session either, between "Return to live" and the live read', async () => {
+    fakeClock(MON_10_CT);
+    let landLive: ((r: Response) => void) | undefined;
+    mockFetchSequence(
+      answerWith(closedBody({ asOf: PICKED_AT })),
+      () =>
+        new Promise<Response>((resolve) => {
+          landLive = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(
+      ({ slot }: SlotProps) =>
+        usePeriscopeExposure({ marketOpen: true, selectedSlot: slot }),
+      { initialProps: { slot: SLOT } as SlotProps },
+    );
+    await advance(0);
+    expect(result.current.asOf).toBeNull();
+
+    rerender({ slot: null });
+    await advance(0);
+    expect(result.current.asOf).toBeNull();
+
+    await act(async () => {
+      landLive?.(jsonResponse(liveBody('2026-11-23T15:59:30.000Z')));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.asOf).toBe('2026-11-23T15:59:30.000Z');
   });
 });
 

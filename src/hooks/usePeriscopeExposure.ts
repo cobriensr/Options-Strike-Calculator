@@ -17,7 +17,9 @@
  * Polls at POLL_INTERVALS.PERISCOPE (60s) during RTH; pauses outside
  * market hours.
  *
- * Returns the structured view + loading + error + asOf timestamp.
+ * Returns the structured view + loading + error + asOf timestamp (the live
+ * route's own: null for a picked slot, and until the live read lands after
+ * "Return to live").
  * The view is null when GEXBot has no fresh capture for today's expiry
  * yet — the panel renders a "no GEXBot capture for today yet"
  * placeholder rather than crashing.
@@ -26,7 +28,9 @@
  * its capture time, `asOf` (null on `no_slot`, which no capture backs), with
  * the session's `availableSlots` (spec: gexbot-after-close-design). On the live
  * route only (no picked slot) the hook:
- *  - exposes `asOf`, checked to be an ISO timestamp (`asOfFrom`);
+ *  - exposes `asOf`, checked to be an ISO timestamp (`asOfFrom`), and only for a
+ *    response read from this route: a picked slot's response, still held after
+ *    "Return to live", is no live map's date;
  *  - drops a response whose newest capture (its `asOf`, else its last listed
  *    slot) is before today's open once the market is open: a tab carried over
  *    from the closed view, an edge-cached closed reply, a client clock ahead of
@@ -87,10 +91,13 @@ export interface UsePeriscopeExposureReturn {
    *  "waiting for first slot" vs "no SPX spot yet" message. */
   emptyReason: 'no_spot' | 'no_slot' | null;
   /**
-   * The capture time of the response, as an ISO timestamp: after the close, the
-   * last session's. Null before the first response, for a `no_slot` (no
-   * capture backs it), for an `asOf` that is not a timestamp, and for a live
-   * response dropped as carried over from a closed session.
+   * The capture time of the live route's response, as an ISO timestamp: after
+   * the close, the last session's. Null before the first response, for a
+   * `no_slot` (no capture backs it), for an `asOf` that is not a timestamp, for
+   * a live response dropped as carried over from a closed session, and unless
+   * the route is live and the response held came from it: a picked slot has
+   * none, nor does the picked slot's response still held after "Return to
+   * live", until the live read lands.
    */
   asOf: string | null;
   /** ISO captured_at timestamps for the picked date, ascending. Backs
@@ -326,6 +333,14 @@ export function usePeriscopeExposure({
   // matters at the edge, which re-evaluates it. A dropped response leaves
   // `no_slot` with no slots, the state before today's first capture; an
   // in-session `no_slot` keeps its slots, which are today's.
+  //
+  // `asOf` dates the live route's last session, so it is the stored one only
+  // when the route now is live AND the response held came from it. Leaving a
+  // picked slot ("Return to live") keeps that slot's response in place until
+  // the live read lands, and the picked slot's own capture time must not date
+  // the live map the panel is about to show (its CLOSED badge, the slot
+  // picker's time beside "live"). The view is left as it is: holding the last
+  // one while a read is out is the hook's old behavior.
   const shown = useMemo(() => {
     if (stored == null) {
       return {
@@ -344,8 +359,8 @@ export function usePeriscopeExposure({
         availableSlots: [] as string[],
       };
     }
-    return stored;
-  }, [stored, marketOpen]);
+    return isLive && stored.live ? stored : { ...stored, asOf: null };
+  }, [stored, marketOpen, isLive]);
 
   // Memoize the returned object so its identity is stable across renders
   // when no field changed. A parent `useMemo` (App.tsx panelMap) keyed on
