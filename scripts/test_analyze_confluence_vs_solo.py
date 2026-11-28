@@ -1,20 +1,23 @@
-"""scripts/analyze_confluence_vs_solo.py: SPXW alerts with partners vs without, from the table or
-from the replay export.
+"""scripts/analyze_confluence_vs_solo.py: SPXW alerts with partners vs without, from the table, the
+replay snapshot or the replay day files.
 
 The alerts are 240 SPXW alerts a call and a put in turn, 70 s apart. Every 4th has an SPY partner
 30 s before it (a 2way), every 8th also a QQQ partner 20 s before it (a 3way), the rest are solo.
 The partners all come before their alert, so the table output is the same under the old rule (a
 partner within 90 s either side) and the new one (90 s back to the alert, inclusive). The same
-alerts are given to the script as table rows (psycopg2.connect returns a fake cursor) and as
-a replay export parquet (real DuckDB over a local file), so the two sources can be held to the
-same tables. An export-mode run never opens the database: psycopg2.connect raises there.
+alerts are given to the script as table rows (psycopg2.connect returns a fake cursor), as a
+replay snapshot parquet and as a day file (real DuckDB over a local file), so the sources can be
+held to the same tables. A run on the snapshot or the day files never opens the database:
+psycopg2.connect raises there.
 
 The boundaries are patched (R3): `fulltape_connection` returns a local DuckDB connection,
 `export_url` the local file's path, `load_env` does nothing and `OUT_DIR` is a folder in tmp_path.
+The day files go through a `DayWorld` (scripts/_ba_test_support.py), which patches the R2 listing,
+the day files' URLs and the tool's `write_replay_days`.
 
 The outcomes CSV it takes by default: the newest SPXW one of the source's kind. The SPY and QQQ
-files and the other source's files sort above it by name ("-spy-", "-export-"), and a bare
-newest-first glob took them and died on `int('SPXW...@epoch')`.
+files and the other sources' files sort above it by name ("-spy-", "-export-", "-days-"), and a
+bare newest-first glob took them and died on `int('SPXW...@epoch')`.
 
 Run from the repo root with the ml venv:
 
@@ -40,7 +43,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze_confluence_vs_solo as acs  # noqa: E402
 import enrich_interval_ba_outcomes as eio  # noqa: E402
 from _ba_test_support import (  # noqa: E402
+    DAY,
     DAY_ISO,
+    DayWorld,
     at,
     export_row,
     local_connection,
@@ -52,6 +57,7 @@ STEP = 70  # seconds between SPXW alerts: a same-type neighbour is 140 s away, p
 EXPORT_KEY = f'research/interval-ba/replay-{DAY_ISO}.parquet'
 TABLE_CSV = 'interval-ba-outcomes-20261126-100000.csv'
 EXPORT_CSV = 'interval-ba-outcomes-export-20261126-110000.csv'
+DAYS_CSV = 'interval-ba-outcomes-days-20261126-120000.csv'
 
 
 def touch(folder: Path, *names: str) -> None:
@@ -188,8 +194,8 @@ def use_table(monkeypatch, alerts: list[dict]) -> None:
     monkeypatch.setenv('DATABASE_URL', 'postgresql://fake.invalid/none')
 
 
-def report(out: Path, *, export: bool = False) -> str:
-    kind = '-export' if export else ''
+def report(out: Path, *, export: bool = False, days: bool = False) -> str:
+    kind = '-days' if days else '-export' if export else ''
     (path,) = out.glob(f'interval-ba-confluence-vs-solo{kind}-2*.md')
     return path.read_text('utf-8')
 
@@ -222,8 +228,18 @@ def both_sources(run):
 # What the script wrote for these alerts from the table before the export source existed: the
 # output of the version at 8c2e33f56 over this fixture, with the stamp replaced. The tables are
 # that version's byte for byte (every partner here comes before its alert, so the backward-only
-# rule tags them as the old +-90 s rule did); only the window sentence of the header is new.
+# rule tags them as the old +-90 s rule did); only the method banner and the window sentence of
+# the header are new. The banner is spelled out here on purpose: a change to the rebuild's
+# methodology has to change this text too.
 TABLE_GOLDEN = '''# SPXW confluence vs solo — SPX forward-return comparison (STAMP)
+
+> **Method change (2026-11-26, the Interval B/A rebuild).** These numbers follow the rebuilt method and are not comparable with reports from before it:
+>
+> - (a) t=0 is the root's last print at or before `fired_at`.
+> - (b) The forward steps are `fired_at` + 5k min.
+> - (c) The default source is the replay day files, not the live table.
+> - (d) Confluence looks backward only, and a partner at the same instant counts.
+> - (e) Half-day paths end at the early close.
 
 _Joined 240 SPXW alerts against the forward-return paths in `interval-ba-outcomes-20261126-100000.csv` (236 of 240 SPXW alerts joined a path). Confluence-window = 90s before each SPXW fired_at (inclusive; a partner that fired after the alert does not count). All cohorts 0DTE × 0DTE × 0DTE._
 
@@ -275,62 +291,81 @@ def test_the_newest_spxw_table_csv_is_taken_over_every_other_kind_of_file(tmp_pa
         'interval-ba-outcomes-20261126-101500.csv',  # the one to take
         'interval-ba-outcomes-export-20261126-120000.csv',  # export: alert_id is not an id
         'interval-ba-outcomes-export-spy-20261126-121000.csv',
+        'interval-ba-outcomes-days-20261126-122000.csv',  # the day files': not the table's ids
+        'interval-ba-outcomes-days-spy-20261126-123000.csv',
         'interval-ba-outcomes-spy-20261126-130000.csv',
         'interval-ba-outcomes-qqq-20261126-131000.csv',
         'interval-ba-outcomes-20261126-140000.csv.partial',  # a run that died
         'interval-ba-outcomes-summary-20261126-101500.md',
     )
 
-    assert acs.newest_outcomes_csv(tmp_path).name == 'interval-ba-outcomes-20261126-101500.csv'
+    assert acs.newest_outcomes_csv(tmp_path, 'table').name == (
+        'interval-ba-outcomes-20261126-101500.csv'
+    )
 
 
-def test_export_mode_takes_the_export_outcomes_csv_and_table_mode_skips_it(tmp_path):
+def test_each_source_takes_the_outcomes_csv_of_its_own_kind(tmp_path):
     touch(
         tmp_path,
         'interval-ba-outcomes-20261126-101500.csv',
-        'interval-ba-outcomes-20261126-160000.csv',  # the table's newest: not for the export
-        'interval-ba-outcomes-export-20261126-120000.csv',  # the one to take
+        'interval-ba-outcomes-20261126-160000.csv',  # the table's newest: not for the others
+        'interval-ba-outcomes-export-20261126-120000.csv',  # the snapshot's one to take
         'interval-ba-outcomes-export-20261125-120000.csv',
         'interval-ba-outcomes-export-spy-20261126-170000.csv',
+        'interval-ba-outcomes-days-20261126-130000.csv',  # the day files' one to take
+        'interval-ba-outcomes-days-20261127-090000.csv.partial',
+        'interval-ba-outcomes-days-spy-20261126-180000.csv',
         'interval-ba-outcomes-spy-20261126-171000.csv',
     )
 
-    assert acs.newest_outcomes_csv(tmp_path, export=True).name == (
+    assert acs.newest_outcomes_csv(tmp_path, 'export').name == (
         'interval-ba-outcomes-export-20261126-120000.csv'
     )
-    assert acs.newest_outcomes_csv(tmp_path).name == 'interval-ba-outcomes-20261126-160000.csv'
+    assert acs.newest_outcomes_csv(tmp_path, 'days').name == (
+        'interval-ba-outcomes-days-20261126-130000.csv'
+    )
+    assert acs.newest_outcomes_csv(tmp_path, 'table').name == (
+        'interval-ba-outcomes-20261126-160000.csv'
+    )
 
 
 @pytest.mark.parametrize(
-    ('export', 'other_source', 'message'),
+    ('source', 'other_source', 'message'),
     [
-        (False, 'interval-ba-outcomes-export-20261126-140000.csv', 'No SPXW outcomes CSV'),
-        (True, 'interval-ba-outcomes-20261126-140000.csv', 'No SPXW export outcomes CSV'),
+        ('table', 'interval-ba-outcomes-export-20261126-140000.csv', 'No SPXW outcomes CSV'),
+        ('export', 'interval-ba-outcomes-20261126-140000.csv', 'No SPXW export outcomes CSV'),
+        ('days', 'interval-ba-outcomes-export-20261126-140000.csv', 'No SPXW days outcomes CSV'),
     ],
 )
 def test_with_only_other_kinds_of_file_it_exits_instead_of_taking_one(
-    tmp_path, export, other_source, message
+    tmp_path, source, other_source, message
 ):
     touch(
         tmp_path,
         'interval-ba-outcomes-export-spy-20261126-120000.csv',
         'interval-ba-outcomes-spy-20261126-130000.csv',
+        'interval-ba-outcomes-days-spy-20261126-135000.csv',
         other_source,
     )
 
     with pytest.raises(SystemExit, match=message):
-        acs.newest_outcomes_csv(tmp_path, export=export)
+        acs.newest_outcomes_csv(tmp_path, source)
 
 
-@pytest.mark.parametrize(('source', 'taken'), [
-    ('table', 'interval-ba-outcomes-20261126-101500.csv'),
-    ('export', 'interval-ba-outcomes-export-20261126-120000.csv'),
-])
+@pytest.mark.parametrize(
+    ('source', 'taken'),
+    [
+        ('table', 'interval-ba-outcomes-20261126-101500.csv'),
+        ('export', 'interval-ba-outcomes-export-20261126-120000.csv'),
+        ('days', 'interval-ba-outcomes-days-20261126-130000.csv'),
+    ],
+)
 def test_main_loads_the_paths_from_the_csv_of_its_source(tmp_path, monkeypatch, source, taken):
     touch(
         tmp_path,
         'interval-ba-outcomes-20261126-101500.csv',
         'interval-ba-outcomes-export-20261126-120000.csv',
+        'interval-ba-outcomes-days-20261126-130000.csv',
     )
     seen: list[tuple[Path, object]] = []
 
@@ -348,13 +383,14 @@ def test_main_loads_the_paths_from_the_csv_of_its_source(tmp_path, monkeypatch, 
     with pytest.raises(Stop):
         acs.main(['--source', source])
 
-    # The export's alert_id is the string `<chain>@<epoch>`, the table's an integer id.
+    # The day files' and the snapshot's alert_id is the string `<chain>@<epoch>`, the table's an
+    # integer id.
     [(path, key)] = seen
     assert path == tmp_path / taken
-    if source == 'export':
-        assert key('SPXW261117C06700000@1790000000') == 'SPXW261117C06700000@1790000000'
-    else:
+    if source == 'table':
         assert key('12') == 12
+    else:
+        assert key('SPXW261117C06700000@1790000000') == 'SPXW261117C06700000@1790000000'
 
 
 # --- the sources ------------------------------------------------------------------------------
@@ -720,14 +756,14 @@ def test_a_live_gap_makes_a_partnered_alert_solo_from_the_table_and_2way_from_th
     assert counts_of(report(run / 'out', export=True)) == {'3way': 0, '2way': 1, 'solo': 0}
 
 
-def test_export_end_defaults_to_the_newest_replay_object(run, capsys):
+def test_the_snapshot_source_takes_the_newest_replay_object_when_none_is_named(run, capsys):
     older = partner_case('SPXW', 'C', 30)  # no SPY partner in the older replay: solo
     newer = partner_case('SPY', 'C', 30)
     write_export(run, export_rows(older), end='2026-11-16')
     write_export(run, export_rows(newer), end='2026-11-17')
     write_outcomes(run / 'out' / EXPORT_CSV, newer, export=True)
 
-    assert acs.main([]) == 0  # no --source, --export-end or --csv
+    assert acs.main(['--source', 'export']) == 0  # no --export-end or --csv
 
     assert f'Export: {EXPORT_KEY} (the newest)' in capsys.readouterr().out
     text = report(run / 'out', export=True)
@@ -736,11 +772,27 @@ def test_export_end_defaults_to_the_newest_replay_object(run, capsys):
     assert f'paths in `{EXPORT_CSV}` (' in text
 
 
+def test_export_end_still_reads_the_snapshot(run):
+    """The date alone is enough, as it was before the day files were the default."""
+    alerts = partner_case('SPY', 'C', 30)
+    write_export(run, export_rows(alerts))
+    write_outcomes(run / 'out' / EXPORT_CSV, alerts, export=True)
+    write_outcomes(run / 'out' / DAYS_CSV, alerts, export=True)  # the day files' CSV: not taken
+
+    assert acs.main(['--export-end', DAY_ISO]) == 0
+
+    text = report(run / 'out', export=True)
+    assert counts_of(text) == {'3way': 0, '2way': 1, 'solo': 0}
+    assert f'paths in `{EXPORT_CSV}` (' in text
+    assert not list((run / 'out').glob('interval-ba-confluence-vs-solo-days-*'))
+    psycopg2.connect.assert_not_called()
+
+
 def test_no_replay_object_exits_with_a_message(run):
     touch(run / 'out', EXPORT_CSV)
 
     with pytest.raises(SystemExit, match=r'No replay object under research/interval-ba/ in R2'):
-        acs.main([])
+        acs.main(['--source', 'export'])
 
     psycopg2.connect.assert_not_called()
     assert not list((run / 'out').glob('interval-ba-confluence*'))
@@ -752,3 +804,121 @@ def test_export_end_with_table_source_exits_2(run):
 
     assert stopped.value.code == 2
     psycopg2.connect.assert_not_called()
+
+
+# --- the day files ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def day_world(tmp_path, monkeypatch) -> DayWorld:
+    return DayWorld(tmp_path / 'days', monkeypatch)
+
+
+@pytest.fixture
+def day_files(run, day_world):
+    """The same alerts as DAY's file, its tape landed, and the day files' outcomes CSV."""
+    alerts = make_alerts()
+    day_world.tape(DAY)
+    day_world.file(DAY, export_rows(alerts))
+    write_outcomes(run / 'out' / DAYS_CSV, alerts, export=True)
+    return alerts
+
+
+def test_readers_default_to_the_day_files(run, day_files, day_world, capsys):
+    assert acs.main([]) == 0  # no --source, --export-end or --csv
+
+    psycopg2.connect.assert_not_called()
+    text = report(run / 'out', days=True)
+    # The same alerts as the table's, so the same tables, and the header names its source.
+    assert tables_of(text) == tables_of(TABLE_GOLDEN)
+    assert f'paths in `{DAYS_CSV}` (236 of 240 SPXW alerts joined a path). Alerts from the' in text
+    assert 'the replay day files in `research/interval-ba/replay/` (1 day, 2026-11-17 to' in text
+    assert day_world.write.call_count == 0
+    assert 'Day files: the replay day files' in capsys.readouterr().out
+
+
+def test_the_report_opens_with_the_method_banner_naming_each_change(run, day_files):
+    acs.main([])
+
+    text = report(run / 'out', days=True)
+    banner = text[text.index('> **Method change') : text.index('_Joined')]
+    assert 'not comparable with reports from before it' in banner
+    for change in ('(a) t=0', '(b) The forward steps', '(c) The default source', '(d) Confluence'):
+        assert change in banner
+    assert '(e) Half-day paths end at the early close.' in banner
+
+
+def test_analyze_reads_only_the_days_its_csv_covers(run, day_files, day_world):
+    """Its CSV is DAY's. A day before it with a tape and no file would be a repair, and a day
+    after it with a file would add alerts the CSV never priced: neither is touched."""
+    before, after = DAY - timedelta(days=1), DAY + timedelta(days=1)
+    day_world.tape(before)  # landed, never written: a repair, if it were needed
+    day_world.tape(after)
+    day_world.file(after, [export_row('SPXW261118C06700000', '15:00:00', None, expiry=after)])
+
+    assert acs.main([]) == 0
+
+    assert day_world.write.call_count == 0
+    assert counts_of(report(run / 'out', days=True)) == {'3way': 30, '2way': 30, 'solo': 180}
+
+
+def test_a_missing_day_is_repaired_and_then_read_and_the_header_says_so(
+    run, day_files, day_world, capsys
+):
+    alerts = day_files
+    (day_world.dir / f'{DAY_ISO}.parquet').unlink()
+    del day_world.client.objects[f'research/interval-ba/replay/{DAY_ISO}.parquet']
+    day_world.alerts[DAY] = export_rows(alerts)
+
+    assert acs.main([]) == 0
+
+    assert day_world.written == [DAY]
+    text = report(run / 'out', days=True)
+    assert counts_of(text) == {'3way': 30, '2way': 30, 'solo': 180}
+    assert 'This run repaired 2026-11-17: the nightly should have written them' in text
+    assert 'the nightly should have written it; check the interval-ba-tape step' in (
+        capsys.readouterr().out
+    )
+
+
+def test_dry_run_lists_the_days_to_repair_and_writes_no_report(run, day_files, day_world):
+    (day_world.dir / f'{DAY_ISO}.parquet').unlink()
+    del day_world.client.objects[f'research/interval-ba/replay/{DAY_ISO}.parquet']
+
+    with pytest.raises(SystemExit) as stopped:
+        acs.main(['--dry-run'])
+
+    assert str(stopped.value).startswith('--dry-run: nothing was written.')
+    assert '2026-11-17  missing' in str(stopped.value)
+    assert day_world.write.call_count == 0
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+
+
+def test_dry_run_with_nothing_to_repair_prints_the_report_and_writes_none(
+    run, day_files, capsys
+):
+    assert acs.main(['--dry-run']) == 0
+
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+    assert '## Cohort counts' in capsys.readouterr().out
+
+
+def test_a_snapshot_csv_with_the_day_files_names_the_mistake(run, day_files):
+    write_outcomes(run / 'out' / EXPORT_CSV, day_files, export=True)
+
+    with pytest.raises(SystemExit) as stopped:
+        acs.main(['--csv', str(run / 'out' / EXPORT_CSV)])
+
+    assert str(stopped.value).startswith(f'{EXPORT_CSV} was written for --source export')
+    assert not list((run / 'out').glob('interval-ba-confluence*'))
+
+
+def test_a_repaired_day_that_holds_no_alerts_runs_no_study(run, day_files, day_world):
+    (day_world.dir / f'{DAY_ISO}.parquet').unlink()
+    del day_world.client.objects[f'research/interval-ba/replay/{DAY_ISO}.parquet']
+    day_world.alerts[DAY] = []
+
+    with pytest.raises(SystemExit, match='The repair wrote a day file with no alerts for 2026-11-17'):
+        acs.main([])
+
+    assert not list((run / 'out').glob('interval-ba-confluence*'))

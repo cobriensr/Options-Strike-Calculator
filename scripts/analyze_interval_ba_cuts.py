@@ -4,16 +4,27 @@
 Reads the alert universe (option_type, ratio_pct, top_trade_is_sweep, hour-of-day of fired_at)
 from the source named by --source, and the forward-return paths at T+5/15/30/60/EOD from the
 outcomes CSV that enrich_interval_ba_outcomes.py wrote for that source:
-  - export (default): the full-year replay in R2, research/interval-ba/replay-<end>.parquet,
-    one rule all year and no live-feed gaps (--export-end names one, else the newest). The
-    database is never opened. CSV: docs/tmp/interval-ba-outcomes-export[-<ticker>]-*.csv.
+  - days (default): the replay day files in R2, research/interval-ba/replay/<date>.parquet, one
+    per session, which the nightly step writes each morning: one rule all year and no live-feed
+    gaps. Only the days the CSV covers are checked and read, and a missing or stale one is
+    repaired first (_interval_ba_days.py); --dry-run lists what a repair would write and exits
+    non-zero. The database is never opened. CSV: docs/tmp/interval-ba-outcomes-days[-<ticker>]-*.csv.
+  - export: the one-time snapshot in R2, research/interval-ba/replay-<end>.parquet (--export-end
+    names one, else the newest; --export-end alone means this source). The database is never
+    opened. CSV: docs/tmp/interval-ba-outcomes-export[-<ticker>]-*.csv.
   - table: interval_ba_alerts (DB), the live record, which has the live feed's gaps (a gap day
     loses alerts and so their confluence partners). CSV:
     docs/tmp/interval-ba-outcomes[-<ticker>]-*.csv.
 The newest CSV of the right kind is taken unless --csv names one.
 
+METHODOLOGY CHANGE (2026-11-26, the Interval B/A rebuild). The report opens with a banner naming
+each change, because its numbers are not comparable with reports from before it: (a) t=0 is the
+root's last print at or before `fired_at`; (b) the forward steps are `fired_at` + 5k min; (c) the
+default source is the replay day files; (d) confluence looks backward only, and a partner at the
+same instant counts; (e) half-day paths end at the early close.
+
 Produces (in docs/tmp/):
-  - interval-ba-analysis[-export][-<ticker>]-{stamp}.md — markdown tables for each cut
+  - interval-ba-analysis[-days|-export][-<ticker>]-{stamp}.md — markdown tables for each cut
 
 Five cuts run sequentially against the alert × forward-return join:
 
@@ -43,7 +54,8 @@ Five cuts run sequentially against the alert × forward-return join:
 
 Usage:
     ml/.venv/Scripts/python scripts/analyze_interval_ba_cuts.py \\
-        [--source export|table] [--export-end 2026-11-25] [--ticker SPXW] [--csv PATH]
+        [--source days|export|table] [--export-end 2026-11-25] [--ticker SPXW] [--csv PATH] \\
+        [--dry-run]
 """
 
 from __future__ import annotations
@@ -62,8 +74,10 @@ from zoneinfo import ZoneInfo
 
 import psycopg2
 
-# The export reader, the --source flags and the CSV names live in the outcome script, which
-# writes the files this one reads. Run as a script, scripts/ is on sys.path.
+# The snapshot reader lives in the outcome script, which writes the files this one reads, and the
+# day files, the --source flags and the CSV names in the module the three readers share. Run as a
+# script, scripts/ is on sys.path.
+import _interval_ba_days as days
 import enrich_interval_ba_outcomes as eio
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -513,7 +527,7 @@ def cut_sweep_vs_nonsweep(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    eio.add_source_arguments(parser)
+    days.add_source_arguments(parser)
     parser.add_argument(
         '--ticker',
         type=str,
@@ -527,36 +541,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         help='Path to outcomes CSV. Default: newest under docs/tmp/ for the source.',
     )
     args = parser.parse_args(argv)
-    eio.check_source_arguments(parser, args)
+    days.check_source_arguments(parser, args)
     ticker = args.ticker.upper()
-    export = args.source == 'export'
+    source = args.source
     load_env()
 
     # SPXW writes to the legacy no-ticker filename; SPY/QQQ stamp the slug into both the
-    # outcomes CSV and the analysis MD so the two tickers' outputs don't collide. The export
-    # source's files carry `-export` ahead of the slug (eio.outcomes_prefix).
+    # outcomes CSV and the analysis MD so the two tickers' outputs don't collide. The day files'
+    # and the snapshot's files carry `-days` or `-export` ahead of the slug (days.outcomes_prefix).
     slug = '' if ticker == 'SPXW' else f'-{ticker.lower()}'
-    kind = '-export' if export else ''
+    kind = days.kind_of(source)
     if args.csv:
         csv_path = pathlib.Path(args.csv)
     else:
-        found = eio.newest_outcomes_csv(OUT_DIR, ticker, export)
+        found = days.newest_outcomes_csv(OUT_DIR, ticker, source)
         if found is None:
             sys.exit(
-                f'No {"export " if export else ""}outcomes CSV found under docs/tmp/ '
-                f'for ticker={ticker}',
+                f'No {source + " " if source != days.TABLE else ""}outcomes CSV found under '
+                f'docs/tmp/ for ticker={ticker}',
             )
         csv_path = found
     if not csv_path.exists():
         sys.exit(f'CSV missing: {csv_path}')
 
     print(f'Loading paths from {csv_path.name}…')
-    # The CSV's alert_id is the table's integer id, or the export's `<chain>@<epoch>` string.
-    paths = load_forward_paths(csv_path, key=eio.alert_id_reader(export, csv_path.name))
+    # The CSV's alert_id is the table's integer id, or `<chain>@<epoch>` (day files, snapshot).
+    paths = load_forward_paths(csv_path, key=days.alert_id_reader(source, csv_path.name))
     print(f'  {len(paths)} alerts with forward path')
 
     source_note = ''
-    if export:
+    if source == days.DAYS:
+        # Only the days the CSV covers: the check, the repair and the read stop there.
+        first, last = days.csv_days(csv_path)
+        con = eio.open_connection()
+        try:
+            files = days.ensure_day_files(con, first, last, dry_run=args.dry_run)
+            print(f'Reading {ticker} alerts from the day files…')
+            alerts = export_alert_meta(days.read_day_alerts(con, files, ticker))
+        finally:
+            con.close()
+        print(f'  {len(alerts)} alerts total')
+        source_note = f' Alerts from {files.describe()}.'
+    elif source == days.EXPORT:
         con = eio.open_connection()
         try:
             end = eio.resolve_export_end(con, args.export_end)
@@ -584,6 +610,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     md: list[str] = []
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     md.append(f'# {ticker} Interval B/A — empirical edge analysis ({stamp})\n')
+    md.append(days.METHOD_BANNER + '\n')
     md.append(
         f'_Joined {len(alerts)} {ticker} alerts against {len(paths)} '
         f'forward-return paths from `{csv_path.name}` '
@@ -597,9 +624,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     cut_sweep_vs_nonsweep(alerts, paths, md)
 
     output = '\n'.join(md)
-    out_path = OUT_DIR / f'interval-ba-analysis{kind}{slug}-{stamp}.md'
-    out_path.write_text(output, encoding='utf-8')
-    print(f'\nwrote {out_path}')
+    if not args.dry_run:
+        out_path = OUT_DIR / f'interval-ba-analysis{kind}{slug}-{stamp}.md'
+        out_path.write_text(output, encoding='utf-8')
+        print(f'\nwrote {out_path}')
     print('\n' + output)
     return 0
 

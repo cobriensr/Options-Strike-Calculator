@@ -1,14 +1,18 @@
-"""scripts/analyze_interval_ba_cuts.py: the five cuts, from the table or from the replay export.
+"""scripts/analyze_interval_ba_cuts.py: the five cuts, from the table, the replay snapshot or the
+replay day files.
 
 The alerts are 200 SPXW alerts (100 calls, 100 puts, four fired hours, a spread of ratios, a
 third of them sweeps, a fifth floor prints) with a forward path each but every 17th. The same
-alerts are given to the script as table rows (psycopg2.connect returns a fake cursor) and as a
-replay export parquet (real DuckDB over a local file), so the two sources can be held to the same
-tables. An export-mode run never opens the database: psycopg2.connect raises there.
+alerts are given to the script as table rows (psycopg2.connect returns a fake cursor), as a
+replay snapshot parquet and as a day file (real DuckDB over a local file), so the sources can be
+held to the same tables. A run on the snapshot or the day files never opens the database:
+psycopg2.connect raises there.
 
 The boundaries are patched (R3): `fulltape_connection` returns a local DuckDB connection,
 `export_url` the local file's path, `load_env` does nothing and `OUT_DIR` is a folder in tmp_path.
-The fake S3 of _ba_test_support serves the over-s3:// test.
+The day files go through a `DayWorld` (scripts/_ba_test_support.py), which patches the R2 listing,
+the day files' URLs and the tool's `write_replay_days`. The fake S3 of _ba_test_support serves the
+over-s3:// test.
 
 Run from the repo root with the ml venv:
 
@@ -35,8 +39,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze_interval_ba_cuts as cuts  # noqa: E402
 import enrich_interval_ba_outcomes as eio  # noqa: E402
 from _ba_test_support import (  # noqa: E402
+    DAY,
     DAY_ISO,
     EXPORT_SCHEMA,
+    DayWorld,
     at,
     export_row,
     fake_s3,  # noqa: F401  (a fixture: pytest finds it by name)
@@ -182,8 +188,8 @@ def use_table(monkeypatch, rows: list[tuple]) -> None:
     monkeypatch.setenv('DATABASE_URL', 'postgresql://fake.invalid/none')
 
 
-def analysis_md(out: Path, *, export: bool = False, slug: str = '') -> Path:
-    kind = '-export' if export else ''
+def analysis_md(out: Path, *, export: bool = False, days: bool = False, slug: str = '') -> Path:
+    kind = '-days' if days else '-export' if export else ''
     (path,) = out.glob(f'interval-ba-analysis{kind}{slug}-2*.md')
     return path
 
@@ -211,10 +217,21 @@ def both_sources(run, monkeypatch):
 
 TABLE_CSV = 'interval-ba-outcomes-20261126-100000.csv'
 EXPORT_CSV = 'interval-ba-outcomes-export-20261126-110000.csv'
+DAYS_CSV = 'interval-ba-outcomes-days-20261126-120000.csv'
 
 # What the script wrote for these alerts from the table before the export source existed: the
-# output of the version at 60512f1ed over this fixture, with the stamp replaced.
+# output of the version at 60512f1ed over this fixture, with the stamp replaced, and the method
+# banner the report opens with now. The banner is spelled out here on purpose: a change to the
+# rebuild's methodology has to change this text too.
 TABLE_GOLDEN = '''# SPXW Interval B/A — empirical edge analysis (STAMP)
+
+> **Method change (2026-11-26, the Interval B/A rebuild).** These numbers follow the rebuilt method and are not comparable with reports from before it:
+>
+> - (a) t=0 is the root's last print at or before `fired_at`.
+> - (b) The forward steps are `fired_at` + 5k min.
+> - (c) The default source is the replay day files, not the live table.
+> - (d) Confluence looks backward only, and a partner at the same instant counts.
+> - (e) Half-day paths end at the early close.
 
 _Joined 200 SPXW alerts against 189 forward-return paths from `interval-ba-outcomes-20261126-100000.csv` (189 of 200 alerts joined a path)._
 
@@ -307,18 +324,22 @@ def test_cuts_export_source_reads_the_replay_and_never_the_database(run, both_so
     ) in text
 
 
-def test_the_source_defaults_to_the_export_and_its_newest_csv(run, both_sources, capsys):
-    """No --source, --export-end or --csv: the newest replay object and the newest export CSV."""
+def test_the_snapshot_source_takes_the_newest_replay_object_and_its_newest_csv(
+    run, both_sources, capsys
+):
+    """No --export-end or --csv: the newest replay object and the newest export CSV."""
     write_export(run, export_rows(both_sources[:50]), end='2026-11-16')  # an older replay
-    # Decoys that sort above the right CSV: other tickers', and the table's newer one.
+    # Decoys that sort above the right CSV: other tickers', the table's newer one, and the day
+    # files' (which carry the same id format, and are told apart by their name).
     for name in (
         'interval-ba-outcomes-export-spy-20261126-130000.csv',
         'interval-ba-outcomes-spy-20261126-130000.csv',
         'interval-ba-outcomes-20261126-150000.csv',
+        'interval-ba-outcomes-days-20261126-160000.csv',
     ):
         (run / 'out' / name).write_text('alert_id,t_minutes,pct_change\n', encoding='utf-8')
 
-    assert cuts.main([]) == 0
+    assert cuts.main(['--source', 'export']) == 0
 
     out = capsys.readouterr().out
     assert f'Export: {EXPORT_KEY} (the newest)' in out
@@ -469,7 +490,7 @@ def test_the_export_analysis_file_name_carries_export_and_the_ticker(run):
         run / 'out' / 'interval-ba-outcomes-export-spy-20261126-110000.csv', spy, export=True
     )
 
-    cuts.main(['--ticker', 'spy'])
+    cuts.main(['--ticker', 'spy', '--source', 'export'])
 
     text = analysis_md(run / 'out', export=True, slug='-spy').read_text('utf-8')
     assert text.startswith('# SPY Interval B/A')
@@ -480,16 +501,21 @@ def test_no_replay_object_exits_with_a_message(run):
     write_outcomes(run / 'out' / EXPORT_CSV, make_alerts(), export=True)
 
     with pytest.raises(SystemExit, match=r'No replay object under research/interval-ba/ in R2'):
-        cuts.main([])
+        cuts.main(['--source', 'export'])
 
     psycopg2.connect.assert_not_called()
     assert not list((run / 'out').glob('interval-ba-analysis*'))
 
 
-def test_no_export_outcomes_csv_exits_with_a_message_naming_the_ticker(run):
-    message = 'No export outcomes CSV found under docs/tmp/ for ticker=SPXW'
-    with pytest.raises(SystemExit, match=message):
-        cuts.main([])
+@pytest.mark.parametrize('source', ['days', 'export', 'table'])
+def test_no_outcomes_csv_exits_with_a_message_naming_the_source_and_the_ticker(
+    run, monkeypatch, source
+):
+    kind = '' if source == 'table' else f'{source} '
+    with pytest.raises(
+        SystemExit, match=f'No {kind}outcomes CSV found under docs/tmp/ for ticker=SPXW'
+    ):
+        cuts.main(['--source', source])
 
 
 def test_export_end_with_table_source_exits_2(run):
@@ -533,7 +559,7 @@ def test_over_s3_the_newest_replay_object_is_listed_and_read(monkeypatch, tmp_pa
     monkeypatch.setattr(eio, 'fulltape_connection', connect)
     monkeypatch.setattr(psycopg2, 'connect', MagicMock(side_effect=AssertionError('database')))
     try:
-        assert cuts.main([]) == 0
+        assert cuts.main(['--source', 'export']) == 0
     finally:
         for db in opened:
             db.close()
@@ -541,3 +567,147 @@ def test_over_s3_the_newest_replay_object_is_listed_and_read(monkeypatch, tmp_pa
     text = analysis_md(out, export=True).read_text('utf-8')
     assert f'Alerts from the replay export `{EXPORT_KEY}`.' in text
     assert '_Joined 200 SPXW alerts' in text
+
+
+# --- the day files ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def day_world(tmp_path, monkeypatch) -> DayWorld:
+    return DayWorld(tmp_path / 'days', monkeypatch)
+
+
+@pytest.fixture
+def day_files(run, day_world):
+    """The same alerts as DAY's file, its tape landed, and the day files' outcomes CSV."""
+    alerts = make_alerts()
+    day_world.tape(DAY)
+    day_world.file(DAY, export_rows(alerts))
+    write_outcomes(run / 'out' / DAYS_CSV, alerts, export=True)
+    return alerts
+
+
+def test_readers_default_to_the_day_files(run, day_files, day_world, capsys):
+    assert cuts.main([]) == 0  # no --source, --export-end or --csv
+
+    psycopg2.connect.assert_not_called()
+    text = analysis_md(run / 'out', days=True).read_text('utf-8')
+    # The same 200 alerts, so the same five tables as from the table; the header names its source.
+    assert tables_of(text) == tables_of(TABLE_GOLDEN)
+    assert (
+        f'_Joined 200 SPXW alerts against 189 forward-return paths from `{DAYS_CSV}`'
+        ' (189 of 200 alerts joined a path). Alerts from the replay day files in '
+        '`research/interval-ba/replay/` (1 day, 2026-11-17 to 2026-11-17; replay version'
+    ) in text
+    assert day_world.write.call_count == 0
+    assert 'Reading SPXW alerts from the day files' in capsys.readouterr().out
+
+
+def test_day_file_outcomes_are_named_days_and_analyze_takes_its_own_source(
+    run, day_files, day_world
+):
+    # The snapshot's and the table's CSVs sit beside it, newer by name: neither is taken.
+    write_outcomes(run / 'out' / 'interval-ba-outcomes-export-20261127-110000.csv', day_files, export=True)
+    write_outcomes(run / 'out' / 'interval-ba-outcomes-20261127-100000.csv', day_files, export=False)
+
+    cuts.main([])
+
+    assert f'from `{DAYS_CSV}`' in analysis_md(run / 'out', days=True).read_text('utf-8')
+    assert not list((run / 'out').glob('interval-ba-analysis-export-*'))
+
+
+def test_the_report_opens_with_the_method_banner_naming_each_change(run, day_files):
+    cuts.main([])
+
+    text = analysis_md(run / 'out', days=True).read_text('utf-8')
+    banner = text[text.index('> **Method change') : text.index('_Joined')]
+    assert 'not comparable with reports from before it' in banner
+    for change in ('(a) t=0', '(b) The forward steps', '(c) The default source', '(d) Confluence'):
+        assert change in banner
+    assert '(e) Half-day paths end at the early close.' in banner
+
+
+def test_analyze_reads_only_the_days_its_csv_covers(run, day_files, day_world):
+    """Its CSV is DAY's. A day before it with a tape and no file would be a repair, and a day
+    after it with a file would add alerts the CSV never priced: neither is touched."""
+    before, after = DAY - timedelta(days=1), DAY + timedelta(days=1)
+    day_world.tape(before)  # landed, never written: a repair, if it were needed
+    day_world.tape(after)
+    day_world.file(after, [export_row('SPXW261118C06700000', '15:00:00', None, expiry=after)])
+
+    assert cuts.main([]) == 0
+
+    assert day_world.write.call_count == 0
+    text = analysis_md(run / 'out', days=True).read_text('utf-8')
+    assert '_Joined 200 SPXW alerts' in text  # not 201
+
+
+def test_a_missing_day_is_repaired_and_then_read_and_the_header_says_so(
+    run, day_files, day_world, capsys
+):
+    (day_world.dir / f'{DAY_ISO}.parquet').unlink()
+    del day_world.client.objects[f'research/interval-ba/replay/{DAY_ISO}.parquet']
+    day_world.alerts[DAY] = export_rows(day_files)
+
+    assert cuts.main([]) == 0
+
+    assert day_world.written == [DAY]
+    text = analysis_md(run / 'out', days=True).read_text('utf-8')
+    assert tables_of(text) == tables_of(TABLE_GOLDEN)
+    assert 'This run repaired 2026-11-17: the nightly should have written them' in text
+    assert 'the nightly should have written it; check the interval-ba-tape step' in (
+        capsys.readouterr().out
+    )
+
+
+def test_dry_run_lists_the_days_to_repair_and_writes_no_analysis(run, day_files, day_world):
+    (day_world.dir / f'{DAY_ISO}.parquet').unlink()
+    del day_world.client.objects[f'research/interval-ba/replay/{DAY_ISO}.parquet']
+
+    with pytest.raises(SystemExit) as stopped:
+        cuts.main(['--dry-run'])
+
+    assert str(stopped.value).startswith('--dry-run: nothing was written.')
+    assert '2026-11-17  missing' in str(stopped.value)
+    assert day_world.write.call_count == 0
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+
+
+def test_dry_run_with_nothing_to_repair_prints_the_analysis_and_writes_none(
+    run, day_files, capsys
+):
+    assert cuts.main(['--dry-run']) == 0
+
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+    assert '## 1. Hit rate' in capsys.readouterr().out
+
+
+def test_a_snapshot_csv_with_the_day_files_names_the_mistake(run, day_files):
+    write_outcomes(run / 'out' / EXPORT_CSV, day_files, export=True)
+
+    with pytest.raises(SystemExit) as stopped:
+        cuts.main(['--csv', str(run / 'out' / EXPORT_CSV)])
+
+    assert str(stopped.value).startswith(f'{EXPORT_CSV} was written for --source export')
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+
+
+def test_a_repaired_day_that_holds_no_alerts_runs_no_analysis(run, day_files, day_world):
+    (day_world.dir / f'{DAY_ISO}.parquet').unlink()
+    del day_world.client.objects[f'research/interval-ba/replay/{DAY_ISO}.parquet']
+    day_world.alerts[DAY] = []
+
+    with pytest.raises(SystemExit, match='The repair wrote a day file with no alerts for 2026-11-17'):
+        cuts.main([])
+
+    assert not list((run / 'out').glob('interval-ba-analysis*'))
+
+
+def test_a_day_files_outcomes_csv_with_no_rows_has_no_days_to_read(run, day_files):
+    header = (run / 'out' / DAYS_CSV).read_text('utf-8').splitlines()[0] + '\n'
+    (run / 'out' / DAYS_CSV).write_text(header, encoding='utf-8')
+
+    with pytest.raises(SystemExit, match='has no rows, so there are no days to read'):
+        cuts.main([])
+
+    assert not list((run / 'out').glob('interval-ba-analysis*'))

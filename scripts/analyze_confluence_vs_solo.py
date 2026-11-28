@@ -22,21 +22,29 @@ ahead (the 2026-11-21 recheck found the 05-12 lift rested on it). Backward only 
 rule (uw-stream recent_fires.lookup_confluence) and the replay's (`_confluence` in
 nightly/src/interval_ba_replay.py, which fills the export's confluence_tickers column), so a
 tag here is `solo` exactly when that column is empty. Reports written before this change are not
-comparable with the ones after it.
+comparable with the ones after it. The same goes for the rest of the rebuild: the report opens
+with a banner naming each change (a) t=0 is the root's last print at or before `fired_at`, (b) the
+forward steps are `fired_at` + 5k min, (c) the default source is the replay day files, (d) the
+backward-only confluence above, and (e) half-day paths end at the early close.
 
 Then we join against the SPX forward-return paths from the
 enrich_interval_ba_outcomes CSV and compare distributions at T+15 /
 T+30 / T+60 / EOD.
 
-Sources (--source), the same two as enrich_interval_ba_outcomes.py, read through its reader:
-  - export (default): the full-year replay in R2, research/interval-ba/replay-<end>.parquet
-    (--export-end names one, else the newest). One rule all year and no live-feed gaps, so a
-    partner the live feed missed is still there. The database is never opened. The forward
-    paths come from the newest docs/tmp/interval-ba-outcomes-export-*.csv.
+Sources (--source), the same three as enrich_interval_ba_outcomes.py (_interval_ba_days.py):
+  - days (default): the replay day files in R2, research/interval-ba/replay/<date>.parquet, one
+    per session, which the nightly step writes each morning. One rule all year and no live-feed
+    gaps, so a partner the live feed missed is still there. Only the days the CSV covers are
+    checked and read, and a missing or stale one is repaired first; --dry-run lists what a
+    repair would write and exits non-zero. The database is never opened. The forward paths come
+    from the newest docs/tmp/interval-ba-outcomes-days-*.csv.
+  - export: the one-time snapshot in R2, research/interval-ba/replay-<end>.parquet (--export-end
+    names one, else the newest; --export-end alone means this source). The database is never
+    opened. The forward paths come from the newest docs/tmp/interval-ba-outcomes-export-*.csv.
   - table: interval_ba_alerts (DB), the live record. On a gap day (live rows stay the record,
     and missed alerts are added only from 2026-10-29) a partner is missing, and an alert that
     had one counts as solo. Paths: the newest docs/tmp/interval-ba-outcomes-*.csv (SPXW).
-The report is written to docs/tmp/interval-ba-confluence-vs-solo[-export]-{stamp}.md.
+The report is written to docs/tmp/interval-ba-confluence-vs-solo[-days|-export]-{stamp}.md.
 
 Note: every alert in interval_ba_alerts is 0DTE for its underlying
 (backfill applies expiry == executed_at::CT date for SPY/SPXW/QQQ —
@@ -45,7 +53,8 @@ all three have daily expiries during this window). The comparison is
 
 Usage:
     ml/.venv/Scripts/python scripts/analyze_confluence_vs_solo.py \\
-        [--source export|table] [--export-end 2026-11-25] [--window-sec 90] [--csv PATH]
+        [--source days|export|table] [--export-end 2026-11-25] [--window-sec 90] [--csv PATH] \\
+        [--dry-run]
 """
 
 from __future__ import annotations
@@ -63,8 +72,10 @@ from datetime import datetime
 
 import psycopg2
 
-# The export reader, the --source flags and the CSV names live in the outcome script, which
-# writes the files this one reads. Run as a script, scripts/ is on sys.path.
+# The snapshot reader lives in the outcome script, which writes the files this one reads, and the
+# day files, the --source flags and the CSV names in the module the three readers share. Run as a
+# script, scripts/ is on sys.path.
+import _interval_ba_days as days
 import enrich_interval_ba_outcomes as eio
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -188,7 +199,7 @@ def load_paths(
     key: Callable[[str], int | str] = int,
 ) -> dict[int | str, dict[int, float]]:
     """{alert_id: {t_minutes: pct_change}}. `key` reads the CSV's alert_id: the table's integer
-    id (the default), or str for the export's `<chain>@<bucket epoch>`."""
+    id (the default), or str for the day files' and the snapshot's `<chain>@<bucket epoch>`."""
     paths: dict[int | str, dict[int, float]] = defaultdict(dict)
     with csv_path.open() as f:
         r = csv.DictReader(f)
@@ -203,40 +214,55 @@ def eod(path: dict[int, float]) -> float | None:
     return path[max(path)] if path else None
 
 
-def newest_outcomes_csv(out_dir: pathlib.Path, export: bool = False) -> pathlib.Path:
-    """The newest SPXW outcomes CSV of the source's kind: the table's, or the export's.
+def newest_outcomes_csv(out_dir: pathlib.Path, source: str) -> pathlib.Path:
+    """The newest SPXW outcomes CSV of the source's kind: the day files', the snapshot's or the
+    table's.
 
     The names carry a digit stamp right after the prefix ("interval-ba-outcomes-20261126-...csv",
-    "interval-ba-outcomes-export-20261126-...csv"). The SPY and QQQ files ("-spy-") and the
-    other source's files sort above them, so the bare glob took one of those. The same filter as
-    analyze_interval_ba_cuts.py, shared through the outcome script that writes the names.
+    "interval-ba-outcomes-days-20261126-...csv"). The SPY and QQQ files ("-spy-") and the other
+    sources' files sort above them, so the bare glob took one of those. The same filter as
+    analyze_interval_ba_cuts.py, shared through _interval_ba_days.py.
     """
-    found = eio.newest_outcomes_csv(out_dir, 'SPXW', export)
+    found = days.newest_outcomes_csv(out_dir, 'SPXW', source)
     if found is None:
-        sys.exit(f'No SPXW {"export " if export else ""}outcomes CSV found under {out_dir}')
+        sys.exit(
+            f'No SPXW {source + " " if source != days.TABLE else ""}outcomes CSV found under '
+            f'{out_dir}'
+        )
     return found
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    eio.add_source_arguments(parser)
+    days.add_source_arguments(parser)
     parser.add_argument('--window-sec', type=int, default=90)
     parser.add_argument('--csv', type=str, default=None)
     args = parser.parse_args(argv)
-    eio.check_source_arguments(parser, args)
-    export = args.source == 'export'
+    days.check_source_arguments(parser, args)
+    source = args.source
     load_env()
 
     csv_path = (
-        pathlib.Path(args.csv) if args.csv else newest_outcomes_csv(OUT_DIR, export)
+        pathlib.Path(args.csv) if args.csv else newest_outcomes_csv(OUT_DIR, source)
     )
     print(f'Loading paths from {csv_path.name}…')
-    # The CSV's alert_id is the table's integer id, or the export's `<chain>@<epoch>` string.
-    paths = load_paths(csv_path, key=eio.alert_id_reader(export, csv_path.name))
+    # The CSV's alert_id is the table's integer id, or `<chain>@<epoch>` (day files, snapshot).
+    paths = load_paths(csv_path, key=days.alert_id_reader(source, csv_path.name))
     print(f'  {len(paths)} alerts with forward path')
 
     source_note = ''
-    if export:
+    if source == days.DAYS:
+        # Only the days the CSV covers: the check, the repair and the read stop there.
+        first, last = days.csv_days(csv_path)
+        con = eio.open_connection()
+        try:
+            files = days.ensure_day_files(con, first, last, dry_run=args.dry_run)
+            # Every ticker: SPXW alerts are tagged by their SPY and QQQ partners.
+            alerts = days.read_day_alerts(con, files, None)
+        finally:
+            con.close()
+        source_note = f' Alerts from {files.describe()}.'
+    elif source == days.EXPORT:
         con = eio.open_connection()
         try:
             end = eio.resolve_export_end(con, args.export_end)
@@ -290,6 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     md: list[str] = []
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     md.append(f'# SPXW confluence vs solo — SPX forward-return comparison ({stamp})\n')
+    md.append(days.METHOD_BANNER + '\n')
     md.append(
         f'_Joined {len(spxw_tags)} SPXW alerts against the forward-return '
         f'paths in `{csv_path.name}` ({joined} of {len(spxw_tags)} SPXW alerts joined a path).'
@@ -370,10 +397,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     md.append('')
 
     text = '\n'.join(md)
-    kind = '-export' if export else ''
-    out_path = OUT_DIR / f'interval-ba-confluence-vs-solo{kind}-{stamp}.md'
-    out_path.write_text(text, encoding='utf-8')
-    print(f'\nwrote {out_path}')
+    if not args.dry_run:
+        out_path = OUT_DIR / f'interval-ba-confluence-vs-solo{days.kind_of(source)}-{stamp}.md'
+        out_path.write_text(text, encoding='utf-8')
+        print(f'\nwrote {out_path}')
     print('\n' + text)
     return 0
 
