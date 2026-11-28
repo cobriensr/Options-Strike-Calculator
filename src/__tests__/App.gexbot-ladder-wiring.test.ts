@@ -4,10 +4,13 @@ import { describe, it, expect } from 'vitest';
 
 /**
  * Guards App.tsx's half of the GEXBot level ladder (phase 3a). The ladder's
- * three App-supplied inputs each compile with the wrong value, and
+ * four App-supplied inputs each compile with the wrong value, and
  * GexbotSection.test.tsx and LevelLadder.test.tsx pass them by prop, so only
  * this test pins what App hands <GexbotSection />:
  *
+ *   - `spxSpot` is the ladder's primary spot, the Schwab SPX quote. Drop it and
+ *     the ladder silently runs on GEXBot's own spot (its header says so, but
+ *     nothing else would notice).
  *   - `allDeltas` must be null in backtest mode. The calculator then describes
  *     a past moment (a scrubbed entry time, yesterday's date) while the levels
  *     and the expected move are live, so without the gate the ladder prints
@@ -39,12 +42,19 @@ function gexbotSectionProps(): string {
   return match[1]!;
 }
 
+// Each pattern allows any whitespace between tokens: prettier breaks a prop
+// onto its own lines, and then the ternary or `??` across them, as soon as the
+// expression grows past 80 columns.
 describe('App GEXBot level ladder wiring', () => {
-  it('hands the section no calculator rows in backtest mode', () => {
-    // Whitespace-tolerant: prettier wraps the prop onto its own lines when the
-    // expression grows.
+  it("hands the section the live SPX quote's price as its primary spot", () => {
     expect(gexbotSectionProps()).toMatch(
-      /\ballDeltas=\{\s*backtestMode \? null : \(results\?\.allDeltas \?\? null\)\s*\}/,
+      /\bspxSpot=\{\s*market\.data\.quotes\?\.spx\?\.price\s*\?\?\s*null\s*\}/,
+    );
+  });
+
+  it('hands the section no calculator rows in backtest mode', () => {
+    expect(gexbotSectionProps()).toMatch(
+      /\ballDeltas=\{\s*backtestMode\s*\?\s*null\s*:\s*\(\s*results\?\.allDeltas\s*\?\?\s*null\s*\)\s*\}/,
     );
   });
 
