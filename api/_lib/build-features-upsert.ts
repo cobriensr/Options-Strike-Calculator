@@ -167,7 +167,10 @@ export function computeCompleteness(features: FeatureRow): number {
  * dp_top_cluster_dist, dp_support_premium and dp_resistance_premium, then #29
  * adds dp_support_resistance_ratio and dp_concentration. #21 also adds
  * dp_buyer_initiated, dp_seller_initiated and dp_net_bias, which nothing
- * writes (the upsert has no such column), so they are not listed.
+ * writes (the upsert has no such column), so they are not listed. #214's seven
+ * dp_*_10ct columns are left out on purpose, until the morning-features plan
+ * (docs/superpowers/plans/2026-11-27-ml-morning-features.md) adds them as
+ * DP_10CT_COLUMNS.
  */
 export const DP_COLUMNS: readonly string[] = Object.freeze([
   'dp_total_premium',
