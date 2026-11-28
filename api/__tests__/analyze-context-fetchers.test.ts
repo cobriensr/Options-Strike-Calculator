@@ -113,6 +113,7 @@ vi.mock('../_lib/analyze-context-formatters.js', () => ({
   formatEconomicCalendarForClaude: vi.fn(() => 'econ'),
   formatMarketInternalsForClaude: vi.fn(() => 'internals'),
   formatPriorDayFlowForClaude: vi.fn(),
+  formatPrevSessionForClaude: vi.fn(() => 'prev-session'),
   formatSimilarDaysForClaude: vi.fn(() => 'similar'),
 }));
 
@@ -166,6 +167,7 @@ import {
   fetchOiChangeContext,
   fetchFuturesContext,
   fetchPriorDayFlowContext,
+  fetchPrevSessionContext,
   fetchEconomicCalendarContext,
   fetchDirectionalChainContext,
   fetchCrossAssetRegimeBlock,
@@ -184,6 +186,7 @@ import { uwFetch, schwabFetch } from '../_lib/api-helpers.js';
 import { formatFuturesForClaude } from '../_lib/futures-context.js';
 import {
   formatMarketInternalsForClaude,
+  formatPrevSessionForClaude,
   formatPriorDayFlowForClaude,
 } from '../_lib/analyze-context-formatters.js';
 import { computeCrossAssetRegime } from '../_lib/cross-asset-regime.js';
@@ -203,6 +206,10 @@ beforeEach(() => {
   delete process.env.UW_API_KEY;
   delete process.env.DAY_ANALOG_BACKEND;
   vi.clearAllMocks();
+  // clearAllMocks keeps implementations, and many tests below point getDb at a
+  // sql mock of their own with mockReturnValue. Without this a later test would
+  // inherit the last one's database.
+  vi.mocked(getDb).mockImplementation(() => vi.fn() as never);
 });
 
 afterEach(() => {
@@ -1274,5 +1281,250 @@ describe('analyze-context-fetchers — market internals', () => {
 
     expect(formatMarketInternalsForClaude).toHaveBeenCalledWith(bars);
     expect(result.marketInternalsContext).toBe('internals');
+  });
+});
+
+// ── fetchPrevSessionContext: the previous session and the implied move ─
+//
+// One bounded as-of read: the newest 30 rows strictly before D, so a back-dated
+// analysis can't see its own day. P1 and P2 are still exact-date lookups in
+// those rows, with no fallback to an older row: a gap in `outcomes` (a lapsed
+// Schwab login, say) must not show an older day as "yesterday". The formatter
+// is mocked in this file, so these tests pin what the fetcher passes to it.
+
+describe('analyze-context-fetchers — previous session (outcomes)', () => {
+  // The driver returns NUMERIC as a string, DATE as a Date, INTEGER as a number.
+  const row1125 = {
+    date: new Date('2026-11-25T00:00:00.000Z'),
+    settlement: '7182.73',
+    day_high: '7199.31',
+    day_low: '6970.11',
+    day_range_pts: 229,
+    vix_close: '28.29',
+  };
+  const row1124 = {
+    date: new Date('2026-11-24T00:00:00.000Z'),
+    settlement: '7202.45',
+    day_high: '7230.00',
+    day_low: '7100.10',
+    day_range_pts: 130,
+    vix_close: '26.36',
+  };
+  const parsed1125 = {
+    settlement: 7182.73,
+    day_high: 7199.31,
+    day_low: 6970.11,
+    day_range_pts: 229,
+    vix_close: 28.29,
+  };
+  const parsed1124 = {
+    settlement: 7202.45,
+    day_high: 7230,
+    day_low: 7100.1,
+    day_range_pts: 130,
+    vix_close: 26.36,
+  };
+
+  /** A sql mock that answers its one query with `rows`. */
+  const answerWith = (rows: unknown) => {
+    const sql = vi.fn().mockResolvedValueOnce(rows);
+    vi.mocked(getDb).mockReturnValue(sql as never);
+    return sql;
+  };
+
+  it('reads the newest 30 rows strictly before D, newest first, in one query', async () => {
+    const sql = answerWith([row1125, row1124]);
+
+    await fetchPrevSessionContext('2026-11-27');
+
+    expect(sql).toHaveBeenCalledOnce();
+    const [strings, ...params] = sql.mock.calls[0] as [string[], ...string[]];
+    // Bound by D alone: P1 and P2 are found among the rows, not queried.
+    expect(params).toEqual(['2026-11-27']);
+    const text = strings.join('?');
+    expect(text).toMatch(/FROM outcomes/);
+    expect(text).toMatch(/WHERE date < \?/);
+    expect(text).toMatch(/ORDER BY date DESC/);
+    expect(text).toMatch(/LIMIT 30\b/);
+    // Never a bound that could reach D itself or later.
+    expect(text).not.toMatch(/date\s*(>=|<=|>)/);
+  });
+
+  it.each([
+    ['P1 row first', [row1125, row1124]],
+    ['P2 row first', [row1124, row1125]],
+  ])(
+    'matches rows to P1 and P2 by date, not by position: %s',
+    async (_label, rows) => {
+      answerWith(rows);
+
+      const out = await fetchPrevSessionContext('2026-11-27');
+
+      expect(out).toBe('prev-session');
+      expect(formatPrevSessionForClaude).toHaveBeenCalledOnce();
+      // 11-26 was closed, so D = 11-27 has P1 = 11-25 and P2 = 11-24.
+      expect(formatPrevSessionForClaude).toHaveBeenCalledWith({
+        analysisDate: '2026-11-27',
+        p1Date: '2026-11-25',
+        p2Date: '2026-11-24',
+        p1: parsed1125,
+        p2: parsed1124,
+        recent: new Map([
+          ['2026-11-25', parsed1125],
+          ['2026-11-24', parsed1124],
+        ]),
+      });
+    },
+  );
+
+  it('hands the formatter every row it read, keyed by date, not just P1 and P2', async () => {
+    const older = {
+      ...row1124,
+      date: new Date('2026-11-21T00:00:00.000Z'),
+      settlement: '7100.00',
+    };
+    answerWith([row1125, row1124, older]);
+
+    await fetchPrevSessionContext('2026-11-27');
+
+    const input = vi.mocked(formatPrevSessionForClaude).mock.calls[0]![0];
+    expect([...input.recent.keys()]).toEqual([
+      '2026-11-25',
+      '2026-11-24',
+      '2026-11-21',
+    ]);
+    expect(input.recent.get('2026-11-21')).toMatchObject({ settlement: 7100 });
+    // P2 is still the exact day before P1, not the next row down the list.
+    expect(input.p2).toEqual(parsed1124);
+  });
+
+  it('reads a DATE that arrives as a plain string as well as a Date', async () => {
+    answerWith([
+      { ...row1125, date: '2026-11-25' },
+      { ...row1124, date: '2026-11-24T00:00:00.000Z' },
+    ]);
+
+    await fetchPrevSessionContext('2026-11-27');
+
+    expect(formatPrevSessionForClaude).toHaveBeenCalledWith(
+      expect.objectContaining({ p1: parsed1125, p2: parsed1124 }),
+    );
+  });
+
+  it('passes a null P2 when only the P1 row exists', async () => {
+    answerWith([row1125]);
+
+    const out = await fetchPrevSessionContext('2026-11-27');
+
+    expect(out).toBe('prev-session');
+    expect(formatPrevSessionForClaude).toHaveBeenCalledWith(
+      expect.objectContaining({ p1: parsed1125, p2: null }),
+    );
+  });
+
+  it('passes a null P2, not an older day, when the row for the day before P1 is missing', async () => {
+    // 11-24 has no row, but 11-21 does: P2 must not slide down to it.
+    const older = { ...row1124, date: new Date('2026-11-21T00:00:00.000Z') };
+    answerWith([row1125, older]);
+
+    await fetchPrevSessionContext('2026-11-27');
+
+    expect(formatPrevSessionForClaude).toHaveBeenCalledWith(
+      expect.objectContaining({ p1: parsed1125, p2: null }),
+    );
+  });
+
+  it.each([
+    ['no rows at all', []],
+    ['only the P2 row', [row1124]],
+    [
+      // A row for an older day is not "yesterday": no fallback.
+      'only an older day',
+      [{ ...row1124, date: new Date('2026-11-21T00:00:00.000Z') }],
+    ],
+  ])(
+    'returns null and formats nothing when P1 has no row: %s',
+    async (_l, rows) => {
+      answerWith(rows);
+
+      expect(await fetchPrevSessionContext('2026-11-27')).toBeNull();
+      expect(formatPrevSessionForClaude).not.toHaveBeenCalled();
+    },
+  );
+
+  it('turns NULL and unparseable columns into null, and keeps the row', async () => {
+    answerWith([
+      {
+        ...row1125,
+        settlement: null,
+        day_high: 'n/a',
+        day_range_pts: null,
+        vix_close: '',
+      },
+    ]);
+
+    await fetchPrevSessionContext('2026-11-27');
+
+    expect(formatPrevSessionForClaude).toHaveBeenCalledWith(
+      expect.objectContaining({
+        p1: {
+          settlement: null,
+          day_high: null,
+          day_low: 6970.11,
+          day_range_pts: null,
+          vix_close: null,
+        },
+      }),
+    );
+  });
+
+  it('returns null and reports a DB reject by name', async () => {
+    const failure = new Error('pool exhausted');
+    const sql = vi.fn().mockRejectedValueOnce(failure);
+    vi.mocked(getDb).mockReturnValue(sql as never);
+
+    expect(await fetchPrevSessionContext('2026-11-27')).toBeNull();
+
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    expect(Sentry.captureException).toHaveBeenCalledWith(failure);
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'analyze_context.prev_session_error',
+    );
+    expect(formatPrevSessionForClaude).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '2026-13-40', 'not-a-date', '2026-11-27T10:00:00'])(
+    'returns null without throwing, and without a query, for the date %j',
+    async (bad) => {
+      const sql = answerWith([row1125, row1124]);
+
+      await expect(fetchPrevSessionContext(bad)).resolves.toBeNull();
+
+      // priorTradingDay throws on it; that is caught inside the fetcher.
+      expect(sql).not.toHaveBeenCalled();
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+      expect(formatPrevSessionForClaude).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// ── getDb mock isolation ───────────────────────────────────────────────
+//
+// Most tests here point getDb at a sql mock of their own with mockReturnValue,
+// and vi.clearAllMocks keeps that. The file-level beforeEach puts the module
+// default back; this ordered pair proves it does (the second test fails if the
+// first one's mock leaks into it).
+
+describe('analyze-context-fetchers — getDb mock isolation', () => {
+  const marker = vi.fn();
+
+  it('lets a test point getDb at its own sql mock', () => {
+    vi.mocked(getDb).mockReturnValue(marker as never);
+
+    expect(getDb()).toBe(marker);
+  });
+
+  it('gives the next test the module default again, not that mock', () => {
+    expect(getDb()).not.toBe(marker);
   });
 });

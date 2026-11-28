@@ -72,17 +72,22 @@ import { formatFuturesForClaude } from './futures-context.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
 import type { IvTermRow } from '../iv-term-structure.js';
 import type { PreMarketData } from '../pre-market.js';
+import { priorTradingDay } from '../../src/data/marketHours.js';
 import { getETDateStr, getETTime } from '../../src/utils/timezone.js';
 import { analyzeZeroGamma } from '../../src/utils/zero-gamma.js';
 import logger from './logger.js';
 import {
   formatEconomicCalendarForClaude,
   formatMarketInternalsForClaude,
+  formatPrevSessionForClaude,
   formatPriorDayFlowForClaude,
   type EconomicEventRow,
+  type OutcomesDay,
   type VolRealizedRow,
 } from './analyze-context-formatters.js';
 import { numOrUndef } from './analyze-context-helpers.js';
+import { neonDateStr } from './db-date.js';
+import { numOrNull } from './numeric-coercion.js';
 import {
   ECON_CALENDAR_FETCH_DONE_ET_MINUTES,
   MAX_PLAUSIBLE_EVENT_GAP_DAYS,
@@ -610,6 +615,81 @@ export async function fetchPriorDayFlowContext(
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch prior-day flow data');
     metrics.increment('analyze_context.prior_flow_error');
+    Sentry.captureException(error_);
+    return null;
+  }
+}
+
+// ── Previous session + VIX-implied move (outcomes) ────────────────────
+
+/** An `outcomes` row as the Neon driver returns it: DATE a Date, NUMERIC a string. */
+interface OutcomesDbRow {
+  date: string | Date;
+  settlement: unknown;
+  day_high: unknown;
+  day_low: unknown;
+  day_range_pts: unknown;
+  vix_close: unknown;
+}
+
+/**
+ * The previous trading day's range and VIX change, today's VIX-implied move,
+ * and how often recent sessions reached 1.0x, 1.25x and 1.5x their own implied
+ * move, from the `outcomes` rows before `analysisDate`.
+ *
+ * One bounded as-of read: the newest 30 rows strictly before `analysisDate`
+ * (20 sessions need 21 consecutive rows, and the rest is slack for gaps and
+ * half days), so a back-dated analysis can't see its own day. P1 and P2 are
+ * exact-date lookups in those rows, with no fallback to an older row: a gap in
+ * `outcomes` must not show an older day as "yesterday". With no P1 row nothing
+ * about today is knowable, so it returns null and the section lands in the
+ * "Data Sources Unavailable" list.
+ */
+export async function fetchPrevSessionContext(
+  analysisDate: string,
+): Promise<string | null> {
+  try {
+    // Inside the try: priorTradingDay throws on anything but YYYY-MM-DD, and
+    // context.selectedDate isn't pattern-checked.
+    const p1Date = priorTradingDay(analysisDate);
+    const p2Date = priorTradingDay(p1Date);
+    const sql = getDb();
+    const rows = (await withDbRetry(
+      () => sql`
+        SELECT date, settlement, day_high, day_low, day_range_pts, vix_close
+        FROM outcomes
+        WHERE date < ${analysisDate}
+        ORDER BY date DESC
+        LIMIT 30
+      `,
+      2,
+      10_000,
+    )) as OutcomesDbRow[];
+
+    const byDate = new Map<string, OutcomesDay>();
+    for (const row of rows) {
+      byDate.set(neonDateStr(row.date), {
+        settlement: numOrNull(row.settlement),
+        day_high: numOrNull(row.day_high),
+        day_low: numOrNull(row.day_low),
+        day_range_pts: numOrNull(row.day_range_pts),
+        vix_close: numOrNull(row.vix_close),
+      });
+    }
+
+    const p1 = byDate.get(p1Date);
+    if (p1 === undefined) return null;
+    return formatPrevSessionForClaude({
+      analysisDate,
+      p1Date,
+      p2Date,
+      p1,
+      p2: byDate.get(p2Date) ?? null,
+      recent: byDate,
+    });
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch previous session data');
+    metrics.increment('analyze_context.prev_session_error');
     Sentry.captureException(error_);
     return null;
   }

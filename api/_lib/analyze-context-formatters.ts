@@ -10,6 +10,11 @@
  * them directly without mocking the whole context builder.
  */
 
+import {
+  getEarlyCloseHourET,
+  isHalfDay,
+  priorTradingDay,
+} from '../../src/data/marketHours.js';
 import type { InternalBar } from '../../src/types/market-internals.js';
 import { classifyRegime } from '../../src/utils/market-regime.js';
 import { detectExtremes } from '../../src/utils/extreme-detector.js';
@@ -509,4 +514,194 @@ export function formatVolRealizedForClaude(rv: VolRealizedRow): string | null {
     );
   }
   return lines.length > 0 ? lines.join('\n  ') : null;
+}
+
+// ── Previous session + VIX-implied move ───────────────────────────────
+
+/** One `outcomes` row with its numeric columns parsed; a NULL stays null. */
+export interface OutcomesDay {
+  settlement: number | null;
+  day_high: number | null;
+  day_low: number | null;
+  day_range_pts: number | null;
+  vix_close: number | null;
+}
+
+export interface PrevSessionInput {
+  /** D, the date being analyzed. */
+  analysisDate: string;
+  /** P1, the trading day before D. */
+  p1Date: string;
+  /** P2, the trading day before P1. */
+  p2Date: string;
+  p1: OutcomesDay;
+  /** null when `outcomes` has no row for P2. */
+  p2: OutcomesDay | null;
+  /**
+   * Every `outcomes` row the fetcher read (the days before D, newest 30), by
+   * 'YYYY-MM-DD' date, for the recent-sessions line. It includes P1 and P2.
+   */
+  recent: ReadonlyMap<string, OutcomesDay>;
+}
+
+/** The annualisation the range study used: 252 trading days a year. */
+const SQRT_TRADING_DAYS = Math.sqrt(252);
+
+/** A finite number above zero, else null: a zero or negative close or VIX is unusable. */
+function positive(v: number | null): number | null {
+  return v !== null && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function finite(v: number | null): number | null {
+  return v !== null && Number.isFinite(v) ? v : null;
+}
+
+interface ImpliedMove {
+  close: number;
+  vix: number;
+  pts: number;
+}
+
+/** close x VIX / 100 / sqrt(252) in index points; null when either input is unusable. */
+function impliedMove(day: OutcomesDay | null): ImpliedMove | null {
+  const close = positive(day?.settlement ?? null);
+  const vix = positive(day?.vix_close ?? null);
+  if (close === null || vix === null) return null;
+  return { close, vix, pts: (close * vix) / 100 / SQRT_TRADING_DAYS };
+}
+
+/** `v` signed to `places` decimals; a value that rounds to zero reads plus zero. */
+function signed(v: number, places: number): string {
+  const scale = 10 ** places;
+  const rounded = Math.round(v * scale) / scale;
+  return `${rounded < 0 ? '-' : '+'}${Math.abs(rounded).toFixed(places)}`;
+}
+
+/**
+ * "12:00 CT" for an early-close day, null for a normal one. The calendar
+ * stores the close in ET; ET and CT change clocks together, so CT is one hour
+ * earlier all year.
+ */
+function halfDayCloseCt(date: string): string | null {
+  const closeEt = isHalfDay(date) ? getEarlyCloseHourET(date) : undefined;
+  return closeEt === undefined ? null : `${closeEt - 1}:00 CT`;
+}
+
+/** How many of the most recent full sessions the recent-sessions line counts. */
+const RECENT_WINDOW = 20;
+/** Fewer usable sessions than this and the line says it is unavailable. */
+const RECENT_MIN = 10;
+
+/**
+ * How often the most recent full sessions reached 1.0x, 1.25x and 1.5x their own
+ * VIX-implied move, so the model can see the current regime beside the prompt's
+ * full-sample rates.
+ *
+ * A session S counts only when S is not a half day, `priorTradingDay(S)` is in
+ * `recent` with a usable close and VIX (its implied move is the yardstick), and
+ * S has a high above its low. Its multiple is (high - low) / that implied move.
+ * A missing or unusable row therefore costs the sessions that need it and no
+ * others. The window is the newest 20 such sessions; with fewer than 10 the
+ * line says it is unavailable.
+ */
+function recentSessionsLine(recent: ReadonlyMap<string, OutcomesDay>): string {
+  const multiples: { date: string; multiple: number }[] = [];
+  const newestFirst = [...recent.entries()].sort(([a], [b]) =>
+    a < b ? 1 : -1,
+  );
+  for (const [date, day] of newestFirst) {
+    if (isHalfDay(date)) continue;
+    const high = finite(day.day_high);
+    const low = finite(day.day_low);
+    if (high === null || low === null || high <= low) continue;
+    const prior = impliedMove(recent.get(priorTradingDay(date)) ?? null);
+    if (prior === null) continue;
+    multiples.push({ date, multiple: (high - low) / prior.pts });
+    if (multiples.length === RECENT_WINDOW) break;
+  }
+
+  const n = multiples.length;
+  if (n < RECENT_MIN) {
+    return `Recent sessions: unavailable (fewer than ${RECENT_MIN} usable sessions).`;
+  }
+  const count = (level: number) =>
+    multiples.filter((m) => m.multiple >= level).length;
+  const pct = (c: number) => Math.round((c / n) * 100);
+  const [c10, c125, c15] = [count(1), count(1.25), count(1.5)];
+  const lastFive = multiples.slice(0, 5);
+  const average =
+    lastFive.reduce((sum, m) => sum + m.multiple, 0) / lastFive.length;
+  return `Recent sessions (last ${n} full sessions, ${multiples[n - 1]!.date} to ${multiples[0]!.date}): ${c10} reached 1.0× their implied move (${pct(c10)}%), ${c125} reached 1.25× (${pct(c125)}%), ${c15} reached 1.5× (${pct(c15)}%). Average multiple over the last 5: ${average.toFixed(2)}×.`;
+}
+
+/**
+ * Today's VIX-implied move, the previous session's range as a multiple of its
+ * own implied move, the previous session's VIX change, and how often recent
+ * sessions reached 1.0x, 1.25x and 1.5x their own implied move, from the
+ * `outcomes` rows before D: P1 and P2 (the two trading days before D) for the
+ * first three lines, the newest 30 rows for the last.
+ *
+ * Each line degrades alone: a missing or unusable column makes that line say
+ * it is unavailable, and never prints NaN or Infinity. The caller returns
+ * nothing at all when P1 has no row. There are no flags and no thresholds
+ * here: the base rates live in the cached prompt text, in one place.
+ */
+export function formatPrevSessionForClaude(input: PrevSessionInput): string {
+  const { analysisDate, p1Date, p2Date, p1, p2, recent } = input;
+  const lines: string[] = [];
+
+  const today = impliedMove(p1);
+  lines.push(
+    today === null
+      ? `Today's VIX-implied move (prior-close VIX): unavailable (no usable SPX close and VIX close for ${p1Date}).`
+      : `Today's VIX-implied move (prior-close VIX): ${today.pts.toFixed(1)} pts (SPX close ${today.close.toFixed(2)} × VIX ${today.vix.toFixed(2)} / 100 / √252, ${p1Date}). Session high-to-low range at 1.0× = ${Math.round(today.pts)}, 1.25× = ${Math.round(today.pts * 1.25)}, 1.5× = ${Math.round(today.pts * 1.5)} pts (whole range, not distance from the open).`,
+  );
+
+  const p1CloseCt = halfDayCloseCt(p1Date);
+  const rangeLabel =
+    p1CloseCt === null
+      ? p1Date
+      : `${p1Date}, a half day with a ${p1CloseCt} close`;
+  const high = finite(p1.day_high);
+  const low = finite(p1.day_low);
+  const rangePts = finite(p1.day_range_pts);
+  // A day's high is above its low, so an inverted or zero pair is bad data and
+  // would print a negative or "0.00×" multiple: treat it as unusable.
+  if (high === null || low === null || rangePts === null || high <= low) {
+    lines.push(
+      `Previous day range (${rangeLabel}): unavailable (no usable high, low and range in outcomes).`,
+    );
+  } else {
+    const spread = `${rangePts.toFixed(0)} pts (high ${high.toFixed(2)}, low ${low.toFixed(2)})`;
+    const prior = impliedMove(p2);
+    lines.push(
+      prior === null
+        ? `Previous day range (${rangeLabel}): ${spread}; no implied-move multiple, because ${p2Date} has no usable SPX close and VIX close.`
+        : `Previous day range (${rangeLabel}): ${spread} = ${((high - low) / prior.pts).toFixed(2)}× that day's implied move (${prior.pts.toFixed(1)} pts).`,
+    );
+  }
+
+  const vixP1 = positive(p1.vix_close);
+  const vixP2 = positive(p2?.vix_close ?? null);
+  if (vixP1 === null || vixP2 === null) {
+    lines.push(
+      `VIX change (${p1Date}, close to close): unavailable (needs a usable VIX close for ${p1Date} and ${p2Date}).`,
+    );
+  } else {
+    const change = vixP1 - vixP2;
+    lines.push(
+      `VIX change (${p1Date}, close to close): ${signed(change, 2)} (${vixP2.toFixed(2)} → ${vixP1.toFixed(2)}), ${signed((change / vixP2) * 100, 1)}%.`,
+    );
+  }
+
+  lines.push(recentSessionsLine(recent));
+
+  const todayCloseCt = halfDayCloseCt(analysisDate);
+  if (todayCloseCt !== null) {
+    lines.push(
+      `Today is a half day (close ${todayCloseCt}); the prompt's base rates come from full sessions and overstate today's range.`,
+    );
+  }
+
+  return lines.join('\n');
 }
