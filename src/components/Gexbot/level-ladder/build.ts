@@ -90,23 +90,49 @@ const SEVERITY: Record<StrikeStatus, number> = {
 // ────────────────────────────────────────────────────────────
 
 /**
+ * Whether the expected-move row's `asOf` is within
+ * `LADDER_MAX_LEVEL_AGE_SECONDS` of `nowMs`. The limit itself is fresh. A
+ * stamp after `nowMs` has age 0 and is fresh, as `carryForwardMove` clamps
+ * elapsed time; one that is absent or does not parse, or a NaN clock, cannot
+ * be aged and is not fresh. The one test of that row's age, shared by the odds
+ * and the spot fallback so they never disagree at the boundary.
+ */
+function isExpectedMoveFresh(asOf: string | null, nowMs: number): boolean {
+  if (asOf == null) return false;
+  const ageSeconds = (nowMs - Date.parse(asOf)) / 1000;
+  return ageSeconds <= LADDER_MAX_LEVEL_AGE_SECONDS;
+}
+
+/**
  * The ladder's spot. While the market is open a Schwab quote counts only
  * when it is not stale (`useQuoteStaleness`'s `isStale`): a lapsed login
  * keeps the last quote, which would freeze the ladder. A null, unusable or
- * stale quote falls back to the expected-move row's spot, "GEXBot spot".
- * With the market closed the held quote is the close and is used as is.
+ * stale quote falls back to the expected-move row's spot, "GEXBot spot", and
+ * while the market is open that row must itself be fresh: a stall in GEXBot's
+ * feed would otherwise freeze the ladder the same way, so a row older than
+ * `LADDER_MAX_LEVEL_AGE_SECONDS` (`gexbotAsOf`, its stamp, read against
+ * `nowMs`) counts as no spot, the odds' own test. With the market closed the
+ * held quote, or failing that the held GEXBot spot, is the close and is used
+ * as is.
  */
 export function pickLadderSpot(input: {
   spxSpot: number | null;
   spxSpotStale: boolean;
   gexbotSpot: number | null;
+  /** The expected-move row's `asOf`; null when there is no row. */
+  gexbotAsOf: string | null;
+  nowMs: number;
   marketOpen: boolean;
 }): LadderSpot | null {
-  const { spxSpot, spxSpotStale, gexbotSpot, marketOpen } = input;
+  const { spxSpot, spxSpotStale, gexbotSpot, gexbotAsOf, nowMs, marketOpen } =
+    input;
   if (isPositiveFinite(spxSpot) && !(marketOpen && spxSpotStale)) {
     return { spot: spxSpot, source: 'schwab', label: 'spot' };
   }
-  if (isPositiveFinite(gexbotSpot)) {
+  if (
+    isPositiveFinite(gexbotSpot) &&
+    (!marketOpen || isExpectedMoveFresh(gexbotAsOf, nowMs))
+  ) {
     return { spot: gexbotSpot, source: 'gexbot', label: 'GEXBot spot' };
   }
   return null;
@@ -269,8 +295,7 @@ function usableVolatility(input: LevelLadderInput): LadderVolatility | null {
   ) {
     return null;
   }
-  const ageSeconds = (input.nowMs - Date.parse(row.asOf)) / 1000;
-  if (ageSeconds > LADDER_MAX_LEVEL_AGE_SECONDS) return null;
+  if (!isExpectedMoveFresh(row.asOf, input.nowMs)) return null;
   const carried = carryForwardMove(row, input.nowMs);
   return carried == null ? null : { ...carried, strikeIvs: input.strikeIvs };
 }

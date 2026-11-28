@@ -309,11 +309,15 @@ function LevelLadderInner({
   const moveFailed = isViewFailed(moveView);
 
   // A stale or missing quote falls back to GEXBot's spot, the expected-move
-  // row's (the spec's chain).
+  // row's (the spec's chain). While the market is open that row must be inside
+  // the model's age limit, read against the same clock the model uses: an old
+  // one counts as no spot.
   const ladderSpot = pickLadderSpot({
     spxSpot,
     spxSpotStale: isStale,
     gexbotSpot: moveRow?.spot ?? null,
+    gexbotAsOf: moveRow?.asOf ?? null,
+    nowMs,
     marketOpen,
   });
   const spot = ladderSpot?.spot ?? null;

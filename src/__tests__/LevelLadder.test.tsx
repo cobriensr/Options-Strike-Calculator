@@ -152,6 +152,10 @@ function renderLadder(over: Partial<ComponentProps<typeof LevelLadder>> = {}) {
   );
 }
 
+/** An ISO stamp `seconds` before the test clock. */
+const secondsAgo = (seconds: number) =>
+  new Date(NOW - seconds * 1000).toISOString();
+
 const rowText = (strike: number) =>
   screen.getByTestId(`level-ladder-row-${strike}`);
 
@@ -817,6 +821,8 @@ describe('<LevelLadder> spot', () => {
   });
 
   it('falls back to the GEXBot spot once the quote is stale (91 s old)', () => {
+    // The row's own stamp is fresh (200 s, inside the 240 s limit).
+    answer(ready(snapshot()), ready(expectedMove({ asOf: secondsAgo(200) })));
     renderLadder({ spxSpot: 7500, quotesFetchedAt: NOW - 91_000 });
     const header = screen.getByTestId('level-ladder-header');
     expect(header).toHaveTextContent('GEXBot spot 7,588.1');
@@ -834,10 +840,57 @@ describe('<LevelLadder> spot', () => {
   });
 
   it('falls back to the GEXBot spot when there is no quote', () => {
+    answer(ready(snapshot()), ready(expectedMove({ asOf: secondsAgo(200) })));
     renderLadder({ spxSpot: null, quotesFetchedAt: null });
     expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
       'GEXBot spot 7,588.1',
     );
+  });
+
+  it('keeps the GEXBot spot while its row is exactly 240 s old', () => {
+    answer(ready(snapshot()), ready(expectedMove({ asOf: secondsAgo(240) })));
+    renderLadder({ spxSpot: 7500, quotesFetchedAt: NOW - 91_000 });
+    expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
+      'GEXBot spot 7,588.1',
+    );
+    expect(screen.queryByTestId('level-ladder-waiting')).toBeNull();
+  });
+
+  it.each([
+    ['a stale quote', { spxSpot: 7500, quotesFetchedAt: NOW - 91_000 }],
+    ['no quote', { spxSpot: null, quotesFetchedAt: null }],
+  ])(
+    'waits for a spot when the market is open, %s and the GEXBot row is 241 s old',
+    (_, quote) => {
+      answer(ready(snapshot()), ready(expectedMove({ asOf: secondsAgo(241) })));
+      renderLadder(quote);
+      const box = screen.getByTestId('level-ladder-waiting');
+      expect(box).toHaveTextContent('Level Ladder — waiting for SPX spot');
+      expect(screen.queryByTestId('level-ladder-header')).toBeNull();
+      expect(screen.queryByRole('list')).toBeNull();
+    },
+  );
+
+  it('still prefers a fresh quote over an old GEXBot row', () => {
+    answer(ready(snapshot()), ready(expectedMove({ asOf: secondsAgo(3600) })));
+    renderLadder({ spxSpot: 7590, quotesFetchedAt: NOW - 30_000 });
+    const header = screen.getByTestId('level-ladder-header');
+    expect(header).toHaveTextContent('spot 7,590.0');
+    expect(header).not.toHaveTextContent('GEXBot spot');
+  });
+
+  it('uses the held GEXBot spot as is once the market is closed, however old', () => {
+    answer(ready(snapshot()), ready(expectedMove({ asOf: secondsAgo(3600) })));
+    renderLadder({
+      marketOpen: false,
+      session: 'closed',
+      spxSpot: null,
+      quotesFetchedAt: null,
+    });
+    expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
+      'GEXBot spot 7,588.1',
+    );
+    expect(screen.queryByTestId('level-ladder-waiting')).toBeNull();
   });
 
   it('uses a held quote as is once the market is closed', () => {
@@ -924,6 +977,28 @@ describe('<LevelLadder> clock', () => {
     expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
       'GEXBot spot 7,588.1',
     );
+  });
+
+  it('ages the GEXBot spot out to the waiting box as time passes', () => {
+    // No quote, so the row's spot is the ladder's. Its stamp is at now: the
+    // 30 s re-check that runs 240 s on sees it at the limit, the next at 270 s.
+    renderLadder({ spxSpot: null, quotesFetchedAt: null });
+    expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
+      'GEXBot spot 7,588.1',
+    );
+    act(() => {
+      vi.advanceTimersByTime(240_000);
+    });
+    expect(screen.getByTestId('level-ladder-header')).toHaveTextContent(
+      'GEXBot spot 7,588.1',
+    );
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(screen.getByTestId('level-ladder-waiting')).toHaveTextContent(
+      'Level Ladder — waiting for SPX spot',
+    );
+    expect(screen.queryByTestId('level-ladder-header')).toBeNull();
   });
 
   it('starts no timer while the market is closed', () => {

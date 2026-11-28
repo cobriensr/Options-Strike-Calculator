@@ -1042,6 +1042,11 @@ describe('result-line precedence', () => {
 });
 
 describe('spot (pickLadderSpot)', () => {
+  /** The expected-move row's stamp and the clock, the row fresh (age 0). */
+  const FRESH = { gexbotAsOf: NOW_ISO, nowMs: NOW } as const;
+  const GEXBOT = { spot: 7612.1, source: 'gexbot', label: 'GEXBot spot' };
+  const secondsAgo = (s: number) => new Date(NOW - s * SEC).toISOString();
+
   it('a fresh Schwab quote is used', () => {
     expect(
       pickLadderSpot({
@@ -1049,6 +1054,7 @@ describe('spot (pickLadderSpot)', () => {
         spxSpotStale: false,
         gexbotSpot: 7587.9,
         marketOpen: true,
+        ...FRESH,
       }),
     ).toEqual({ spot: 7588.4, source: 'schwab', label: 'spot' });
   });
@@ -1060,8 +1066,9 @@ describe('spot (pickLadderSpot)', () => {
         spxSpotStale: true,
         gexbotSpot: 7612.1,
         marketOpen: true,
+        ...FRESH,
       }),
-    ).toEqual({ spot: 7612.1, source: 'gexbot', label: 'GEXBot spot' });
+    ).toEqual(GEXBOT);
   });
 
   it.each([
@@ -1075,8 +1082,9 @@ describe('spot (pickLadderSpot)', () => {
         spxSpotStale: false,
         gexbotSpot: 7612.1,
         marketOpen: true,
+        ...FRESH,
       }),
-    ).toEqual({ spot: 7612.1, source: 'gexbot', label: 'GEXBot spot' });
+    ).toEqual(GEXBOT);
   });
 
   it('with the market closed a stale quote is used as is', () => {
@@ -1086,6 +1094,7 @@ describe('spot (pickLadderSpot)', () => {
         spxSpotStale: true,
         gexbotSpot: 7612.1,
         marketOpen: false,
+        ...FRESH,
       }),
     ).toEqual({ spot: 7588.4, source: 'schwab', label: 'spot' });
   });
@@ -1097,8 +1106,9 @@ describe('spot (pickLadderSpot)', () => {
         spxSpotStale: false,
         gexbotSpot: 7612.1,
         marketOpen: false,
+        ...FRESH,
       }),
-    ).toEqual({ spot: 7612.1, source: 'gexbot', label: 'GEXBot spot' });
+    ).toEqual(GEXBOT);
   });
 
   it.each([true, false])(
@@ -1110,6 +1120,7 @@ describe('spot (pickLadderSpot)', () => {
           spxSpotStale: false,
           gexbotSpot: null,
           marketOpen,
+          ...FRESH,
         }),
       ).toBeNull();
       expect(
@@ -1118,10 +1129,126 @@ describe('spot (pickLadderSpot)', () => {
           spxSpotStale: true,
           gexbotSpot: -1,
           marketOpen: true,
+          ...FRESH,
         }),
       ).toBeNull();
     },
   );
+
+  // The fallback is aged by the expected-move row's `asOf`, the limit the
+  // odds use: while the market is open a row past it counts as no spot.
+  describe('the GEXBot fallback ages with its row', () => {
+    const open = { spxSpot: null, spxSpotStale: false, marketOpen: true };
+
+    it.each([
+      ['0 s old', secondsAgo(0), GEXBOT],
+      ['200 s old', secondsAgo(200), GEXBOT],
+      ['240 s old, the limit itself (inclusive)', secondsAgo(240), GEXBOT],
+      ['241 s old', secondsAgo(241), null],
+      ['an hour old', secondsAgo(3600), null],
+      ['stamped after now (age 0)', secondsAgo(-60), GEXBOT],
+      ['unparseable', 'not a date', null],
+      ['empty', '', null],
+      ['absent (no row)', null, null],
+    ])('open, no quote, a row %s', (_, gexbotAsOf, expected) => {
+      expect(
+        pickLadderSpot({ ...open, gexbotSpot: 7612.1, gexbotAsOf, nowMs: NOW }),
+      ).toEqual(expected);
+    });
+
+    it('a stale quote falls back the same way: 241 s old gives none', () => {
+      expect(
+        pickLadderSpot({
+          spxSpot: 7588.4,
+          spxSpotStale: true,
+          marketOpen: true,
+          gexbotSpot: 7612.1,
+          gexbotAsOf: secondsAgo(241),
+          nowMs: NOW,
+        }),
+      ).toBeNull();
+    });
+
+    it('with a NaN clock the row cannot be aged, so it counts as no spot', () => {
+      expect(
+        pickLadderSpot({
+          ...open,
+          gexbotSpot: 7612.1,
+          gexbotAsOf: NOW_ISO,
+          nowMs: Number.NaN,
+        }),
+      ).toBeNull();
+    });
+
+    it('with the market closed the held value is used as is, however old', () => {
+      expect(
+        pickLadderSpot({
+          spxSpot: null,
+          spxSpotStale: false,
+          marketOpen: false,
+          gexbotSpot: 7612.1,
+          gexbotAsOf: secondsAgo(3600),
+          nowMs: NOW,
+        }),
+      ).toEqual(GEXBOT);
+      // Even a row with no usable stamp.
+      expect(
+        pickLadderSpot({
+          spxSpot: null,
+          spxSpotStale: false,
+          marketOpen: false,
+          gexbotSpot: 7612.1,
+          gexbotAsOf: null,
+          nowMs: NOW,
+        }),
+      ).toEqual(GEXBOT);
+    });
+
+    it('a fresh quote wins whatever the row age: the age only gates the fallback', () => {
+      expect(
+        pickLadderSpot({
+          spxSpot: 7588.4,
+          spxSpotStale: false,
+          marketOpen: true,
+          gexbotSpot: 7612.1,
+          gexbotAsOf: secondsAgo(3600),
+          nowMs: NOW,
+        }),
+      ).toEqual({ spot: 7588.4, source: 'schwab', label: 'spot' });
+    });
+
+    // One shared check: the spot fallback and the odds read the same row,
+    // so they never disagree about whether it is fresh.
+    it.each([
+      ['240 s old: priced and anchored', 240, true],
+      ['241 s old: neither', 241, false],
+      ['stamped after now: both', -60, true],
+    ])('the odds and the spot agree: %s', (_, ageSeconds, fresh) => {
+      const asOf = secondsAgo(ageSeconds);
+      const ladder = build({ expectedMove: expectedMove({ asOf }) });
+      const spot = pickLadderSpot({
+        ...open,
+        gexbotSpot: 7612.1,
+        gexbotAsOf: asOf,
+        nowMs: NOW,
+      });
+      expect(ladder.band != null).toBe(fresh);
+      expect(spot != null).toBe(fresh);
+    });
+
+    it('the odds and the spot agree on an unparseable stamp: neither', () => {
+      const asOf = 'not a date';
+      const ladder = build({ expectedMove: expectedMove({ asOf }) });
+      const spot = pickLadderSpot({
+        ...open,
+        gexbotSpot: 7612.1,
+        gexbotAsOf: asOf,
+        nowMs: NOW,
+      });
+      expect(ladder.band).toBeNull();
+      expect(spot).toBeNull();
+    });
+  });
 });
 
 describe('degrading', () => {
@@ -1380,6 +1507,8 @@ describe('null spot', () => {
       spxSpot: null,
       spxSpotStale: false,
       gexbotSpot: null,
+      gexbotAsOf: null,
+      nowMs: NOW,
       marketOpen: true,
     });
     expect(build({ spot: spot?.spot ?? null }).result.kind).toBe('no_spot');

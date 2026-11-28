@@ -254,14 +254,19 @@ None new.
   header's quote badge (stale at 90 s, one missed poll past the 60 s
   cadence). `LevelLadder` calls that hook, so the threshold lives in one
   place. A null or stale quote falls back to the expected-move row's `spot`,
-  and the header says "GEXBot spot". Why: on a 401 `useMarketData` keeps the last quote, so a Schwab login
+  and the header says "GEXBot spot". While the market is open that fallback
+  holds only while the row is fresh: a row whose `asOf` is older than
+  `LADDER_MAX_LEVEL_AGE_SECONDS` (240 s, the limit the odds use) counts as no
+  spot, and the ladder reads "waiting for SPX spot" (owner, 2026-11-27: see
+  "Owner decision, 2026-11-27"). Why: on a 401 `useMarketData` keeps the last quote, so a Schwab login
   that lapses mid-session freezes `spxSpot` instead of nulling it. A short
   call at 7,620 would keep reading 7,588.4 as spot while SPX ran to 7,615, and
   read more "clear" each minute as `E` shrinks. With the market closed the
-  held quote is the close and is used as is. The choice is a pure helper,
-  `pickLadderSpot` in `build.ts`. It takes `spxSpot`, `spxSpotStale` (the
-  hook's `isStale`), `gexbotSpot` and `marketOpen`, and returns the spot and
-  its source.
+  held value, the quote or else the GEXBot spot, is the close and is used as
+  is. The choice is a pure helper, `pickLadderSpot` in `build.ts`. It takes
+  `spxSpot`, `spxSpotStale` (the hook's `isStale`), `gexbotSpot`, `gexbotAsOf`
+  (the expected-move row's `asOf`, or null with no row), `nowMs` and
+  `marketOpen`, and returns the spot and its source.
 - **Candidate strikes:** `results.allDeltas` from `useCalculation`. Calculator
   output, not vendor data.
 - **Open strikes (phase 4):** `GET /api/positions?readonly=1`. The plain GET
@@ -749,7 +754,11 @@ holds SPX spreads.
 - Spot (`pickLadderSpot`): a fresh Schwab quote is used; a stale one with
   the market open falls back to the GEXBot spot, source "GEXBot spot"; a
   null `spxSpot` falls back the same way; with the market closed a stale
-  quote is used as is.
+  quote is used as is. The fallback ages with its row (phase 3a2): open, a
+  row 240 s old still gives the GEXBot spot and 241 s, an absent or
+  unparseable `asOf` give none, a stamp after `nowMs` is fresh, a fresh quote
+  wins whatever the row's age, and with the market closed the held GEXBot
+  spot is used as is. The odds and the spot agree at the boundary.
 - Degrading: `expected-move` failed and `expected-move` empty each give
   distances only with levels kept; `snapshots-latest` failed gives
   `unavailable` and no chips, with band and short strikes kept. An error with
@@ -979,6 +988,22 @@ Settled here by the author:
   code review then showed that a 10-wide spread reads strikes riskier late
   in the session, so the rule takes the spread's narrow limit (the
   skew-adjusted digital); same quantity, without the drift.
+
+## Owner decision, 2026-11-27
+
+Phase 3a2, option A: the GEXBot spot fallback is aged. Example of the gap:
+the market is open, the Schwab login lapses at 10:00 CT (the quote reads
+stale by 10:02), and GEXBot's feed stalls with its last expected-move capture
+at 10:05 CT, spot 7,588. At 10:20 the ladder still measured every distance
+from 7,588 and called it "GEXBot spot", while the model had already dropped
+the band and odds for that row as past the age limit. Now, while the market
+is open, a GEXBot spot whose expected-move row is older than
+`LADDER_MAX_LEVEL_AGE_SECONDS` (240 s, inclusive at the limit) counts as no
+spot, so the ladder shows "Level Ladder — waiting for SPX spot". An absent or
+unparseable `asOf` counts as too old, and a stamp after the clock counts as
+age 0. With the market closed the held value is used as is, the rule the
+Schwab quote follows. The spot and the odds share one freshness check in
+`build.ts`, so they cannot disagree at the boundary.
 
 ## Review, 2026-11-26
 
