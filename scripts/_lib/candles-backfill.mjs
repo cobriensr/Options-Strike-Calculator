@@ -167,15 +167,6 @@ export async function fetchSchwabDailyCandles(accessToken, symbol, from, to) {
   return candles;
 }
 
-/**
- * Schwab's daily closes of `symbol` from `from` to `to`, as a Map of ET date →
- * close: fetchSchwabDailyCandles' close of each candle, with its errors.
- */
-export async function fetchSchwabDailyCloses(accessToken, symbol, from, to) {
-  const candles = await fetchSchwabDailyCandles(accessToken, symbol, from, to);
-  return closesOf(candles);
-}
-
 /** The ET date → close Map of a daily-candle Map. */
 function closesOf(candles) {
   return new Map([...candles].map(([date, { close }]) => [date, close]));

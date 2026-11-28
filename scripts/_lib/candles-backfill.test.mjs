@@ -21,7 +21,6 @@ import {
   UW_USER_AGENT,
   extremesFor,
   fetchSchwabDailyCandles,
-  fetchSchwabDailyCloses,
   fetchUwCandles,
   isUsablePrice,
   loadSchwabCloses,
@@ -234,209 +233,7 @@ describe('planCandleDays', () => {
   });
 });
 
-// ── Schwab daily closes ────────────────────────────────────
-
-describe('fetchSchwabDailyCloses', () => {
-  beforeEach(() => atTime(TODAY));
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-  });
-
-  it('asks for daily candles of the symbol over the padded range, with the token', async () => {
-    const fetchMock = vi.fn(async () =>
-      jsonResponse({ candles: [dailyCandle(D1, 6401.28)], symbol: '$SPX' }),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    await fetchSchwabDailyCloses('tok', '$SPX', D1, D2);
-
-    const [url, init] = fetchMock.mock.calls[0];
-    const parsed = new URL(url);
-    expect(`${parsed.origin}${parsed.pathname}`).toBe(
-      'https://api.schwabapi.com/marketdata/v1/pricehistory',
-    );
-    expect(url).toContain('symbol=%24SPX');
-    expect(parsed.searchParams.get('periodType')).toBe('year');
-    expect(parsed.searchParams.get('frequencyType')).toBe('daily');
-    expect(parsed.searchParams.get('frequency')).toBe('1');
-    // Two days of padding either side of [from 00:00Z, to 23:59:59Z].
-    expect(Number(parsed.searchParams.get('startDate'))).toBe(
-      Date.parse(`${D1}T00:00:00Z`) - 2 * 86_400_000,
-    );
-    expect(Number(parsed.searchParams.get('endDate'))).toBe(
-      Date.parse(`${D2}T23:59:59Z`) + 2 * 86_400_000,
-    );
-    expect(init.headers.Authorization).toBe('Bearer tok');
-  });
-
-  it('never asks past now', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ candles: [] }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await fetchSchwabDailyCloses('tok', 'SPY', '2026-11-04', '2026-11-05');
-
-    const endDate = Number(
-      new URL(fetchMock.mock.calls[0][0]).searchParams.get('endDate'),
-    );
-    expect(endDate).toBe(Date.now());
-  });
-
-  it('keys each close on the ET date of the candle stamp, whichever midnight Schwab uses', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          candles: [
-            // Midnight CDT (05:00Z), midnight EDT (04:00Z), midnight CST
-            // (06:00Z): all 01:00 or 00:00 ET on the day itself.
-            { ...dailyCandle(D1, 1), datetime: Date.parse(`${D1}T05:00:00Z`) },
-            { ...dailyCandle(D2, 2), datetime: Date.parse(`${D2}T04:00:00Z`) },
-            {
-              ...dailyCandle('2026-11-04', 3),
-              datetime: Date.parse('2026-11-04T06:00:00Z'),
-            },
-          ],
-        }),
-      ),
-    );
-
-    const closes = await fetchSchwabDailyCloses('tok', 'SPY', D1, '2026-11-04');
-
-    expect([...closes]).toEqual([
-      [D1, 1],
-      [D2, 2],
-      ['2026-11-04', 3],
-    ]);
-  });
-
-  it('reads the stamp as an ET date, the way fetch-outcomes.ts does: 03:30Z is still the evening before', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          candles: [
-            { ...dailyCandle(D1, 7), datetime: Date.parse(`${D2}T03:30:00Z`) },
-          ],
-        }),
-      ),
-    );
-
-    const closes = await fetchSchwabDailyCloses('tok', 'SPY', D1, D2);
-
-    expect([...closes]).toEqual([[D1, 7]]);
-  });
-
-  it('leaves out a candle with no usable close', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          candles: [
-            dailyCandle(D1, 6401.28),
-            { ...dailyCandle(D2, 0) },
-            { ...dailyCandle('2026-08-14', null) },
-            { ...dailyCandle('2026-08-17', 'abc') },
-          ],
-        }),
-      ),
-    );
-
-    const closes = await fetchSchwabDailyCloses(
-      'tok',
-      '$SPX',
-      D1,
-      '2026-08-17',
-    );
-
-    expect([...closes.keys()]).toEqual([D1]);
-  });
-
-  it('reads an empty answer as no closes, not an error', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse({ candles: [], empty: true })),
-    );
-    const closes = await fetchSchwabDailyCloses('tok', '$NDX', D1, D2);
-    expect(closes.size).toBe(0);
-  });
-
-  it('throws on an HTTP error, naming the status and masking token-like text', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: false,
-        status: 401,
-        text: async () => 'Unauthorized abcdefghijklmnopqrstuvwxyz012345',
-      })),
-    );
-
-    const err = await fetchSchwabDailyCloses('tok', '$SPX', D1, D2).catch(
-      (e) => e,
-    );
-
-    expect(err.message).toContain('pricehistory $SPX');
-    expect(err.message).toContain('HTTP 401');
-    expect(err.message).toContain('Unauthorized [redacted]');
-    expect(err.message).not.toContain('abcdefghijklmnopqrstuvwxyz012345');
-  });
-
-  it('throws a SyntaxError when a 200 body is not JSON, and the failure kind is malformed', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => {
-          throw new SyntaxError('Unexpected token < in JSON at position 0');
-        },
-        text: async () => '<html>',
-      })),
-    );
-
-    const err = await fetchSchwabDailyCloses('tok', '$SPX', D1, D2).catch(
-      (e) => e,
-    );
-
-    expect(err).toBeInstanceOf(SyntaxError);
-    expect(classifyFailure(err).kind).toBe('malformed');
-  });
-
-  it('throws a SyntaxError when the body has no candles array', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse({ symbol: '$SPX' })),
-    );
-    const err = await fetchSchwabDailyCloses('tok', '$SPX', D1, D2).catch(
-      (e) => e,
-    );
-    expect(err).toBeInstanceOf(SyntaxError);
-    expect(err.message).toContain('no candles array');
-  });
-
-  it('throws a SyntaxError when a candle lands on a non-trading day: the datetime mapping is off', async () => {
-    // Midnight UTC of a Monday is Sunday 20:00 in New York.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          candles: [
-            {
-              ...dailyCandle(D1, 1),
-              datetime: Date.parse('2026-08-10T00:00:00Z'),
-            },
-          ],
-        }),
-      ),
-    );
-    const err = await fetchSchwabDailyCloses('tok', '$SPX', D1, D2).catch(
-      (e) => e,
-    );
-    expect(err).toBeInstanceOf(SyntaxError);
-    expect(err.message).toContain('2026-08-09');
-    expect(err.message).toContain('not a trading day');
-  });
-});
+// ── Schwab daily candles ───────────────────────────────────
 
 /** A daily candle whose close, high and low differ, as a real day's do. */
 function rangedCandle(date, close, high, low) {
@@ -470,32 +267,106 @@ describe('fetchSchwabDailyCandles', () => {
     ]);
   });
 
-  it('asks for the same padded daily range, with the token, as the closes call did', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ candles: [] }));
+  it('asks for daily candles of the symbol over the padded range, with the token', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ candles: [dailyCandle(D1, 6401.28)], symbol: '$SPX' }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
-    await fetchSchwabDailyCandles('tok', '$NDX', D1, D2);
+    await fetchSchwabDailyCandles('tok', '$SPX', D1, D2);
 
     const [url, init] = fetchMock.mock.calls[0];
     const parsed = new URL(url);
-    expect(parsed.pathname).toBe('/marketdata/v1/pricehistory');
-    expect(parsed.searchParams.get('symbol')).toBe('$NDX');
+    expect(`${parsed.origin}${parsed.pathname}`).toBe(
+      'https://api.schwabapi.com/marketdata/v1/pricehistory',
+    );
+    expect(url).toContain('symbol=%24SPX');
+    expect(parsed.searchParams.get('periodType')).toBe('year');
     expect(parsed.searchParams.get('frequencyType')).toBe('daily');
+    expect(parsed.searchParams.get('frequency')).toBe('1');
+    // Two days of padding either side of [from 00:00Z, to 23:59:59Z].
     expect(Number(parsed.searchParams.get('startDate'))).toBe(
       Date.parse(`${D1}T00:00:00Z`) - 2 * 86_400_000,
+    );
+    expect(Number(parsed.searchParams.get('endDate'))).toBe(
+      Date.parse(`${D2}T23:59:59Z`) + 2 * 86_400_000,
     );
     expect(init.headers.Authorization).toBe('Bearer tok');
   });
 
-  it('leaves out a candle with no usable close, as the closes call does', async () => {
+  it('never asks past now', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ candles: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchSchwabDailyCandles('tok', 'SPY', '2026-11-04', '2026-11-05');
+
+    const endDate = Number(
+      new URL(fetchMock.mock.calls[0][0]).searchParams.get('endDate'),
+    );
+    expect(endDate).toBe(Date.now());
+  });
+
+  it('keys each close on the ET date of the candle stamp, whichever midnight Schwab uses', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
         jsonResponse({
           candles: [
-            rangedCandle(D1, 6401.28, 6420.5, 6390.25),
-            rangedCandle(D2, 0, 6470, 6430.75),
-            rangedCandle('2026-08-14', null, 6470, 6430.75),
+            // Midnight CDT (05:00Z), midnight EDT (04:00Z), midnight CST
+            // (06:00Z): all 01:00 or 00:00 ET on the day itself.
+            { ...dailyCandle(D1, 1), datetime: Date.parse(`${D1}T05:00:00Z`) },
+            { ...dailyCandle(D2, 2), datetime: Date.parse(`${D2}T04:00:00Z`) },
+            {
+              ...dailyCandle('2026-11-04', 3),
+              datetime: Date.parse('2026-11-04T06:00:00Z'),
+            },
+          ],
+        }),
+      ),
+    );
+
+    const candles = await fetchSchwabDailyCandles(
+      'tok',
+      'SPY',
+      D1,
+      '2026-11-04',
+    );
+
+    expect([...candles].map(([date, { close }]) => [date, close])).toEqual([
+      [D1, 1],
+      [D2, 2],
+      ['2026-11-04', 3],
+    ]);
+  });
+
+  it('reads the stamp as an ET date, the way fetch-outcomes.ts does: 03:30Z is still the evening before', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          candles: [
+            { ...dailyCandle(D1, 7), datetime: Date.parse(`${D2}T03:30:00Z`) },
+          ],
+        }),
+      ),
+    );
+
+    const candles = await fetchSchwabDailyCandles('tok', 'SPY', D1, D2);
+
+    expect([...candles.keys()]).toEqual([D1]);
+    expect(candles.get(D1)?.close).toBe(7);
+  });
+
+  it('leaves out a candle with no usable close', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          candles: [
+            dailyCandle(D1, 6401.28),
+            { ...dailyCandle(D2, 0) },
+            { ...dailyCandle('2026-08-14', null) },
+            { ...dailyCandle('2026-08-17', 'abc') },
           ],
         }),
       ),
@@ -505,10 +376,95 @@ describe('fetchSchwabDailyCandles', () => {
       'tok',
       '$SPX',
       D1,
-      '2026-08-14',
+      '2026-08-17',
     );
 
     expect([...candles.keys()]).toEqual([D1]);
+  });
+
+  it('reads an empty answer as no candles, not an error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ candles: [], empty: true })),
+    );
+    const candles = await fetchSchwabDailyCandles('tok', '$NDX', D1, D2);
+    expect(candles.size).toBe(0);
+  });
+
+  it('throws on an HTTP error, naming the status and masking token-like text', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 401,
+        text: async () => 'Unauthorized abcdefghijklmnopqrstuvwxyz012345',
+      })),
+    );
+
+    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
+      (e) => e,
+    );
+
+    expect(err.message).toContain('pricehistory $SPX');
+    expect(err.message).toContain('HTTP 401');
+    expect(err.message).toContain('Unauthorized [redacted]');
+    expect(err.message).not.toContain('abcdefghijklmnopqrstuvwxyz012345');
+  });
+
+  it('throws a SyntaxError when a 200 body is not JSON, and the failure kind is malformed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON at position 0');
+        },
+        text: async () => '<html>',
+      })),
+    );
+
+    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
+      (e) => e,
+    );
+
+    expect(err).toBeInstanceOf(SyntaxError);
+    expect(classifyFailure(err).kind).toBe('malformed');
+  });
+
+  it('throws a SyntaxError when the body has no candles array', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ symbol: '$SPX' })),
+    );
+    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(SyntaxError);
+    expect(err.message).toContain('no candles array');
+  });
+
+  it('throws a SyntaxError when a candle lands on a non-trading day: the datetime mapping is off', async () => {
+    // Midnight UTC of a Monday is Sunday 20:00 in New York.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          candles: [
+            {
+              ...dailyCandle(D1, 1),
+              datetime: Date.parse('2026-08-10T00:00:00Z'),
+            },
+          ],
+        }),
+      ),
+    );
+    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(SyntaxError);
+    expect(err.message).toContain('2026-08-09');
+    expect(err.message).toContain('not a trading day');
   });
 
   it.each([
@@ -543,81 +499,6 @@ describe('fetchSchwabDailyCandles', () => {
       });
     },
   );
-
-  it('throws on an HTTP error, naming the status and masking token-like text', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: false,
-        status: 401,
-        text: async () => 'Unauthorized abcdefghijklmnopqrstuvwxyz012345',
-      })),
-    );
-
-    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
-      (e) => e,
-    );
-
-    expect(err.message).toContain('pricehistory $SPX HTTP 401');
-    expect(err.message).toContain('Unauthorized [redacted]');
-  });
-
-  it('throws a SyntaxError for a body with no candles array', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse({ symbol: '$SPX' })),
-    );
-
-    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
-      (e) => e,
-    );
-
-    expect(err).toBeInstanceOf(SyntaxError);
-    expect(err.message).toContain('no candles array');
-  });
-
-  it('throws a SyntaxError for a candle that lands on a non-trading day', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          candles: [
-            {
-              ...rangedCandle(D1, 1, 2, 0.5),
-              datetime: Date.parse('2026-08-10T00:00:00Z'),
-            },
-          ],
-        }),
-      ),
-    );
-
-    const err = await fetchSchwabDailyCandles('tok', '$SPX', D1, D2).catch(
-      (e) => e,
-    );
-
-    expect(err).toBeInstanceOf(SyntaxError);
-    expect(err.message).toContain('not a trading day');
-  });
-
-  it('is what fetchSchwabDailyCloses reads: its closes are the candles closes, from one call', async () => {
-    const fetchMock = vi.fn(async () =>
-      jsonResponse({
-        candles: [
-          rangedCandle(D1, 6401.28, 6420.5, 6390.25),
-          rangedCandle(D2, 6455.92, 6470, 6430.75),
-        ],
-      }),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const closes = await fetchSchwabDailyCloses('tok', '$SPX', D1, D2);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect([...closes]).toEqual([
-      [D1, 6401.28],
-      [D2, 6455.92],
-    ]);
-  });
 });
 
 describe('loadSchwabCloses', () => {
