@@ -1232,7 +1232,11 @@ describe('spot (pickLadderSpot)', () => {
         gexbotAsOf: asOf,
         nowMs: NOW,
       });
+      // Priced: the band, and the short strikes' own odds.
       expect(ladder.band != null).toBe(fresh);
+      expect(rowAt(ladder, 7620).odds != null).toBe(fresh);
+      expect(rowAt(ladder, 7555).odds != null).toBe(fresh);
+      // Anchored: the GEXBot spot.
       expect(spot != null).toBe(fresh);
     });
 
@@ -1246,6 +1250,7 @@ describe('spot (pickLadderSpot)', () => {
         nowMs: NOW,
       });
       expect(ladder.band).toBeNull();
+      expect(rowAt(ladder, 7620).odds).toBeNull();
       expect(spot).toBeNull();
     });
   });
