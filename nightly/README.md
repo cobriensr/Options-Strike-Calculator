@@ -671,12 +671,13 @@ all three tickers, in the columns and types of `EXPORT_COLUMNS` in
   file is rewritten from the new tape. The known gap is the marker limit above: a day
   re-landed on a night the step does not run keeps its marker and its old file, and the
   step never re-heals it. The studies' readers close the file's side of that gap: before a
-  run they check each day they need, a file older than its tape or a missing one is
-  written again (by the tool's per-day writer, `write_replay_days`, which `export
-  --per-day` also runs), and the run says the nightly should have written it. The Neon
-  heal still needs the marker deleted by hand, as before. A repair is refused when the
-  tape is not in R2 either, inside 07:15-12:30 UTC, for more than 10 days at once, and
-  when the code's rule is not the files'.
+  run they check each day they need, and a file older than its tape, a missing one or
+  one of zero rows (a fault the step never rewrites) is written again (by the tool's
+  per-day writer, `write_replay_days`, which `export --per-day` also runs), and the run
+  says the nightly should have written it. The Neon heal still needs the marker deleted
+  by hand, as before. A repair is refused when the tape is not in R2 either, inside
+  07:15-12:30 UTC, for more than 10 days at once, when the code's rule is not the files',
+  and when the file it writes holds no alerts again.
 
 **When the inserts are held.** The day's inserts are held, and its marker says why
 (`inserts_held`), unless live's settings show it ran today's rule. Flags, spot and

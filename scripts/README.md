@@ -62,19 +62,20 @@ Compute additional features on existing rows. Typically used after a feature-eng
 The three scripts above read the day files by default. Before it reads, each run lists the day-file prefix and the tape prefix in R2 once and checks the days it needs: enrich's `--from-date` to `--to-date`, and for the two analysis scripts the days of their outcomes CSV (its first to its last `fired_at`). A needed day with a landed tape is:
 
 - **missing** when it has no file, and **stale** when its file is older than its tape (a re-landed tape on a night the nightly step does not run keeps its marker, so the step never rewrites the file);
-- **not a gap** when UW marked it unavailable (`fulltape/_unavailable/<date>.json`): it is printed and skipped.
+- **empty** when its file's footer says it holds no alerts. No session fires fewer than 19, so a zero-row file is a replay or tape-read fault, and the nightly never rewrites a marked day: the file is no good day, and a study would go ahead without that day's alerts;
+- **not a gap** when UW marked it unavailable (`fulltape/_unavailable/<date>.json`): it is printed, named in the report's header and skipped.
 
-A missing or stale day is **repaired first**: the tool's per-day writer (`write_replay_days` in `interval_ba_tape.py`, imported only then, the same code as `export --per-day`) replays it from the tape and writes its file, and the run goes on over the files it lists again. It writes research files only, never Neon, and each repaired day is printed with "the nightly should have written it; check the interval-ba-tape step" and named in the report's header. The repair is **refused**, with a message and no study, when:
+A missing, stale or empty day is **repaired first**: the tool's per-day writer (`write_replay_days` in `interval_ba_tape.py`, imported only then, the same code as `export --per-day`) replays it from the tape and writes its file, and the run goes on over the files it lists again. It writes research files only, never Neon, and each repaired day is printed with "the nightly should have written it; check the interval-ba-tape step" and named in the report's header. The repair is **refused**, with a message and no study, when:
 
 - a missing day has no tape (wait for the nightly run, or use `--source table`);
 - the run is inside 07:15-12:30 UTC, the nightly window (the message gives the time to retry);
-- more than 10 days need it, which points to a broken nightly write (the message prints the one `export --per-day` command that fills them);
-- the replay module here is not `origin/main`'s (the writer refuses unless the checkout is at `origin/main`), or its rule is not the one the files hold;
-- a file it wrote holds no alerts (no session fires fewer than 19).
+- more than 10 days need it, which points to a broken nightly write (the message prints the one `export --per-day` command that fills them; with no day file at all in the prefix it says so and names the backfill instead);
+- the replay module here is not `origin/main`'s (the writer refuses unless the checkout is at `origin/main`; a dry run asks the same guard), or its rule is not the one the files hold;
+- a file it wrote holds no alerts (no session fires fewer than 19). The file stays in R2, so the next run meets it as an empty day and replays it again: it either heals, or hits this refusal on every run, until the cause is fixed.
 
-The run also refuses when the day files it would read are on more than one rule (`REPLAY_VERSION` and the constants), naming the days on each; the fix is `export --per-day` over the days of the old rule. A day file that holds no alerts is noted, not refused.
+The run also refuses when the day files it would read are on more than one rule (`REPLAY_VERSION` and the constants; an empty file's footer counts), naming the days on each, or when a footer is missing, unreadable or names another day; the fix is `export --per-day` over the days of the old rule. An analysis script that repaired a day names it in its report ("rewritten after the outcomes CSV was priced": re-run `enrich_interval_ba_outcomes.py` for those days). An R2 or DuckDB error shows its class only: its text can name the account host.
 
-`--dry-run` never writes: with the day files it lists the days a repair would write and exits non-zero when there are any; otherwise it runs, and skips the CSV and report files. With no flags each script reads the day files:
+`--dry-run` is a check, not a run. With the day files it never writes, lists the days a repair would write and what would refuse it (the deployed-code guard included), and exits non-zero when there is any; otherwise it says the day files are present and current, exits 0 and stops, with no tape, alert or CSV read. With `--source export` or `table` it runs and skips the CSV and report files. With no flags each script reads the day files:
 
 ```bash
 ml/.venv/Scripts/python scripts/enrich_interval_ba_outcomes.py            # 2026-01-02 to the newest tape
@@ -120,7 +121,7 @@ A temporary Railway service that holds test websockets to find which network hop
 - **Recompute**: `recompute_peak_from_parquet.py`, `recompute_lottery_hold_minutes.py`, `recompute_silent_boom_hold_minutes.py`.
 - **Docs**: `add-spec-status-headers.mjs` (wrote the spec front-matter `status:`).
 - **One-off probes**: 29 `_probe-*.ts` / `_dump-*.ts` files, read-only and throwaway by design.
-- **Python tests**: five `test_*.py` files sit here, and no suite or CI job runs them.
+- **Python tests**: the `test_*.py` files sit here. The `ml` CI job runs them (`python -m pytest scripts/test_*.py scripts/ws-canary/test_canary.py` from the repo root, so `scripts/conftest.py`'s no-database guard applies); run the same command with `ml/.venv` before a change here.
 
 ## When in doubt
 
