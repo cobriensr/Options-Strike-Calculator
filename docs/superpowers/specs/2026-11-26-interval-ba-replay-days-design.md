@@ -122,3 +122,18 @@ The nightly `interval-ba-tape` step already replays each new session from the ta
 
 - How `put_file` failures surface in the step's log line, beyond the day failing.
 - Test fixtures and names, past those the plan lists.
+
+## As built (15b)
+
+Where the readers and the tool, as built, differ from the text above, or add to it. The readers' shared code is `scripts/_interval_ba_days.py`; the scripts keep their own snapshot reader.
+
+- **A zero-row day is never read.** Where "Key and contents" and "Readers" say a zero-row day still counts, that held until the review of 15b-2 reversed it. A kept day file whose footer says `rows` is 0 is the third reason for a repair, beside missing and stale: the reader replays it again. The replay either finds the alerts, or the repair's own zero-row refusal meets it on every run. The count in the header is of days read, none of which is empty.
+- **A short day is warned about.** A kept or repaired day with fewer than 19 alerts (and more than 0) is printed as a `WARN` line and named in the header. It is read as it is: a warning, never a refusal.
+- **An explicit list, not a wildcard.** The readers read the URLs of the needed days, not `read_parquet('.../replay/*.parquet')`, so that an analysis reads only its CSV's days; the check, which lists the prefix, decides them first.
+- **The listings' helpers.** The tool's R2 helpers did not carry a LastModified listing. `list_objects` and `nightly_window_end` were added to `scripts/interval_ba_tape_runs.py`.
+- **`--dry-run` is a check.** With the day files it never writes, lists the days a repair would write, and exits non-zero when there are any or when something would refuse one, including the writer's deployed-code guard. When nothing needs a repair it says the day files are present and current and stops, with no tape, alert or CSV read. With the snapshot or the table it still runs and writes no file.
+- **`--export-end` given alone means the snapshot** (`--source export`). With `--source days` or `table` it is a usage error.
+- **The footer is checked against the key.** A footer with no readable `day`, `rows` and `rule`, or one whose `day` is not its key's day, is refused, naming the day.
+- **The writer's R2 settings must agree with the reader's.** The reader takes R2_* from the shell, then `.env.local`; the tool's `load_env` takes them from the env file alone. Before a repair, the two sets are compared, and a difference refuses it, naming the variables and never the values.
+- **A priced CSV is checked against the day files.** The outcome script writes the newest day-file LastModified it read into its summary. An analysis compares that with its own listing and names, in its report and on stdout, every day whose file is newer (repaired by this run, or rewritten since by the nightly): its paths were priced from the older file.
+- **More refusals and messages.** No day file at all, with more than ten days to write, names the prefix and the backfill, not a broken nightly write. A repair refuses when the deployed-code guard would. Days named past twelve show the count, the span and the first twelve. The days UW posted no tape for are named in the header. R2 and DuckDB errors show their class only, since their text can carry the account host.

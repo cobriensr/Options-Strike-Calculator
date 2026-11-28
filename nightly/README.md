@@ -653,9 +653,13 @@ all three tickers, in the columns and types of `EXPORT_COLUMNS` in
 - **A day with no alerts** gets a file of zero rows, so "none fired" and "not written"
   stay apart. Every session fires at least 19 alerts, so a zero-row file is a replay or
   tape-read fault, and the step's `tape fired no alerts` alert says so whatever live wrote
-  or held. The step never rewrites a marked day. Once the cause is fixed, delete the
-  day's `interval_ba_tape_days` marker (the SQL under "Markers"): the next run re-heals the
-  day and rewrites its file.
+  or held. The step never rewrites a marked day. Once the cause is fixed, the file is
+  rewritten by `export --per-day --from <day> --to <day>` (`scripts/interval_ba_tape.py`,
+  from a checkout at `origin/main`, any day from 2026-01-02), or by the studies' readers'
+  own repair on their next run, which replays a zero-row file again. Deleting the day's
+  `interval_ba_tape_days` marker (the SQL under "Markers") is for the Neon heal, and only
+  for a day from 2026-10-29: the step never works an earlier day, so for it the delete
+  rewrites nothing.
 - **The order.** The step replays the day once, builds the file, puts it with
   `ResearchStore.put_file` (one `put_object`, its size checked afterwards) and only then
   runs `heal_day` on that same replay. `heal_day`'s commit writes the day's marker, so a
