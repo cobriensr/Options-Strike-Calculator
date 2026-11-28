@@ -1108,7 +1108,9 @@ def test_the_default_range_runs_from_2026_01_02_through_the_newest_tape(
     with pytest.raises(SystemExit) as stopped:
         mod.main([])
 
-    assert str(stopped.value).startswith('No tape in R2 for 2026-01-02 to 2026-11-16')
+    assert str(stopped.value).startswith(
+        'No tape in R2 for 220 days between 2026-01-02 and 2026-11-16: 2026-01-02, 2026-01-05,'
+    )
     assert not list((run / 'out').glob('*.csv'))
 
 
@@ -1179,17 +1181,23 @@ def test_dry_run_never_writes_and_lists_the_days_to_repair(run, day_world):
     assert not list((run / 'out').glob('*'))
 
 
-def test_a_dry_run_with_nothing_to_repair_reads_the_day_files_and_writes_nothing(
-    run, day_world, capsys
+def test_a_dry_run_with_nothing_to_repair_is_a_check_that_reads_no_tape_and_no_alert(
+    run, day_world, monkeypatch, capsys
 ):
+    """It stops after the day-file check: it says the files are present and current, and reads
+    neither the alerts nor a tape (a full enrich reads every tape of its range)."""
     write_tape(run, CLOSE_TAPE)
     day_world.tape(DAY)
     day_world.file(DAY, DAY_ALERT)
+    monkeypatch.setattr(days, 'read_day_alerts', MagicMock(side_effect=AssertionError('alerts')))
+    monkeypatch.setattr(mod, 'object_exists', MagicMock(side_effect=AssertionError('a tape')))
 
     assert mod.main(['--dry-run', '--from-date', DAY_ISO, '--to-date', DAY_ISO]) == 0
 
     assert not list((run / 'out').glob('*'))
-    assert '## Median % change' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert '--dry-run: the 1 day file, 2026-11-17 to 2026-11-17, is present and current' in out
+    assert '## Median % change' not in out
 
 
 def test_readers_refuse_mixed_rules_and_name_the_days(run, day_world):
@@ -1228,16 +1236,42 @@ def test_no_day_file_exits_with_the_prefix(run, day_world):
     assert not list((run / 'out').glob('*.csv'))
 
 
-def test_a_day_file_that_holds_no_alerts_is_noted_and_the_run_goes_on(run, day_world, capsys):
+def test_a_day_file_that_holds_no_alerts_is_replayed_again_and_the_run_reads_its_alerts(
+    run, day_world, capsys
+):
+    """A zero-row file is a fault, not a quiet day: it is a repair like a missing one."""
     write_tape(run, CLOSE_TAPE)
-    after = DAY + timedelta(days=1)
-    day_world.tape(DAY, after)
-    day_world.file(DAY, DAY_ALERT)
-    day_world.file(after, [])
+    day_world.tape(DAY)
+    day_world.file(DAY, [])  # a file newer than its tape, with no rows
+    day_world.alerts[DAY] = DAY_ALERT  # the replay finds the alert now
 
-    assert mod.main(['--from-date', DAY_ISO, '--to-date', after.isoformat()]) == 0
+    assert mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO]) == 0
 
-    assert 'NOTE: 2026-11-18 hold no alerts' in capsys.readouterr().out
+    assert day_world.written == [DAY]
+    rows = read_rows(outcome_csv(run / 'out', days=True))
+    assert [(r['t_minutes'], r['spx_price'], r['pct_change']) for r in rows] == DAY_PATH
+    assert '2026-11-17  repaired (its file held no alerts)' in capsys.readouterr().out
+
+
+def test_a_repaired_day_that_holds_no_alerts_runs_no_study_and_neither_does_a_second_run(
+    run, day_world
+):
+    """The replay still finds nothing: the first run refuses after writing the zero-row file,
+    and the second meets the same file as a repair again, not as a good day."""
+    write_tape(run, CLOSE_TAPE)
+    day_world.tape(DAY)  # missing
+    day_world.alerts[DAY] = []
+
+    for _ in range(2):
+        with pytest.raises(SystemExit) as stopped:
+            mod.main(['--from-date', DAY_ISO, '--to-date', DAY_ISO])
+        assert str(stopped.value).startswith(
+            'The repair wrote a day file with no alerts for 2026-11-17.'
+        )
+
+    assert day_world.written == [DAY, DAY]
+    assert not list((run / 'out').glob('*.csv'))
+    assert not list((run / 'out').glob('*.md'))
 
 
 def test_a_day_file_with_a_bad_footer_stops_the_run(run, day_world):

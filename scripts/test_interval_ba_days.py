@@ -21,11 +21,12 @@ from pathlib import Path
 from typing import Any
 
 import _interval_ba_days as days
+import duckdb
 import interval_ba_tape as tool
 import interval_ba_tape_runs as runs
 import pyarrow.parquet as pq
 import pytest
-from _ba_test_support import DayWorld, day_alert, local_connection
+from _ba_test_support import DayWorld, day_alert, local_connection, write_day_file
 from botocore.exceptions import ClientError
 
 MON, TUE, WED, THU = date(2026, 11, 16), date(2026, 11, 17), date(2026, 11, 18), date(2026, 11, 19)
@@ -321,7 +322,6 @@ def read_all(world: DayWorld, con, *session_days: date, **kwargs) -> list[dict[s
         urls=tuple(world.url(day) for day in session_days),
         repaired=(),
         unavailable=(),
-        empty=(),
         replay_version="1",
     )
     return days.read_day_alerts(con, files, **kwargs)
@@ -434,6 +434,19 @@ def test_each_needed_day_is_kept_missing_stale_unavailable_or_without_a_tape():
     assert p.to_repair == [date(2026, 11, 3), date(2026, 11, 6), date(2026, 11, 9)]
 
 
+def test_a_kept_day_whose_footer_has_no_rows_moves_to_the_repair_list_as_its_own_reason():
+    kept = (date(2026, 11, 2), date(2026, 11, 3), date(2026, 11, 4))
+    p = days.Plan(keep=kept, missing=(date(2026, 11, 5),), stale=(), no_tape=(), unavailable=())
+    footers = {day: days.Footer(day=day, rows=0 if day == kept[1] else 40, rule={}) for day in kept}
+
+    after = days.with_empty(p, footers)
+
+    assert after.keep == (kept[0], kept[2])
+    assert after.empty == (kept[1],)
+    assert after.missing == p.missing
+    assert after.to_repair == [kept[1], date(2026, 11, 5)]
+
+
 # --- the footers and the one-rule check -------------------------------------------------------
 
 
@@ -443,8 +456,8 @@ def test_the_footers_give_each_files_rule_and_row_count(day_world, con):
 
     footers = days.read_footers(con, {MON: day_world.url(MON), TUE: day_world.url(TUE)})
 
-    assert footers[MON] == days.Footer(rows=1, rule=day_world.rule)
-    assert footers[TUE] == days.Footer(rows=0, rule={"replay-version": "9"})
+    assert footers[MON] == days.Footer(day=MON, rows=1, rule=day_world.rule)
+    assert footers[TUE] == days.Footer(day=TUE, rows=0, rule={"replay-version": "9"})
     assert days.read_footers(con, {}) == {}
 
 
@@ -455,10 +468,21 @@ def test_the_footers_give_each_files_rule_and_row_count(day_world, con):
         b"not json",
         b"[1, 2]",
         b'{"rows": 1}',
-        b'{"rule": {}, "rows": "3"}',
-        b'{"rule": {}, "rows": true}',
+        b'{"day": "2026-11-17", "rule": {}, "rows": "3"}',
+        b'{"day": "2026-11-17", "rule": {}, "rows": true}',
+        b'{"rule": {}, "rows": 3}',
+        b'{"day": 20261117, "rule": {}, "rows": 3}',
     ],
-    ids=["none", "garbage", "a list", "no rule", "rows as text", "rows as a flag"],
+    ids=[
+        "none",
+        "garbage",
+        "a list",
+        "no rule",
+        "rows as text",
+        "rows as a flag",
+        "no day",
+        "day as a number",
+    ],
 )
 def test_a_day_file_with_no_readable_footer_exits_naming_the_day(day_world, con, footer):
     day_world.file(MON)
@@ -472,6 +496,35 @@ def test_a_day_file_with_no_readable_footer_exits_naming_the_day(day_world, con,
     assert "2026-11-16" not in message
     assert BACKFILL in message
     assert "origin/main" in message
+
+
+def test_a_day_file_whose_footer_names_another_day_exits_naming_it(day_world, con):
+    """A file copied to the wrong key would be read as that day, and its alerts would appear
+    twice beside the true day's file."""
+    day_world.file(MON)
+    write_day_file(Path(day_world.url(TUE)), MON, [day_alert(MON)], rule=day_world.rule)
+
+    with pytest.raises(SystemExit) as stopped:
+        days.read_footers(con, {MON: day_world.url(MON), TUE: day_world.url(TUE)})
+
+    message = str(stopped.value.code)
+    assert message.startswith("2026-11-17: the day file's footer names another day (2026-11-16)")
+    assert BACKFILL in message
+
+
+def test_a_footer_read_that_fails_names_its_class_and_never_its_text(day_world, con):
+    class Failing:
+        def execute(self, *_args, **_kwargs):
+            raise duckdb.HTTPException(
+                "HTTP GET error reading https://account-0123.r2.example.invalid"
+            )
+
+    with pytest.raises(SystemExit) as stopped:
+        days.read_footers(Failing(), {MON: day_world.url(MON)})
+
+    message = str(stopped.value.code)
+    assert message.startswith("Reading the day files' footers failed: HTTPException")
+    assert "account-0123" not in message
 
 
 def test_readers_refuse_mixed_rules_and_name_the_days(day_world, con):
@@ -504,7 +557,13 @@ def test_many_days_on_one_rule_are_named_by_span_and_count(day_world, con):
 
     message = refused(con, session[0], session[-1])
 
-    assert "2026-11-02 to 2026-11-19 (13 days)" in message
+    # Thirteen days are the span and the count, then the first twelve, so the span is not read as
+    # all of its sessions.
+    assert (
+        "rule 1 (replay-version 1): 13 days between 2026-11-02 and 2026-11-19: "
+        "2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-06, 2026-11-09, 2026-11-10, "
+        "2026-11-11, 2026-11-12, 2026-11-13, 2026-11-16, 2026-11-17, and 1 more"
+    ) in message
     assert "rule 2 (replay-version 2): 2026-11-18" in message
 
 
@@ -519,7 +578,7 @@ def test_a_complete_set_is_read_as_listed_and_nothing_is_written(day_world, con,
     assert files.days == (MON, TUE, WED)
     assert files.urls == tuple(day_world.url(day) for day in (MON, TUE, WED))
     assert (files.first, files.last, files.count) == (MON, WED, 3)
-    assert files.repaired == files.unavailable == files.empty == ()
+    assert files.repaired == files.unavailable == ()
     assert files.replay_version == day_world.rule["replay-version"]
     assert day_world.write.call_count == 0
     # One list of each prefix, and the tapes' includes the unavailable markers.
@@ -543,7 +602,7 @@ def test_the_range_ends_at_its_last_day_and_the_default_at_the_newest_tape(day_w
     # The default range starts at 2026-01-02; those days have no tape here, and it ends at the
     # newest landed tape (WED), so the days after it are never asked for.
     message = refused(con, None, None)
-    assert "2026-01-02 to 2026-11-13" in message
+    assert "days between 2026-01-02 and 2026-11-13: 2026-01-02, 2026-01-05," in message
     assert "2026-11-19" not in message
 
 
@@ -573,6 +632,23 @@ def test_no_day_file_exits_with_the_prefix(day_world, con):
     assert day_world.written == []
 
 
+def test_no_day_file_at_all_with_tapes_landed_names_the_prefix_and_the_backfill(day_world, con):
+    """Before the backfill, or after one into the wrong bucket, every needed day is missing: the
+    cause is that no day file exists, not that the nightly write broke."""
+    session = [date(2026, 11, d) for d in (2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 16)]
+    day_world.tape(*session)
+
+    message = refused(con, session[0], session[-1])
+
+    assert message == (
+        "No day file under research/interval-ba/replay/ in R2, and the tapes of 11 days have "
+        "landed, so the backfill has not run (or wrote to another bucket). Write them with one "
+        "command, run from a checkout at origin/main: ml/.venv/Scripts/python.exe -I "
+        "scripts/interval_ba_tape.py export --per-day --from 2026-11-02 --to 2026-11-16"
+    )
+    assert day_world.written == []
+
+
 def test_a_day_uw_marked_unavailable_is_not_a_gap(day_world, con, capsys):
     day_world.full(MON, WED)
     day_world.unavailable(TUE)
@@ -583,20 +659,84 @@ def test_a_day_uw_marked_unavailable_is_not_a_gap(day_world, con, capsys):
     assert files.unavailable == (TUE,)
     assert day_world.write.call_count == 0
     assert "skipped, UW has not posted a tape for: 2026-11-17" in capsys.readouterr().out
+    # The report's day count has its explanation in its header too.
+    assert "Skipped, UW posted no tape: 2026-11-17" in files.describe()
 
 
-def test_a_day_file_with_no_alerts_is_noted_and_still_read(day_world, con, capsys):
+# --- the check: a day file that holds no alerts ------------------------------------------------
+
+
+def test_a_kept_day_file_with_no_alerts_is_replayed_again_and_read_once_the_replay_finds_alerts(
+    day_world, con, capsys
+):
+    """A zero-row file is a fault (no session fires fewer than 19), so it is no good day: it is
+    the third reason for a repair beside missing and stale."""
     day_world.tape(MON, TUE)
     day_world.file(MON)
-    day_world.file(TUE, [])
+    day_world.file(TUE, [])  # newer than its tape, so neither missing nor stale
+    day_world.alerts[TUE] = [day_alert(TUE, "14:45:00"), day_alert(TUE, "14:50:00")]
 
     files = check(con, MON, TUE)
 
-    assert files.days == (MON, TUE)
-    assert files.empty == (TUE,)
-    out = capsys.readouterr().out
-    assert "NOTE: 2026-11-17 hold no alerts" in out
-    assert "Days with no alerts: 2026-11-17" in files.describe()
+    assert day_world.written == [TUE]
+    assert files.repaired == (TUE,)
+    assert len(days.read_day_alerts(con, files, "SPXW", from_date="2026-11-17")) == 2
+    assert "2026-11-17  repaired (its file held no alerts)" in capsys.readouterr().out
+
+
+def test_a_second_run_over_a_day_file_with_no_alerts_still_exits_with_the_zero_row_message(
+    day_world, con
+):
+    """The first run's refusal is not a way round the second: the file it wrote is not a good day
+    on the next run either, while the replay still finds nothing."""
+    day_world.full(MON)
+    day_world.tape(TUE)  # missing; the replay finds nothing
+    day_world.alerts[TUE] = []
+
+    first = refused(con, MON, TUE)
+    second = refused(con, MON, TUE)  # TUE now has a zero-row file, newer than its tape
+
+    expected = "The repair wrote a day file with no alerts for 2026-11-17."
+    assert first.startswith(expected)
+    assert second.startswith(expected)
+    assert day_world.written == [TUE, TUE]
+
+
+def test_dry_run_lists_a_day_file_with_no_alerts_as_a_repair(day_world, con):
+    day_world.full(MON)
+    day_world.tape(TUE)
+    day_world.file(TUE, [])
+
+    message = refused(con, MON, TUE, dry_run=True)
+
+    assert "1 day file(s) would be repaired:" in message
+    assert "2026-11-17  no alerts: its file holds no alerts" in message
+    assert day_world.write.call_count == 0
+
+
+def test_a_day_file_with_no_alerts_counts_toward_the_limit_of_ten(day_world, con):
+    session = [date(2026, 11, d) for d in (2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 16)]
+    for day in session[:5]:
+        day_world.tape(day)
+        day_world.file(day, [])  # five zero-row files, read from their footers
+    day_world.tape(*session[5:])  # six missing
+
+    assert refused(con, session[0], session[-1]).startswith(
+        "11 day files need a repair, more than 10"
+    )
+
+
+def test_a_day_file_with_no_alerts_stays_in_the_rule_check(day_world, con):
+    other = {**day_world.rule, "replay-version": "2"}
+    day_world.tape(MON, TUE)
+    day_world.file(MON)
+    day_world.file(TUE, [], rule=other)  # a zero-row file on another rule
+
+    message = refused(con, MON, TUE)
+
+    assert message.startswith("The day files are not one study: they hold 2 different rules.")
+    assert "rule 2 (replay-version 2): 2026-11-17" in message
+    assert day_world.written == []
 
 
 # --- the check: the repair --------------------------------------------------------------------
@@ -700,6 +840,7 @@ def test_more_than_ten_missing_days_refuses_with_the_backfill_command(day_world,
     session = [date(2026, 11, d) for d in (2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 16)]
     assert len(session) == 11
     day_world.tape(*session)
+    day_world.file(date(2026, 10, 30))  # a day file elsewhere: the prefix is not empty
 
     message = refused(con, session[0], session[-1])
 
@@ -789,14 +930,74 @@ def test_dry_run_never_writes_and_lists_the_days_to_repair(day_world, con):
     assert not Path(day_world.url(THU)).exists()
 
 
-def test_dry_run_with_nothing_to_repair_goes_on_and_with_a_problem_it_lists_it(day_world, con):
+def test_dry_run_with_nothing_to_repair_says_the_files_are_present_and_current(
+    day_world, con, capsys
+):
     day_world.full(MON, TUE)
-    assert check(con, MON, TUE, dry_run=True).days == (MON, TUE)
+
+    files = check(con, MON, TUE, dry_run=True)
+
+    assert files.days == (MON, TUE)
+    out = capsys.readouterr().out
+    assert (
+        "--dry-run: the 2 day files, 2026-11-16 to 2026-11-17, are present and current; "
+        "nothing to repair."
+    ) in out
+    assert day_world.write.call_count == 0
+    assert day_world.guard.call_count == 0  # nothing to repair, so nothing to ask the guard
+
+
+def test_dry_run_says_one_day_file_in_the_singular(day_world, con, capsys):
+    day_world.full(MON)
+
+    check(con, MON, MON, dry_run=True)
+
+    assert "--dry-run: the 1 day file, 2026-11-16 to 2026-11-16, is present and current" in (
+        capsys.readouterr().out
+    )
+
+
+def test_dry_run_with_a_problem_and_nothing_to_repair_lists_the_problem(day_world, con):
+    day_world.full(MON, TUE)
 
     message = refused(con, MON, WED, dry_run=True)  # WED: no tape at all
 
     assert message.startswith("--dry-run: nothing was written.\nNo tape in R2 for 2026-11-18")
     assert "would be repaired" not in message
+
+
+def test_a_repair_the_deployed_code_guard_would_refuse_is_a_problem_a_dry_run_lists(day_world, con):
+    """A dry run from a checkout that is not origin/main's must not say a repair would go
+    ahead: the real run would stop at the writer's guard."""
+    day_world.full(MON)
+    day_world.tape(TUE)
+    day_world.guard.side_effect = runs.RefusedError(
+        "scripts/x.py is not origin/main's. Run from a checkout at origin/main."
+    )
+
+    dry = refused(con, MON, TUE, dry_run=True)
+    real = refused(con, MON, TUE)
+
+    assert "2026-11-17  missing" in dry
+    assert (
+        "The repair would be refused: scripts/x.py is not origin/main's. "
+        "Run from a checkout at origin/main."
+    ) in dry
+    assert real == (
+        "The repair would be refused: scripts/x.py is not origin/main's. "
+        "Run from a checkout at origin/main."
+    )
+    assert day_world.written == []
+
+
+def test_the_deployed_code_guard_is_asked_before_a_repair_goes_ahead(day_world, con):
+    day_world.full(MON)
+    day_world.tape(TUE)
+
+    check(con, MON, TUE)
+
+    assert day_world.guard.call_count == 1
+    assert day_world.written == [TUE]
 
 
 def test_a_repaired_day_with_no_alerts_refuses_and_names_the_day(day_world, con):
@@ -845,6 +1046,55 @@ def test_an_r2_failure_in_the_repair_names_its_class_and_never_its_text(day_worl
     assert message.startswith("The repair failed: ClientError")
     assert "account-0123" not in message
     assert "AccessDenied" not in message
+
+
+def test_a_replay_that_cannot_read_its_tape_stops_the_run_with_its_message(day_world, con):
+    """replay_day's ValueError names the tape key only (no 0DTE rows, a damaged tape)."""
+    day_world.full(MON)
+    day_world.tape(TUE)
+    day_world.write_error = ValueError("fulltape/2026-11-17-fulltape.parquet: no 0DTE rows")
+
+    message = refused(con, MON, TUE)
+
+    assert message == "The repair stopped: fulltape/2026-11-17-fulltape.parquet: no 0DTE rows"
+
+
+def test_a_duckdb_error_in_the_repair_names_its_class_and_never_its_text(day_world, con):
+    """Under path-style httpfs the HTTP error text carries the endpoint host: the R2 account."""
+    day_world.full(MON)
+    day_world.tape(TUE)
+    day_world.write_error = duckdb.HTTPException(
+        "HTTP GET error reading https://account-0123.r2.example.invalid/bucket/x (HTTP 503)"
+    )
+
+    message = refused(con, MON, TUE)
+
+    assert message.startswith("The repair failed: HTTPException")
+    assert "account-0123" not in message
+
+
+def test_a_duckdb_error_reading_the_alerts_names_its_class_and_never_its_text(day_world, con):
+    day_world.file(MON)
+    files = days.DayFiles(
+        days=(MON,),
+        urls=(day_world.url(MON),),
+        repaired=(),
+        unavailable=(),
+        replay_version="1",
+    )
+
+    class Failing:
+        def execute(self, *_args, **_kwargs):
+            raise duckdb.IOException(
+                "IO Error: Could not read https://account-0123.r2.example.invalid"
+            )
+
+    with pytest.raises(SystemExit) as stopped:
+        days.read_day_alerts(Failing(), files, "SPXW")
+
+    message = str(stopped.value.code)
+    assert message.startswith("Reading the day files failed: IOException")
+    assert "account-0123" not in message
 
 
 def test_a_repair_that_leaves_a_day_unlisted_refuses_instead_of_reading_a_gap(day_world, con):
@@ -905,7 +1155,6 @@ def test_the_describe_sentence_names_the_prefix_the_span_and_the_version():
         urls=("a", "b"),
         repaired=(),
         unavailable=(),
-        empty=(),
         replay_version=None,
     )
 
@@ -916,12 +1165,25 @@ def test_the_describe_sentence_names_the_prefix_the_span_and_the_version():
         days=(MON,),
         urls=("a",),
         repaired=(MON,),
-        unavailable=(),
-        empty=(MON,),
+        unavailable=(TUE, WED),
         replay_version="3",
     )
     assert one.describe() == (
         "the replay day files in `research/interval-ba/replay/` (1 day, 2026-11-16 to "
         "2026-11-16; replay version 3). This run repaired 2026-11-16: the nightly should have "
-        "written them. Days with no alerts: 2026-11-16"
+        "written them. Skipped, UW posted no tape: 2026-11-17, 2026-11-18"
+    )
+
+
+def test_an_analysis_that_repaired_a_day_says_its_outcomes_csv_was_priced_before(day_world, con):
+    """The CSV was built from the day files, so a rewritten day may differ from what enrich saw."""
+    plain = days.DayFiles(days=(MON,), urls=("a",), repaired=(), unavailable=(), replay_version="1")
+    rewritten = days.DayFiles(
+        days=(MON, TUE), urls=("a", "b"), repaired=(MON, TUE), unavailable=(), replay_version="1"
+    )
+
+    assert plain.analysis_note() == ""
+    assert rewritten.analysis_note() == (
+        "Rewritten after the outcomes CSV was priced: 2026-11-16, 2026-11-17. Re-run "
+        "enrich_interval_ba_outcomes.py for those days."
     )

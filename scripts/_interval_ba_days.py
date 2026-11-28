@@ -18,19 +18,30 @@ analyze's the days its outcomes CSV covers. A needed day is
 - missing: it has no file, and its tape landed;
 - stale: its file is older than its tape (a re-landed tape on a night the step does not run keeps
   its marker, so the step never rewrites the file);
-- not a gap when UW marked it unavailable (`fulltape/_unavailable/{day}.json`): it is printed and
-  skipped.
-A missing or stale day is repaired by the tool's per-day writer (`write_replay_days` in
+- empty: its file's footer says it holds no alerts. No session fires fewer than 19, so a zero-row
+  file is a replay or tape-read fault, and the nightly never rewrites a marked day: it is no good
+  day, and the study would go ahead without that day's alerts. It is the third reason for a
+  repair;
+- not a gap when UW marked it unavailable (`fulltape/_unavailable/{day}.json`): it is printed,
+  named in the report's header and skipped.
+A missing, stale or empty day is repaired by the tool's per-day writer (`write_replay_days` in
 interval_ba_tape.py, imported only then), and the run goes on over the files it lists again. The
 repair is refused, with a message and no study, when a missing day has no tape, when the local
-replay rule is not the files' (the writer also refuses unless the replay module is origin/main's),
-when more than MAX_REPAIR_DAYS days need it (a broken nightly write: the message prints the one
-`export --per-day` command that fills them), inside the nightly window 07:15-12:30 UTC (the message
-names the time to retry), or when a file it wrote holds no alerts (no session fires fewer than
-19). `--dry-run` never writes: it lists the days a repair would write and exits non-zero.
+replay rule is not the files', when more than MAX_REPAIR_DAYS days need it (a broken nightly
+write: the message prints the one `export --per-day` command that fills them; with no day file
+at all it names the prefix and the backfill instead), inside the nightly window 07:15-12:30 UTC
+(the message names the time to retry), when the writer's deployed-code guard would refuse (the
+replay module is not origin/main's), or when a file it wrote holds no alerts, which a rerun meets
+again for as long as the replay finds nothing.
 
-More than one rule across the files read is refused too, naming the days on each rule. A day file
-that holds no alerts is noted, not refused: the nightly already alerts on it.
+`--dry-run` is a check, not a run: it never writes, lists the days a repair would write and the
+problems that would refuse it and exits non-zero when there are any, and otherwise says the day
+files are present and current. The readers stop there: no alert or tape is read.
+
+More than one rule across the files read is refused too, naming the days on each rule (an empty
+file's footer is still on a rule, so it counts). A footer that is missing, unreadable or names
+another day is refused. Errors from R2 and DuckDB show their class only: their text can name the
+account host.
 
 Run as a script, scripts/ is on sys.path, so interval_ba_tape_runs and interval_ba_tape import
 from here. They are imported inside the functions that need them, so a `--source table` or
@@ -50,8 +61,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from zoneinfo import ZoneInfo
+
+import duckdb
 
 DAYS, EXPORT, TABLE = "days", "export", "table"
 SOURCES = (DAYS, EXPORT, TABLE)
@@ -68,10 +81,11 @@ MAX_REPAIR_DAYS = 10
 _CT = ZoneInfo("America/Chicago")
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _ISO_DAY = r"(\d{4}-\d{2}-\d{2})"
+# A whole R2 key (fullmatch), against the end of whatever name DuckDB gives back (search).
 _DAY_FILE = re.compile(re.escape(DAYS_PREFIX) + _ISO_DAY + r"\.parquet")
 _TAPE = re.compile(re.escape(TAPE_PREFIX) + _ISO_DAY + r"-fulltape\.parquet")
 _UNAVAILABLE = re.compile(re.escape(TAPE_PREFIX) + r"_unavailable/" + _ISO_DAY + r"\.json")
-_FILE_DAY = re.compile(_ISO_DAY + r"\.parquet$")
+_DAY_SUFFIX = re.compile(_ISO_DAY + r"\.parquet$")
 _R2_NAMES = ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ENDPOINT_URL", "R2_BUCKET_FULLTAPE")
 _BACKFILL = "ml/.venv/Scripts/python.exe -I scripts/interval_ba_tape.py export --per-day"
 _FROM_ORIGIN_MAIN = "run from a checkout at origin/main"
@@ -107,7 +121,7 @@ def add_source_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "Where the alerts come from: days, the replay day files in R2 (the default; a "
-            "missing or stale day is repaired first), export, the one-time snapshot "
+            "missing, stale or empty day is repaired first), export, the one-time snapshot "
             "replay-<end>.parquet in R2, or table, interval_ba_alerts in Neon (read only), which "
             "has the live feed's gaps."
         ),
@@ -125,8 +139,10 @@ def add_source_arguments(parser: argparse.ArgumentParser) -> None:
         "--dry-run",
         action="store_true",
         help=(
-            "Write nothing. With the day files, list the ones a repair would write and exit "
-            "non-zero when there are any; otherwise run, and skip the output files."
+            "Write nothing. With the day files it is a check, not a run: it lists the days a "
+            "repair would write, and what would refuse it, and exits non-zero when there are "
+            "any; otherwise it says the day files are present and current and stops, reading no "
+            "alert or tape. With the snapshot or the table it runs and skips the output files."
         ),
     )
 
@@ -390,18 +406,20 @@ def parse_listing(
 class Plan:
     """A run's needed days, sorted into: `keep` (a file, not older than its tape), `missing` (no
     file, a tape landed), `stale` (a file older than its tape), `no_tape` (no file and no tape,
-    and UW has not said so) and `unavailable` (no file and no tape, which UW marked as not
-    posted: not a gap)."""
+    and UW has not said so), `unavailable` (no file and no tape, which UW marked as not posted:
+    not a gap) and `empty` (a kept file whose footer says it holds no alerts: `with_empty` moves
+    it out of `keep`, once the footers are read)."""
 
     keep: tuple[date, ...]
     missing: tuple[date, ...]
     stale: tuple[date, ...]
     no_tape: tuple[date, ...]
     unavailable: tuple[date, ...]
+    empty: tuple[date, ...] = ()
 
     @property
     def to_repair(self) -> list[date]:
-        return sorted((*self.missing, *self.stale))
+        return sorted((*self.missing, *self.stale, *self.empty))
 
 
 def plan(needed: Sequence[date], listing: Listing) -> Plan:
@@ -419,13 +437,31 @@ def plan(needed: Sequence[date], listing: Listing) -> Plan:
     return Plan(*(tuple(group) for group in (keep, missing, stale, no_tape, unavailable)))
 
 
+def with_empty(p: Plan, footers: Mapping[date, Footer]) -> Plan:
+    """`p` with every kept day whose footer holds no alerts moved from `keep` to `empty`, the
+    third reason for a repair. A zero-row file is a replay or tape-read fault, and a rerun must
+    not read it as a good day: the replay either finds the alerts now, or the repair's own
+    zero-row refusal meets it again on every run."""
+    empty = tuple(day for day in p.keep if footers[day].rows == 0)
+    return replace(p, keep=tuple(day for day in p.keep if day not in empty), empty=empty)
+
+
 # --- The footers: each file's rule and row count ----------------------------------------------
 
 
 @dataclass(frozen=True)
 class Footer:
+    day: date
     rows: int
     rule: dict[str, str]
+
+
+def _quiet_duckdb(what: str, exc: duckdb.Error) -> NoReturn:
+    """Exit with a DuckDB error's class alone: over httpfs its text carries the endpoint host,
+    which is the R2 account id."""
+    sys.exit(
+        f"{what} failed: {type(exc).__name__} (its text is not shown: it can name the R2 host)."
+    )
 
 
 def _parse_footer(text: object) -> Footer | None:
@@ -435,37 +471,57 @@ def _parse_footer(text: object) -> Footer | None:
         return None
     if not isinstance(meta, dict):
         return None
-    rule, rows = meta.get("rule"), meta.get("rows")
+    day, rule, rows = meta.get("day"), meta.get("rule"), meta.get("rows")
     if not isinstance(rule, dict) or isinstance(rows, bool) or not isinstance(rows, int):
         return None
-    return Footer(rows, rule)
+    if not isinstance(day, str):
+        return None
+    try:
+        return Footer(date.fromisoformat(day), rows, rule)
+    except ValueError:
+        return None
 
 
 def read_footers(con: Any, urls: Mapping[date, str]) -> dict[date, Footer]:
     """The `interval_ba` footer of each day file, read from the Parquet metadata alone (no
-    rows). Exits naming every file whose footer is missing or unreadable: a file the nightly
-    step or the tool wrote always has one."""
+    rows). Exits naming every file whose footer is missing or unreadable (a file the nightly
+    step or the tool wrote always has one), and every one whose footer names another day than
+    its key (it was copied to the wrong key, and would be read twice)."""
     if not urls:
         return {}
-    found = con.execute(
-        "SELECT file_name, decode(value) FROM parquet_kv_metadata($urls)"
-        " WHERE decode(key) = 'interval_ba'",
-        {"urls": list(urls.values())},
-    ).fetchall()
-    texts = {m[1]: text for name, text in found if (m := _FILE_DAY.search(name))}
+    try:
+        found = con.execute(
+            "SELECT file_name, decode(value) FROM parquet_kv_metadata($urls)"
+            " WHERE decode(key) = 'interval_ba'",
+            {"urls": list(urls.values())},
+        ).fetchall()
+    except duckdb.Error as exc:
+        _quiet_duckdb("Reading the day files' footers", exc)
+    texts = {m[1]: text for name, text in found if (m := _DAY_SUFFIX.search(name))}
     footers: dict[date, Footer] = {}
     damaged: list[date] = []
+    misplaced: dict[date, date] = {}
     for day in sorted(urls):
         footer = _parse_footer(texts.get(day.isoformat()))
         if footer is None:
             damaged.append(day)
+        elif footer.day != day:
+            misplaced[day] = footer.day
         else:
             footers[day] = footer
+    fix = f"`{_BACKFILL} --from <day> --to <day>`, {_FROM_ORIGIN_MAIN}"
     if damaged:
         sys.exit(
             f"{_name_days(damaged)}: the day file has no readable `interval_ba` footer (its day, "
             f"rows and rule), so it was not written by the nightly step or the tool. Rewrite it "
-            f"with `{_BACKFILL} --from <day> --to <day>`, {_FROM_ORIGIN_MAIN}."
+            f"with {fix}."
+        )
+    if misplaced:
+        names = ", ".join(footer_day.isoformat() for _, footer_day in sorted(misplaced.items()))
+        sys.exit(
+            f"{_name_days(list(misplaced))}: the day file's footer names another day ({names}), "
+            f"so the file sits under the wrong key and its alerts would be read twice. Rewrite "
+            f"the day with {fix}."
         )
     return footers
 
@@ -481,11 +537,15 @@ def _differing(rules: Sequence[Mapping[str, str]]) -> list[str]:
 
 
 def _name_days(days: Sequence[date]) -> str:
-    """The days, all of them when there are few, else the span and the count."""
+    """The days, all of them when there are twelve or fewer, else the count and the span and
+    the first twelve, so scattered days are not read as every session of their span."""
     shown = sorted(days)
     if len(shown) <= 12:
         return ", ".join(day.isoformat() for day in shown)
-    return f"{shown[0]} to {shown[-1]} ({len(shown)} days)"
+    first = ", ".join(day.isoformat() for day in shown[:12])
+    return (
+        f"{len(shown)} days between {shown[0]} and {shown[-1]}: {first}, and {len(shown) - 12} more"
+    )
 
 
 def refuse_mixed_rules(footers: Mapping[date, Footer]) -> None:
@@ -517,14 +577,14 @@ def refuse_mixed_rules(footers: Mapping[date, Footer]) -> None:
 class DayFiles:
     """The day files a run reads: their days and URLs, ascending, and what the check did.
 
-    `repaired` days were missing or stale and have been written again; `unavailable` days are
-    ones UW did not post, skipped; `empty` days are files that hold no alerts."""
+    `repaired` days were missing, stale or empty and have been written again; `unavailable`
+    days are ones UW did not post, skipped. No day read holds no alerts: such a file is repaired,
+    or the run is refused."""
 
     days: tuple[date, ...]
     urls: tuple[str, ...]
     repaired: tuple[date, ...]
     unavailable: tuple[date, ...]
-    empty: tuple[date, ...]
     replay_version: str | None
 
     @property
@@ -552,9 +612,20 @@ class DayFiles:
                 f". This run repaired {_name_days(self.repaired)}: the nightly should have "
                 "written them"
             )
-        if self.empty:
-            text += f". Days with no alerts: {_name_days(self.empty)}"
+        if self.unavailable:
+            text += f". Skipped, UW posted no tape: {_name_days(self.unavailable)}"
         return text
+
+    def analysis_note(self) -> str:
+        """For an analysis run: the days repaired after its outcomes CSV was priced, if any. That
+        CSV was built from the day files as they were, so a rewritten day may differ from what
+        enrich saw. Empty when nothing was repaired."""
+        if not self.repaired:
+            return ""
+        return (
+            f"Rewritten after the outcomes CSV was priced: {_name_days(self.repaired)}. Re-run "
+            "enrich_interval_ba_outcomes.py for those days."
+        )
 
 
 def _r2_env() -> dict[str, str]:
@@ -588,8 +659,11 @@ def _trading_days(runs: Any, first: date, last: date) -> list[date]:
     return needed
 
 
-def _problems(runs: Any, p: Plan, footers: Mapping[date, Footer]) -> list[str]:
-    """Why a repair cannot go ahead, one message each, in the order the owner would fix them."""
+def _problems(
+    runs: Any, p: Plan, footers: Mapping[date, Footer], *, no_day_file_at_all: bool
+) -> list[str]:
+    """Why a repair cannot go ahead, one message each, in the order the owner would fix them.
+    `no_day_file_at_all`: the day-file prefix holds nothing, whatever days this run needs."""
     problems: list[str] = []
     if p.no_tape:
         problems.append(
@@ -612,11 +686,19 @@ def _problems(runs: Any, p: Plan, footers: Mapping[date, Footer]) -> list[str]:
                 f"two studies in one prefix. Write every day again with `{_BACKFILL} --from "
                 f"<first day> --to <last day>`, {_FROM_ORIGIN_MAIN}."
             )
-    if len(repair) > MAX_REPAIR_DAYS:
+    fill = f"{_FROM_ORIGIN_MAIN}: {_BACKFILL} --from {repair[0]} --to {repair[-1]}"
+    if len(repair) > MAX_REPAIR_DAYS and no_day_file_at_all:
+        # Before the backfill, or after one into the wrong bucket: not a broken nightly write.
+        problems.append(
+            f"No day file under {DAYS_PREFIX} in R2, and the tapes of {len(repair)} days have "
+            f"landed, so the backfill has not run (or wrote to another bucket). Write them with "
+            f"one command, {fill}"
+        )
+    elif len(repair) > MAX_REPAIR_DAYS:
         problems.append(
             f"{len(repair)} day files need a repair, more than {MAX_REPAIR_DAYS}: that points to "
             f"a broken nightly write, so none is repaired here. Fill them with one command, "
-            f"{_FROM_ORIGIN_MAIN}: {_BACKFILL} --from {repair[0]} --to {repair[-1]}"
+            f"{fill}"
         )
     now = runs.utc_now()
     window_end = runs.nightly_window_end(now)
@@ -626,6 +708,10 @@ def _problems(runs: Any, p: Plan, footers: Mapping[date, Footer]) -> list[str]:
             f"window, where the step may write a day file. Retry after {window_end:%H:%M} UTC "
             f"({window_end.astimezone(_CT):%H:%M} CT)."
         )
+    try:  # the writer's own first check: asked here, so a dry run does not promise what it won't do
+        runs.refuse_unless_deployed_code()
+    except runs.RefusedError as exc:
+        problems.append(f"The repair would be refused: {exc}")
     return problems
 
 
@@ -641,6 +727,11 @@ def _dry_run_report(p: Plan, listing: Listing, problems: Sequence[str]) -> str:
             lines.append(
                 f"  {day}  stale: its file ({at(listing.files[day])}) is older than its tape "
                 f"({at(listing.tapes[day])})"
+            )
+        elif day in p.empty:
+            lines.append(
+                f"  {day}  no alerts: its file holds no alerts (a replay or tape-read fault), "
+                "so the day would be replayed again"
             )
         else:
             lines.append(f"  {day}  missing: its tape landed ({at(listing.tapes[day])})")
@@ -660,10 +751,14 @@ def _write(runs: Any, to_repair: list[date]) -> list[Any]:
         sys.exit(f"The repair cannot run: {exc}")
     except runs.CheckFailedError as exc:  # its text names days, keys, ids and counts only
         sys.exit(f"The repair stopped: {exc}")
+    except ValueError as exc:  # replay_day's: no 0DTE rows, a damaged tape; names the tape key
+        sys.exit(f"The repair stopped: {exc}")
     except runs.QUIET_ERRORS as exc:
         sys.exit(
             f"The repair failed: {type(exc).__name__} (its text is not shown: it can name a host)."
         )
+    except duckdb.Error as exc:
+        _quiet_duckdb("The repair", exc)
 
 
 def _repair(runs: Any, r2: Any, listing: Listing, needed: Sequence[date], p: Plan) -> None:
@@ -692,7 +787,8 @@ def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run
     """The day files a run needs, checked and, where it can be, repaired; see the module's
     header. `first` and `last` bound the trading days needed: by default 2026-01-02 through the
     newest landed tape. Exits, with the message, on any refusal; with `dry_run` it never writes,
-    and exits non-zero when anything needs a repair. Returns the files to read."""
+    and exits non-zero when anything needs a repair or would refuse one, else says the files are
+    present and current and returns, for the reader to stop. Returns the files to read."""
     runs = _runs()
     r2 = runs.r2_bucket(_r2_env())
     day_objects = _list_prefix(runs, r2, DAYS_PREFIX)
@@ -707,9 +803,12 @@ def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run
         last = max(listing.tapes)
     needed = _trading_days(runs, first or STUDY_START, last)
     p = plan(needed, listing)
+    # Every kept file's footer is read first, so the rule check sees them all (an empty file is
+    # still on a rule) and the empty ones count toward the limit of ten.
     footers = read_footers(con, {day: day_url(day) for day in p.keep})
     refuse_mixed_rules(footers)
-    problems = _problems(runs, p, footers)
+    p = with_empty(p, footers)
+    problems = _problems(runs, p, footers, no_day_file_at_all=not listing.files)
     if dry_run and (p.to_repair or problems):
         sys.exit(_dry_run_report(p, listing, problems))
     if problems:
@@ -717,7 +816,13 @@ def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run
     if p.to_repair:
         _repair(runs, r2, listing, needed, p)
         for day in p.to_repair:
-            how = "stale: its tape landed after it" if day in p.stale else "missing"
+            how = (
+                "stale: its tape landed after it"
+                if day in p.stale
+                else "its file held no alerts"
+                if day in p.empty
+                else "missing"
+            )
             print(
                 f"  {day}  repaired ({how}): the nightly should have written it; check the "
                 "interval-ba-tape step"
@@ -730,22 +835,22 @@ def ensure_day_files(con: Any, first: date | None, last: date | None, *, dry_run
         )
     if p.unavailable:
         print(f"  skipped, UW has not posted a tape for: {_name_days(p.unavailable)}")
-    empty = tuple(day for day in p.keep if footers[day].rows == 0)
-    if empty:
-        print(
-            f"  NOTE: {_name_days(empty)} hold no alerts; no session fires fewer than 19, so the "
-            "replay or the tape read was at fault (the nightly raises a health alert for it)."
-        )
-    rules = [footer.rule for footer in footers.values()] or [runs.ibr.rule()]
+    rules = [footers[day].rule for day in p.keep] or [runs.ibr.rule()]
     files = DayFiles(
         days=tuple(days),
         urls=tuple(day_url(day) for day in days),
         repaired=tuple(p.to_repair),
         unavailable=p.unavailable,
-        empty=empty,
         replay_version=rules[0].get("replay-version"),
     )
     print(f"Day files: {files.describe()}")
+    if dry_run:
+        unit = "day file" if files.count == 1 else "day files"
+        verb = "is" if files.count == 1 else "are"
+        print(
+            f"--dry-run: the {files.count} {unit}, {files.first} to {files.last}, {verb} present "
+            "and current; nothing to repair."
+        )
     return files
 
 
@@ -758,7 +863,11 @@ def read_day_alerts(
     limit_alerts: int | None = None,
 ) -> list[dict[str, Any]]:
     """The alerts of the day files, shaped like the table's rows. `ticker` None takes all three.
-    Exits, naming the prefix, when the files lack a column the scripts read."""
+    Exits, naming the prefix, when the files lack a column the scripts read, and with the class
+    of a DuckDB error alone (its text can name the R2 host)."""
     urls = list(files.urls)
-    check_columns(con, urls, DAYS_PREFIX)
-    return fetch_alerts(con, urls, ticker, from_date, to_date, limit_alerts)
+    try:
+        check_columns(con, urls, DAYS_PREFIX)
+        return fetch_alerts(con, urls, ticker, from_date, to_date, limit_alerts)
+    except duckdb.Error as exc:
+        _quiet_duckdb("Reading the day files", exc)

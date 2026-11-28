@@ -340,7 +340,8 @@ class DayWorld:
     it (an hour after its tape, so it is not stale, or at `at=`). `write` stands in for the
     tool's `write_replay_days`: it writes each day's file, `alerts[day]` (default one SPXW alert)
     on the local rule, lists it at `now`, and returns the `DayFile`s the real one does; it raises
-    `write_error` instead when that is set. `now` is the clock the readers' windows read."""
+    `write_error` instead when that is set. `now` is the clock the readers' windows read, and
+    `guard` stands in for the deployed-code guard (it passes unless given a side effect)."""
 
     def __init__(self, directory: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.dir = directory
@@ -351,6 +352,9 @@ class DayWorld:
         self.alerts: dict[date, list[dict[str, object]]] = {}
         self.write_error: Exception | None = None
         self.write = create_autospec(tool.write_replay_days, side_effect=self._write)
+        # The deployed-code guard runs git against the real checkout: stood in for, so a test
+        # makes it refuse by setting `guard.side_effect` (a RefusedError).
+        self.guard = create_autospec(runs.refuse_unless_deployed_code)
         for name, value in {
             'R2_BUCKET_FULLTAPE': 'bucket',
             'R2_ENDPOINT_URL': 'https://account.invalid',
@@ -364,6 +368,7 @@ class DayWorld:
         )
         monkeypatch.setattr(runs, 'utc_now', lambda: self.now)
         monkeypatch.setattr(tool, 'write_replay_days', self.write)
+        monkeypatch.setattr(runs, 'refuse_unless_deployed_code', self.guard)
 
     def url(self, day: date) -> str:
         return (self.dir / f'{day.isoformat()}.parquet').as_posix()

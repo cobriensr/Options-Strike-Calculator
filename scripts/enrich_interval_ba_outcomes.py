@@ -39,9 +39,12 @@ Sources (``--source``; _interval_ba_days.py holds what the three readers share):
           which the nightly interval-ba-tape step writes each morning: one rule all year and no
           gaps. This is the default. A run checks the days it needs, the NYSE trading days of
           ``--from-date`` to ``--to-date`` (by default 2026-01-02 through the newest landed
-          tape), and repairs a missing or stale one before it refuses, by the tool's per-day
-          writer. ``--dry-run`` writes nothing and lists the days a repair would write, exiting
-          non-zero when there are any. The files are named interval-ba-outcomes-days-*.
+          tape), and repairs a missing, stale or empty one (a zero-row file is a fault) before it
+          refuses, by the tool's per-day writer. ``--dry-run`` is a check, not a run: it writes
+          nothing, lists the days a repair would write and what would refuse it, exiting
+          non-zero when there are any, or else says the day files are present and current and
+          stops, reading no alert and no tape. (With the snapshot or the table it runs, and
+          skips the output files.) The files are named interval-ba-outcomes-days-*.
   export  the one-time snapshot in R2, research/interval-ba/replay-<end>.parquet, written by
           scripts/interval_ba_tape.py. ``--export-end`` names one (given alone it means this
           source); without it the newest in R2 is taken (a wildcard list of the prefix) and its
@@ -488,13 +491,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         files = None
         if args.source == days.DAYS:
-            # The days of the range are checked, and a missing or stale one repaired, first.
+            # The days of the range are checked, and a missing, stale or empty one repaired, first.
             files = days.ensure_day_files(
                 con,
                 date.fromisoformat(args.from_date) if args.from_date else None,
                 date.fromisoformat(args.to_date) if args.to_date else None,
                 dry_run=args.dry_run,
             )
+            if args.dry_run:  # a check, not a run: the day files are present and current
+                return 0
         elif args.source == days.EXPORT:
             args.export_end = resolve_export_end(con, args.export_end)
         alerts = load_alerts(con, args, ticker, files)
