@@ -36,6 +36,7 @@ export const SPAWN_TEST_FILES = [
   'api/__tests__/vercel-ignore-command.test.ts',
   'scripts/_lib/backfill-cli.test.mjs',
   'scripts/_lib/backfill-sidecar-startup.test.mjs',
+  'scripts/_lib/backup-dir-from-git.test.mjs',
   'scripts/_lib/build-output.test.mjs',
   'scripts/_lib/candles-backfill.test.mjs',
   'scripts/_lib/coverage-floor.test.mjs',
