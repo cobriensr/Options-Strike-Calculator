@@ -26,6 +26,12 @@
  *     - the cron's skip-guard for holiday / data-outage days (finding #3).
  *     - `realizedOutcome` / `ctMinToHhmm` re-exported from the cron itself
  *       (pure, side-effect-free) for the realized-outcome + `*_at` columns.
+ *   The one deliberate difference is the day-OHLC read. The cron uses the
+ *   fail-soft `fetchDayOhlcFromPostgres`, which turns a DB error into a null
+ *   outcome; here that would overwrite a good row's five outcome columns with
+ *   NULL and still exit 0, so this runs the throwing `readDayOhlcFromPostgres`
+ *   it wraps, under `withDbRetry`. A read that fails is an exit 1, and since
+ *   every day is scored before any row is upserted, nothing is written.
  *
  * WINDOW RATIONALE
  *   Backfills only the intersection of trading days where ALL THREE source
@@ -65,10 +71,7 @@ import {
   getPutIvSeries,
   getCandles30,
 } from '../../api/_lib/regime-0dte-queries.js';
-import {
-  fetchDayOhlcFromPostgres,
-  type DayOhlc,
-} from '../../api/_lib/postgres-day-summary.js';
+import { readDayOhlcFromPostgres } from '../../api/_lib/postgres-day-summary.js';
 import {
   realizedOutcome,
   ctMinToHhmm,
@@ -101,6 +104,9 @@ export interface RegimeBackfillArgs {
 /** A real calendar date written YYYY-MM-DD (no `2026-02-30`, no `2026-7-22`). */
 function isCalendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  // JS has a year 0, Postgres does not: `0000-01-01` would pass the round trip
+  // below and then fail in SQL as an exit 1 instead of a usage error.
+  if (Number(value.slice(0, 4)) < 1) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
   // A month 13 is an Invalid Date (toISOString throws); a day past the month's
   // end rolls over (02-30 becomes 03-02), so compare the round trip.
@@ -211,7 +217,15 @@ async function backfillDay(d: string): Promise<BackfillRow | null> {
     candles30: sorted,
   });
 
-  const ohlc: DayOhlc | null = await fetchDayOhlcFromPostgres(d);
+  // The throwing read, retried like every other read here, NOT the cron's
+  // fail-soft `fetchDayOhlcFromPostgres`: that one turns a DB error into null,
+  // and a null here would be upserted as five NULL outcome columns over a good
+  // row with exit 0. A throw lands in runBackfill's per-day catch, which exits 1
+  // before any row is written. A day with no bars reads null on purpose (NULL
+  // outcome columns, as the cron records them).
+  const ohlc =
+    (await withDbRetry(() => readDayOhlcFromPostgres(d), 2, 10_000))?.ohlc ??
+    null;
   const outcome = realizedOutcome(ohlc);
 
   return {
@@ -397,10 +411,16 @@ async function runBackfill(args: RegimeBackfillArgs): Promise<number> {
     return 1;
   }
 
+  // Only an unranged run can reach here with no day (a ranged one exited 1
+  // above): it stays exit 0 as it always was, but names the empty list rather
+  // than printing `(undefined -> undefined)`.
+  const found =
+    dates.length > 0
+      ? `${dates.length} candidate days (${dates[0]} -> ${dates.at(-1)})`
+      : 'no candidate days';
   const rangeLabel = ranged ? ` | range=${from ?? '*'}..${to ?? '*'}` : '';
   console.log(
-    `backfill ${dates.length} candidate days ` +
-      `(${dates[0]} -> ${dates.at(-1)})${rangeLabel} | mode=${apply ? 'APPLY' : 'DRY-RUN'}\n`,
+    `backfill ${found}${rangeLabel} | mode=${apply ? 'APPLY' : 'DRY-RUN'}\n`,
   );
 
   const rows: BackfillRow[] = [];

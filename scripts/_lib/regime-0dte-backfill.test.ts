@@ -37,12 +37,15 @@ const h = vi.hoisted(() => ({
   getGexStrikes: vi.fn(),
   getPutIvSeries: vi.fn(),
   getCandles30: vi.fn(),
-  fetchDayOhlcFromPostgres: vi.fn(),
+  readDayOhlcFromPostgres: vi.fn(),
+  // Runs `fn` once, with no backoff: the retry itself is db.ts's, and tested
+  // there. The calls are recorded so a read that skips the wrapper shows.
+  withDbRetry: vi.fn(<T>(fn: () => Promise<T>): Promise<T> => fn()),
 }));
 
 vi.mock('../../api/_lib/db.js', () => ({
   getDb: h.getDb,
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  withDbRetry: h.withDbRetry,
 }));
 vi.mock('../../api/_lib/regime-0dte-queries.js', () => ({
   getGexStrikes: h.getGexStrikes,
@@ -50,7 +53,7 @@ vi.mock('../../api/_lib/regime-0dte-queries.js', () => ({
   getCandles30: h.getCandles30,
 }));
 vi.mock('../../api/_lib/postgres-day-summary.js', () => ({
-  fetchDayOhlcFromPostgres: h.fetchDayOhlcFromPostgres,
+  readDayOhlcFromPostgres: h.readDayOhlcFromPostgres,
 }));
 
 import {
@@ -98,7 +101,9 @@ const storedDates = async (): Promise<string[]> =>
   (await storedRows()).map((r) => r.date);
 
 // ----------------------------------------------------------------------------
-// The source tables. Summer dates are CDT (UTC-5): 08:31 CT = 13:31Z.
+// The source tables. Summer dates are CDT (UTC-5): 08:31 CT = 13:31Z. The two
+// December dates are CST (UTC-6): 08:31 CT = 14:31Z, and a CT day runs from
+// 06:00Z to 05:59Z the next day, so a bound fixed at the summer offset moves.
 //
 //   07-21 (A)  complete
 //   07-22 (B)  complete; its only put IV row is at 00:00 CT sharp (05:00Z)
@@ -109,6 +114,10 @@ const storedDates = async (): Promise<string[]> =>
 //   07-28 (F)  SPX candles only outside the regular session
 //   07-29 (H)  its put IV row is at 00:00 CT of 07-30, which is 07-30's
 //   09-21 (G)  complete
+//   12-01 (W)  complete; its only put IV row is at 23:59 CST (12-02 05:59Z)
+//   12-02 (V)  complete; its only put IV row is at 00:00 CST sharp (06:00Z):
+//              the first instant of 12-02, one minute after W's row on the
+//              same UTC day
 // ----------------------------------------------------------------------------
 
 const SEED = `
@@ -120,7 +129,9 @@ const SEED = `
     ('2026-07-27', '2026-07-27T16:30:00Z'),
     ('2026-07-28', '2026-07-28T13:31:00Z'),
     ('2026-07-29', '2026-07-29T13:31:00Z'),
-    ('2026-09-21', '2026-09-21T13:31:00Z');
+    ('2026-09-21', '2026-09-21T13:31:00Z'),
+    ('2026-12-01', '2026-12-01T14:31:00Z'),
+    ('2026-12-02', '2026-12-02T14:31:00Z');
   INSERT INTO strike_iv_snapshots (ticker, side, ts) VALUES
     ('SPXW', 'put',  '2026-07-21T13:31:00Z'),
     ('SPXW', 'put',  '2026-07-22T05:00:00Z'),
@@ -130,7 +141,9 @@ const SEED = `
     ('SPXW', 'put',  '2026-07-27T13:31:00Z'),
     ('SPXW', 'put',  '2026-07-28T13:31:00Z'),
     ('SPXW', 'put',  '2026-07-30T05:00:00Z'),
-    ('SPXW', 'put',  '2026-09-21T13:31:00Z');
+    ('SPXW', 'put',  '2026-09-21T13:31:00Z'),
+    ('SPXW', 'put',  '2026-12-02T05:59:00Z'),
+    ('SPXW', 'put',  '2026-12-02T06:00:00Z');
   INSERT INTO index_candles_1m (symbol, market_time, date) VALUES
     ('SPX', 'r', '2026-07-21'),
     ('SPX', 'r', '2026-07-22'),
@@ -139,10 +152,13 @@ const SEED = `
     ('SPX', 'r', '2026-07-27'),
     ('SPX', 'e', '2026-07-28'),
     ('SPX', 'r', '2026-07-29'),
-    ('SPX', 'r', '2026-09-21');
+    ('SPX', 'r', '2026-09-21'),
+    ('SPX', 'r', '2026-12-01'),
+    ('SPX', 'r', '2026-12-02');
 `;
 
-const ALL = ['2026-07-21', '2026-07-22', '2026-07-23', '2026-09-21'];
+const WINTER = ['2026-12-01', '2026-12-02'];
+const ALL = ['2026-07-21', '2026-07-22', '2026-07-23', '2026-09-21', ...WINTER];
 
 beforeAll(async () => {
   pg = await PGlite.create();
@@ -231,16 +247,19 @@ function installScenarios(
   h.getCandles30
     .mockReset()
     .mockImplementation(async (d: string) => of(d).candles ?? FLAT);
-  h.fetchDayOhlcFromPostgres
+  h.readDayOhlcFromPostgres
     .mockReset()
     .mockImplementation(async (d: string) => ({
-      open: 6500,
-      high: 6520,
-      low: 6390,
-      close: of(d).close ?? 6510,
-      range: 130,
-      up_excursion: 20,
-      down_excursion: 110,
+      ohlc: {
+        open: 6500,
+        high: 6520,
+        low: 6390,
+        close: of(d).close ?? 6510,
+        range: 130,
+        up_excursion: 20,
+        down_excursion: 110,
+      },
+      barCount: 390,
     }));
 }
 
@@ -249,6 +268,7 @@ beforeEach(async () => {
   process.env.DATABASE_URL = 'postgres://unused.example/db';
   h.sql = neonOverPglite(pg);
   h.getDb.mockReset().mockImplementation(() => h.sql);
+  h.withDbRetry.mockClear();
   installScenarios();
   log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
   error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -266,7 +286,7 @@ describe('the date range limits the candidate days', () => {
     // H (its IV is on the next CT day) are not in the intersection.
     expect(printedDates()).toEqual(ALL);
     expect(lines(log)).toContain(
-      'backfill 4 candidate days (2026-07-21 -> 2026-09-21) | mode=DRY-RUN\n',
+      'backfill 6 candidate days (2026-07-21 -> 2026-12-02) | mode=DRY-RUN\n',
     );
   });
 
@@ -280,7 +300,7 @@ describe('the date range limits the candidate days', () => {
     [
       '--from alone runs to the last day',
       ['--from', '2026-07-23'],
-      ['2026-07-23', '2026-09-21'],
+      ['2026-07-23', '2026-09-21', ...WINTER],
     ],
     [
       '--to alone runs from the first day',
@@ -311,6 +331,24 @@ describe('the date range limits the candidate days', () => {
     log.mockClear();
     expect(await run('--from', '2026-07-29', '--to', '2026-07-30')).toBe(1);
     expect(printedDates()).toEqual([]);
+  });
+
+  it('puts the CT day edge at 06:00Z in winter, not at the summer 05:00Z', async () => {
+    // 12-01's only IV row is its last CST minute (12-02 05:59Z): a bound fixed
+    // at the CDT offset ends the day an hour early and drops it.
+    expect(await run('--from', '2026-12-01', '--to', '2026-12-01')).toBe(0);
+    expect(printedDates()).toEqual(['2026-12-01']);
+
+    // 12-02's only IV row is its first CST instant (06:00Z), the minute after
+    // 12-01's row on the same UTC day: the range for 12-02 holds that row and
+    // not 12-01's, and 12-01's range does not hold 12-02's.
+    log.mockClear();
+    expect(await run('--from', '2026-12-02', '--to', '2026-12-02')).toBe(0);
+    expect(printedDates()).toEqual(['2026-12-02']);
+
+    log.mockClear();
+    expect(await run('--from', '2026-12-01', '--to', '2026-12-02')).toBe(0);
+    expect(printedDates()).toEqual(WINTER);
   });
 
   it('adds the range to the header only when one was given', async () => {
@@ -352,7 +390,7 @@ describe('the dry run and the printed rows', () => {
     expect(await run()).toBe(0);
 
     expect(lines(log)).toContain(
-      'tallies: {"scored":4,"skipped":0,"lean_down":1,"big_move":1,"calm":1,' +
+      'tallies: {"scored":6,"skipped":0,"lean_down":1,"big_move":1,"calm":3,' +
         '"unknown":1,"big_down":1,"mostly_red":1,"iv_break":1,' +
         '"midday_deep_neg":1}',
     );
@@ -376,10 +414,10 @@ describe('the dry run and the printed rows', () => {
 
     expect(await run()).toBe(0);
 
-    expect(printedDates()).toEqual(['2026-07-22', '2026-09-21']);
+    expect(printedDates()).toEqual(['2026-07-22', '2026-09-21', ...WINTER]);
     expect(lines(error)).toContain('[skip] 2026-07-21 candles=0 openStrikes=5');
     expect(lines(error)).toContain('[skip] 2026-07-23 candles=1 openStrikes=1');
-    expect(lines(log)).toContain('"scored":2,"skipped":2');
+    expect(lines(log)).toContain('"scored":4,"skipped":2');
   });
 });
 
@@ -425,8 +463,34 @@ describe('--apply', () => {
     expect(await run('--apply')).toBe(0);
     expect(await storedDates()).toEqual(ALL);
     expect(lines(log)).toContain(
-      'APPLIED — upserted 4 rows. flow_regime_0dte_daily now has 4 rows.',
+      'APPLIED — upserted 6 rows. flow_regime_0dte_daily now has 6 rows.',
     );
+  });
+
+  it('prints a day with no bars as NULL outcome columns and exits 0', async () => {
+    // The read resolves null (no regular bars for the day): not a failure, and
+    // what the cron records for such a day.
+    h.readDayOhlcFromPostgres.mockResolvedValue(null);
+
+    expect(
+      await run('--from', '2026-07-22', '--to', '2026-07-22', '--apply'),
+    ).toBe(0);
+
+    const [row] = (
+      await pg.query<Record<string, unknown>>(
+        `SELECT gate, oc_ret_pct, range_pct, dir_eff, big_down, big_up
+         FROM flow_regime_0dte_daily`,
+      )
+    ).rows;
+    expect(row).toEqual({
+      gate: 'lean_down',
+      oc_ret_pct: null,
+      range_pct: null,
+      dir_eff: null,
+      big_down: null,
+      big_up: null,
+    });
+    expect(lines(log)).toContain('APPLIED — upserted 1 rows.');
   });
 
   it('writes the columns the cron writes', async () => {
@@ -477,6 +541,8 @@ describe('bad flags exit 2 before any SQL', () => {
       /--from 2026-02-30 is not a YYYY-MM-DD date/,
     ],
     ['a month 13', ['--to', '2026-13-01'], /not a YYYY-MM-DD date/],
+    // JS has a year 0 and Postgres does not: SQL would reject it as exit 1.
+    ['year 0', ['--from', '0000-01-01'], /not a YYYY-MM-DD date/],
     ['an unpadded date', ['--from', '2026-7-22'], /not a YYYY-MM-DD date/],
     ['a US date', ['--from', '07/22/2026'], /not a YYYY-MM-DD date/],
     ['a compact date', ['--to', '20260722'], /not a YYYY-MM-DD date/],
@@ -579,6 +645,43 @@ describe('an explicit range that scores nothing is not a success', () => {
   });
 });
 
+describe('an unranged run with no candidate day', () => {
+  /** The day-list statement finds nothing; every other statement is real. */
+  function emptyDayList(): void {
+    const real = neonOverPglite(pg);
+    h.sql = Object.assign(
+      (strings: TemplateStringsArray, ...params: unknown[]) =>
+        strings.join('?').includes('WITH gd AS')
+          ? Promise.resolve([])
+          : real(strings, ...params),
+      real,
+    );
+  }
+
+  it('says so in the header instead of printing undefined, and exits 0 as before', async () => {
+    emptyDayList();
+
+    expect(await run()).toBe(0);
+
+    expect(lines(log)).toContain('backfill no candidate days | mode=DRY-RUN\n');
+    expect(lines(log)).not.toContain('undefined');
+    expect(lines(log)).toContain('"scored":0,"skipped":0');
+    expect(h.getCandles30).not.toHaveBeenCalled();
+  });
+
+  it('upserts nothing under --apply, and still exits 0', async () => {
+    emptyDayList();
+
+    expect(await run('--apply')).toBe(0);
+
+    expect(lines(log)).toContain('backfill no candidate days | mode=APPLY\n');
+    expect(lines(log)).toContain(
+      'APPLIED — upserted 0 rows. flow_regime_0dte_daily now has 0 rows.',
+    );
+    expect(await storedDates()).toEqual([]);
+  });
+});
+
 describe('a failure is never reported as success', () => {
   const noSuccessLine = (): void => {
     expect(lines(log)).not.toContain('APPLIED');
@@ -624,6 +727,58 @@ describe('a failure is never reported as success', () => {
     expect(lines(error)).toContain('connection lost');
     noSuccessLine();
     expect(await storedDates()).toEqual([]);
+  });
+
+  it('exits 1, names the day and writes nothing when the day OHLC read rejects', async () => {
+    // The read that used to be fail-soft: a null here would have been upserted
+    // as five NULL outcome columns over a good row, with APPLIED and exit 0.
+    await pg.query(
+      `INSERT INTO flow_regime_0dte_daily (date, gate, oc_ret_pct, range_pct, dir_eff)
+       VALUES ('2026-07-23', 'big_move', 0.6768, 0.7509, 0.9013)`,
+    );
+    h.readDayOhlcFromPostgres.mockImplementation(async (d: string) => {
+      if (d === '2026-07-23') throw new Error('connection lost');
+      return {
+        ohlc: {
+          open: 6500,
+          high: 6520,
+          low: 6390,
+          close: 6510,
+          range: 130,
+          up_excursion: 20,
+          down_excursion: 110,
+        },
+        barCount: 390,
+      };
+    });
+
+    expect(
+      await run('--from', '2026-07-22', '--to', '2026-07-23', '--apply'),
+    ).toBe(1);
+
+    expect(lines(error)).toContain('scoring 2026-07-23 failed');
+    expect(lines(error)).toContain('connection lost');
+    noSuccessLine();
+    // Scoring runs before any upsert: the stored row is exactly as it was and
+    // 07-22, scored before the failure, was not written either.
+    expect(await storedRows()).toEqual([
+      {
+        date: '2026-07-23',
+        gate: 'big_move',
+        oc_ret_pct: expect.closeTo(0.6768, 4),
+      },
+    ]);
+  });
+
+  it('reads the day OHLC under withDbRetry, as every other read here', async () => {
+    expect(await run('--from', '2026-07-22', '--to', '2026-07-22')).toBe(0);
+
+    // The day list and the OHLC read: the regime readers (mocked) wrap their own.
+    expect(h.readDayOhlcFromPostgres).toHaveBeenCalledTimes(1);
+    expect(h.withDbRetry.mock.calls).toEqual([
+      [expect.any(Function), 2, 10_000],
+      [expect.any(Function), 2, 10_000],
+    ]);
   });
 
   it('exits 1, names the day and stops when an upsert rejects', async () => {
