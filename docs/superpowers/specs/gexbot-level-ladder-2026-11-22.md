@@ -1008,3 +1008,26 @@ author-side. Settled here:
   sits off the grid (counts under "Levels"; an earlier draft generalised
   from one outlier row and was corrected after the phase 1b code review),
   and the last capture of a session lands at 15:01 CT.
+
+## As built, phase 3a (2026-11-27)
+
+Where the `LevelLadder` component reads this spec in a way the text above
+does not say:
+
+- **State 2, loading.** The spec says "both views still loading". The loading
+  box holds until both views have answered, that is while either is still on
+  its first answer. The model's result line prints "Expected move unavailable.
+  Distances only." for a missing expected-move row, and the component cannot
+  suppress a model string, so a view that is only slow would read as
+  unavailable. A view that has answered with an error or nothing degrades as
+  stated under "States and layout".
+- **"Priced".** The model's odds strings are unchanged ("1.37σ · touch 17% ·
+  finish beyond 8%"). The word is carried by the list's column header line,
+  "From spot · priced odds" (a line of its own, not a list item), and, on an
+  Above or Below line, by " · priced odds" right after each short strike's
+  odds. A breached strike's item prints no probability and gets none, and a
+  line with only levels gets none.
+- **GEXBot spot fallback.** A null or stale Schwab quote falls back to the
+  expected-move row's spot only, as under "Data dependencies". The levels
+  row's spot is not a second fallback, so a closed-market tab with no quote
+  and an empty expected-move view reads "waiting for SPX spot".
