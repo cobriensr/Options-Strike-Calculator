@@ -1027,7 +1027,9 @@ does not say:
   Above or Below line, by " · priced odds" right after each short strike's
   odds. A breached strike's item prints no probability and gets none, and a
   line with only levels gets none.
-- **GEXBot spot fallback.** A null or stale Schwab quote falls back to the
-  expected-move row's spot only, as under "Data dependencies". The levels
-  row's spot is not a second fallback, so a closed-market tab with no quote
-  and an empty expected-move view reads "waiting for SPX spot".
+- **GEXBot spot fallback.** A missing Schwab quote, or a stale one while the
+  market is open, falls back to the expected-move row's spot only, as under
+  "Data dependencies". With the market closed a held quote is the close and is
+  used as is, however old. The levels row's spot is not a second fallback, so
+  a closed-market tab with no quote and an empty expected-move view reads
+  "waiting for SPX spot".
