@@ -19,6 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -130,6 +131,14 @@ function recordingSql() {
 
 // ── Fixtures ───────────────────────────────────────────────
 
+/** `n` consecutive calendar days from `start`, with no cap (datesBetween has one). */
+const daysFrom = (start, n) =>
+  Array.from({ length: n }, (_, i) =>
+    new Date(Date.parse(`${start}T00:00:00Z`) + i * 86_400_000)
+      .toISOString()
+      .slice(0, 10),
+  );
+
 let nextStrike = 5000;
 const FIRE_DEFAULTS = {
   fired_at: '2026-03-26T15:00:00Z',
@@ -204,6 +213,12 @@ function craftBackup(file, edit) {
   writeFileSync(manifestFileOf(file), JSON.stringify(manifest));
 }
 
+// The writers are a dry run unless `apply` is true. Most tests mean to write,
+// so they go through these; the dry-run tests call the library directly.
+const doDelete = (opts) => deleteGammaFires(sql, { apply: true, ...opts });
+const doNull = (opts) => nullGammaReturns(sql, { apply: true, ...opts });
+const doRestore = (opts) => restoreRows(sql, { apply: true, ...opts });
+
 /** Stage a race: run `act` once, just before the transaction that deletes. */
 function beforeWriteOnce(marker, act) {
   hooks.beforeTransaction = async (queries) => {
@@ -271,7 +286,7 @@ describe('the table allowlist', () => {
       backupRows(sql, { table, dates: ['2026-03-26'], backupDir: tmp }),
     ).rejects.toThrow(RebuildRefusal);
     await expect(
-      restoreRows(sql, { table, backupPath: path.join(tmp, 'x.jsonl') }),
+      doRestore({ table, backupPath: path.join(tmp, 'x.jsonl') }),
     ).rejects.toThrow(/not one of the tables/);
     // Refused before any SQL: not a read, not a transaction.
     expect(sql.log.queries).toEqual([]);
@@ -456,12 +471,7 @@ describe('backupRows', () => {
     ['not a list', '2026-03-26'],
     ['a malformed date', ['2026-3-26']],
     ['a date that does not exist', ['2026-02-30']],
-    [
-      'too many dates',
-      Array.from({ length: MAX_DATES + 1 }, (_, i) =>
-        new Date(Date.UTC(2025, 0, 1 + i)).toISOString().slice(0, 10),
-      ),
-    ],
+    ['too many dates', daysFrom('2025-01-01', MAX_DATES + 1)],
   ])('refuses %s', async (_name, dates) => {
     await expect(
       backupRows(sql, { table: GAMMA, dates, backupDir: tmp }),
@@ -473,6 +483,71 @@ describe('backupRows', () => {
     await expect(
       backupRows(sql, { table: GAMMA, dates: ['2026-03-26'], backupDir: '' }),
     ).rejects.toThrow(/backup directory/);
+  });
+
+  describe('the scope a restore will delete stays small', () => {
+    it('covers at most 62 days: two months, nowhere near a whole table', async () => {
+      expect(MAX_DATES).toBe(62);
+      const sixtyTwo = datesBetween('2026-01-01', '2026-03-03');
+      expect(sixtyTwo).toHaveLength(62);
+      await expect(
+        backupRows(sql, { table: GAMMA, dates: sixtyTwo, backupDir: tmp }),
+      ).resolves.toMatchObject({ rows: 0 });
+
+      const sixtyThree = daysFrom('2026-01-01', 63);
+      await expect(
+        backupRows(sql, { table: GAMMA, dates: sixtyThree, backupDir: tmp }),
+      ).rejects.toThrow(/63 dates is more than 62/);
+    });
+
+    it('refuses a span that would cover every row of a table, however it is written', () => {
+      // One range, or several that add up to more than 62 days.
+      expect(() => parseDatesSpec('2026-01-01..2027-01-05')).toThrow(
+        /more than 62 days/,
+      );
+      expect(() =>
+        parseDatesSpec('2026-01-01..2026-02-15,2026-03-01..2026-03-31'),
+      ).toThrow(/77 dates is more than 62/);
+    });
+  });
+
+  describe('a backup never covers a session still being written', () => {
+    const SESSION_OPEN = /on or after today/;
+
+    it('refuses a date on or after today (ET), before any SQL', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-03-27T15:00:00Z')); // 11:00 EDT, 03-27
+
+      for (const dates of [
+        ['2026-03-27'],
+        ['2026-03-28'],
+        ['2026-03-25', '2026-03-27'],
+        ['2026-03-26', '2027-01-01'],
+      ]) {
+        await expect(backupFires(dates)).rejects.toThrow(SESSION_OPEN);
+      }
+      expect(sql.log.queries).toEqual([]);
+      expect(existsSync(path.join(tmp, 'rebuild'))).toBe(false);
+      // Yesterday is over.
+      await expect(backupFires(['2026-03-26'])).resolves.toMatchObject({
+        rows: 0,
+      });
+    });
+
+    it('decides "today" in ET, not UTC', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      // 22:00 EDT on 03-27 is 02:00Z on 03-28: the 27th is still today.
+      vi.setSystemTime(new Date('2026-03-28T02:00:00Z'));
+      await expect(backupFires(['2026-03-27'])).rejects.toThrow(SESSION_OPEN);
+      await expect(backupFires(['2026-03-26'])).resolves.toMatchObject({
+        rows: 0,
+      });
+      // 01:00 EDT on 03-28 (05:00Z): the 27th is over.
+      vi.setSystemTime(new Date('2026-03-28T05:00:00Z'));
+      await expect(backupFires(['2026-03-27'])).resolves.toMatchObject({
+        rows: 0,
+      });
+    });
   });
 });
 
@@ -605,7 +680,7 @@ describe('buildTableInfo', () => {
 
 /** The delete of the one day most of these tests use, from `backupPath`. */
 const deleteOn0326 = (backupPath) =>
-  deleteGammaFires(sql, { from: '2026-03-26', to: '2026-03-26', backupPath });
+  doDelete({ from: '2026-03-26', to: '2026-03-26', backupPath });
 
 describe('deleteGammaFires', () => {
   it('removes exactly the backed-up rows', async () => {
@@ -615,7 +690,7 @@ describe('deleteGammaFires', () => {
     const before = await addFire({ fired_at: '2026-03-25T14:00:00Z' });
     const backup = await backupFires();
 
-    const result = await deleteGammaFires(sql, {
+    const result = await doDelete({
       from: '2026-03-26',
       to: '2026-03-26',
       backupPath: backup.path,
@@ -643,7 +718,7 @@ describe('deleteGammaFires', () => {
       '2026-03-27',
     ]);
 
-    const result = await deleteGammaFires(sql, {
+    const result = await doDelete({
       from: '2026-03-25',
       to: '2026-03-27',
       backupPath: backup.path,
@@ -661,7 +736,7 @@ describe('deleteGammaFires', () => {
     await pg.query(`SET TimeZone = 'America/Los_Angeles'`);
 
     await expect(
-      deleteGammaFires(sql, {
+      doDelete({
         from: '2026-03-26',
         to: '2026-03-26',
         backupPath: backup.path,
@@ -673,7 +748,7 @@ describe('deleteGammaFires', () => {
     const backup = await backupFires(['2026-03-26']);
 
     await expect(
-      deleteGammaFires(sql, {
+      doDelete({
         from: '2026-03-26',
         to: '2026-03-26',
         backupPath: backup.path,
@@ -732,6 +807,20 @@ describe('deleteGammaFires', () => {
       await expect(run(backup.path)).rejects.toThrow(/not valid JSON/);
     });
 
+    it.each([
+      ['dates out of order', ['2026-03-27', '2026-03-26']],
+      ['a repeated date', ['2026-03-26', '2026-03-26']],
+      ['more than the cap', daysFrom('2026-01-01', MAX_DATES + 1)],
+    ])('a manifest with %s', async (_name, dates) => {
+      const backup = await backupFires();
+      const manifest = manifestOf(backup.path);
+      manifest.dates = dates;
+      writeFileSync(manifestFileOf(backup.path), JSON.stringify(manifest));
+      await expect(run(backup.path)).rejects.toThrow(
+        /not a rebuild backup manifest/,
+      );
+    });
+
     it('a manifest that is not valid', async () => {
       const backup = await backupFires();
       writeFileSync(
@@ -784,6 +873,46 @@ describe('deleteGammaFires', () => {
         ),
       );
       await expect(run(backup.path)).rejects.toThrow(/malformed/);
+    });
+
+    it('a backup file renamed or copied under another name', async () => {
+      const backup = await backupFires();
+      const renamed = path.join(
+        path.dirname(backup.path),
+        'ws_gamma_setup_fires-2026-03-01..2026-04-30-20260101T000000000Z.jsonl',
+      );
+      copyFileSync(backup.path, renamed);
+      copyFileSync(manifestFileOf(backup.path), manifestFileOf(renamed));
+      await expect(run(renamed)).rejects.toThrow(
+        /file name does not match its manifest/,
+      );
+    });
+
+    it("a backed-up fire outside the backup's dates (by ET date)", async () => {
+      const backup = await backupFires();
+      craftBackup(backup.path, (rows) =>
+        rows.map((row, i) =>
+          i === 0 ? { ...row, fired_at: '2026-04-02 15:00:00+00' } : row,
+        ),
+      );
+      await expect(run(backup.path)).rejects.toThrow(
+        /outside the backup's dates.*2026-04-02/s,
+      );
+    });
+
+    it('a backup whose dates do not cover the window', async () => {
+      await addFire({ fired_at: '2026-03-27T14:00:00Z' });
+      before = await dumpFires();
+      // Only the days with fires: 03-26 and 03-27, and a window that starts on
+      // 03-25, which holds none. The rows match; the undo would not cover it.
+      const backup = await backupFires(['2026-03-26', '2026-03-27']);
+      await expect(
+        doDelete({
+          from: '2026-03-25',
+          to: '2026-03-27',
+          backupPath: backup.path,
+        }),
+      ).rejects.toThrow(/dates do not cover the window.*2026-03-25/s);
     });
 
     it('a backup of another table', async () => {
@@ -876,7 +1005,7 @@ describe('deleteGammaFires', () => {
       const before = await dumpFires();
 
       await expect(
-        deleteGammaFires(sql, {
+        doDelete({
           from: '2026-03-26',
           to: '2026-03-26',
           backupPath: backup.path,
@@ -975,7 +1104,10 @@ describe('deleteGammaFires', () => {
         /not the table this tool was written for.*unknown ret_90m/,
       );
       await expect(
-        nullGammaReturns(sql, { date: '2026-03-26', backupPath: backup.path }),
+        doNull({ date: '2026-03-26', backupPath: backup.path }),
+      ).rejects.toThrow(/not the table this tool was written for/);
+      await expect(
+        doRestore({ table: GAMMA, backupPath: backup.path }),
       ).rejects.toThrow(/not the table this tool was written for/);
     } finally {
       await pg.query(`ALTER TABLE ${GAMMA} DROP COLUMN ret_90m`);
@@ -995,7 +1127,7 @@ describe('deleteGammaFires', () => {
     const before = await dumpFires();
 
     await expect(
-      deleteGammaFires(sql, {
+      doDelete({
         from: '2026-03-26',
         to: '2026-03-26',
         backupPath: backup.path,
@@ -1014,7 +1146,6 @@ describe('deleteGammaFires', () => {
       from: '2026-03-26',
       to: '2026-03-26',
       backupPath: backup.path,
-      dryRun: true,
     });
 
     expect(result).toEqual({ deleted: 0, wouldDelete: 2, dryRun: true });
@@ -1035,7 +1166,6 @@ describe('deleteGammaFires', () => {
         from: '2026-03-26',
         to: '2026-03-26',
         backupPath: backup.path,
-        dryRun: true,
       }),
     ).rejects.toThrow(/journal entry/);
   });
@@ -1047,7 +1177,7 @@ describe('deleteGammaFires', () => {
     ['a window past the cap', { from: '2025-01-01', to: '2026-03-26' }],
   ])('refuses %s', async (_name, window) => {
     await expect(
-      deleteGammaFires(sql, {
+      doDelete({
         ...window,
         backupPath: path.join(tmp, 'x.jsonl'),
       }),
@@ -1077,7 +1207,7 @@ describe('nullGammaReturns', () => {
     const backup = await backupFires(['2026-09-21']);
     const before = await onlyReturnsDiffer();
 
-    const result = await nullGammaReturns(sql, {
+    const result = await doNull({
       date: '2026-09-21',
       backupPath: backup.path,
     });
@@ -1107,15 +1237,15 @@ describe('nullGammaReturns', () => {
     const before = await dumpFires();
 
     await expect(
-      nullGammaReturns(sql, { date: '2026-09-21', backupPath: backup.path }),
+      doNull({ date: '2026-09-21', backupPath: backup.path }),
     ).rejects.toThrow(/1 live fire is not in the backup/);
     await expect(
-      nullGammaReturns(sql, {
+      doNull({
         date: '2026-09-21',
         backupPath: path.join(tmp, 'gone.jsonl'),
       }),
     ).rejects.toThrow(/cannot read the backup/);
-    await expect(nullGammaReturns(sql, { date: '2026-09-21' })).rejects.toThrow(
+    await expect(doNull({ date: '2026-09-21' })).rejects.toThrow(
       /needs the backup file/,
     );
     expect(await dumpFires()).toEqual(before);
@@ -1128,7 +1258,7 @@ describe('nullGammaReturns', () => {
     const before = await dumpFires();
 
     await expect(
-      nullGammaReturns(sql, { date: '2026-09-21', backupPath: backup.path }),
+      doNull({ date: '2026-09-21', backupPath: backup.path }),
     ).rejects.toThrow(/1 fire differs from the backup.*ret_60m/);
     expect(await dumpFires()).toEqual(before);
   });
@@ -1144,7 +1274,7 @@ describe('nullGammaReturns', () => {
     );
 
     await expect(
-      nullGammaReturns(sql, { date: '2026-09-21', backupPath: backup.path }),
+      doNull({ date: '2026-09-21', backupPath: backup.path }),
     ).rejects.toThrow(
       /changed between the check and the update.*Nothing was changed/s,
     );
@@ -1167,7 +1297,7 @@ describe('nullGammaReturns', () => {
     );
 
     await expect(
-      nullGammaReturns(sql, { date: '2026-09-21', backupPath: backup.path }),
+      doNull({ date: '2026-09-21', backupPath: backup.path }),
     ).rejects.toThrow(/changed between the check and the update/);
     const { rows } = await pg.query(
       `SELECT count(*)::int AS n FROM ${GAMMA} WHERE ret_15m IS NOT NULL`,
@@ -1175,12 +1305,21 @@ describe('nullGammaReturns', () => {
     expect(rows[0].n).toBe(1);
   });
 
+  it('refuses a backup whose dates do not cover the date', async () => {
+    // Both the live date and the backup hold no fires, so the rows match; only
+    // the dates differ.
+    const backup = await backupFires(['2026-09-21']);
+    await expect(
+      doNull({ date: '2026-09-22', backupPath: backup.path }),
+    ).rejects.toThrow(/dates do not cover the window.*2026-09-22/s);
+  });
+
   it('does nothing, without a transaction, when the date has no fires and the backup is empty', async () => {
     await addFire({ fired_at: '2026-09-22T14:00:00Z' });
     const backup = await backupFires(['2026-09-21']);
 
     await expect(
-      nullGammaReturns(sql, { date: '2026-09-21', backupPath: backup.path }),
+      doNull({ date: '2026-09-21', backupPath: backup.path }),
     ).resolves.toEqual({ updated: 0 });
     expect(
       sql.log.transactions.some((t) =>
@@ -1196,7 +1335,7 @@ describe('nullGammaReturns', () => {
     await pg.query(`SET TimeZone = 'America/Los_Angeles'`);
 
     await expect(
-      nullGammaReturns(sql, { date: '2026-09-21', backupPath: backup.path }),
+      doNull({ date: '2026-09-21', backupPath: backup.path }),
     ).resolves.toEqual({ updated: 1 });
   });
 
@@ -1208,7 +1347,6 @@ describe('nullGammaReturns', () => {
     const result = await nullGammaReturns(sql, {
       date: '2026-09-21',
       backupPath: backup.path,
-      dryRun: true,
     });
 
     expect(result).toEqual({ updated: 0, wouldUpdate: 1, dryRun: true });
@@ -1222,7 +1360,7 @@ describe('nullGammaReturns', () => {
 
   it('refuses a date that is not a date', async () => {
     await expect(
-      nullGammaReturns(sql, {
+      doNull({
         date: '2026-09-31',
         backupPath: path.join(tmp, 'x.jsonl'),
       }),
@@ -1249,7 +1387,7 @@ describe('restoreRows', () => {
     await addFire({ fired_at: '2026-03-26T14:10:00Z', node_strike: 9003 });
     await pg.query(`UPDATE ${GAMMA} SET ret_eod = 99 WHERE node_strike = 9001`);
 
-    const result = await restoreRows(sql, {
+    const result = await doRestore({
       table: GAMMA,
       backupPath: backup.path,
     });
@@ -1280,7 +1418,7 @@ describe('restoreRows', () => {
       `INSERT INTO training_features (date, vix) VALUES ('2026-03-25', 20)`,
     );
 
-    const result = await restoreRows(sql, {
+    const result = await doRestore({
       table: 'training_features',
       backupPath: backup.path,
     });
@@ -1304,7 +1442,7 @@ describe('restoreRows', () => {
       `UPDATE flow_regime_0dte_daily SET gate = 'pos_gamma', mostly_red = false`,
     );
 
-    await restoreRows(sql, {
+    await doRestore({
       table: 'flow_regime_0dte_daily',
       backupPath: backup.path,
     });
@@ -1322,7 +1460,7 @@ describe('restoreRows', () => {
       `INSERT INTO flow_regime_0dte_daily (date, gate) VALUES ('2026-07-22', 'neg_gamma'), ('2026-07-23', 'pos_gamma')`,
     );
 
-    const result = await restoreRows(sql, {
+    const result = await doRestore({
       table: 'flow_regime_0dte_daily',
       backupPath: backup.path,
     });
@@ -1347,7 +1485,7 @@ describe('restoreRows', () => {
     const backup = await backupFires();
     await pg.query(`DELETE FROM ${GAMMA}`);
 
-    const result = await restoreRows(sql, {
+    const result = await doRestore({
       table: GAMMA,
       backupPath: backup.path,
     });
@@ -1376,7 +1514,7 @@ describe('restoreRows', () => {
     );
 
     await expect(
-      restoreRows(sql, { table: GAMMA, backupPath: backup.path }),
+      doRestore({ table: GAMMA, backupPath: backup.path }),
     ).rejects.toThrow(/reject_restore/);
     expect(await dumpFires()).toEqual(rebuilt);
   });
@@ -1387,7 +1525,7 @@ describe('restoreRows', () => {
     await pg.query(`ALTER TABLE ${GAMMA} ADD COLUMN extra_note TEXT`);
     try {
       await expect(
-        restoreRows(sql, { table: GAMMA, backupPath: backup.path }),
+        doRestore({ table: GAMMA, backupPath: backup.path }),
       ).rejects.toThrow(
         /columns of ws_gamma_setup_fires have changed since the backup.*extra_note/s,
       );
@@ -1423,7 +1561,7 @@ describe('restoreRows', () => {
     );
     try {
       await expect(
-        restoreRows(sql, { table: GAMMA, backupPath: backup.path }),
+        doRestore({ table: GAMMA, backupPath: backup.path }),
       ).rejects.toThrow(/changed during the restore.*Nothing was changed/s);
     } finally {
       await pg.query(`DROP TRIGGER IF EXISTS stray ON ${GAMMA}`);
@@ -1432,11 +1570,156 @@ describe('restoreRows', () => {
     expect(await dumpFires()).toEqual(before);
   });
 
+  it("refuses a backed-up row outside the backup's dates (a DATE-keyed table)", async () => {
+    await pg.query(
+      `INSERT INTO training_features (date, vix) VALUES ('2026-03-23', 18.5)`,
+    );
+    const backup = await backupRows(sql, {
+      table: 'training_features',
+      dates: ['2026-03-23'],
+      backupDir: tmp,
+    });
+    craftBackup(backup.path, (rows) =>
+      rows.map((row) => ({ ...row, date: '2026-03-24' })),
+    );
+    await expect(
+      doRestore({ table: 'training_features', backupPath: backup.path }),
+    ).rejects.toThrow(/outside the backup's dates.*2026-03-24/s);
+  });
+
+  describe('restore and the manual journal of ws_gamma_setup_fires', () => {
+    /** Fire A is backed up; the rebuild then replaced it with fire B. */
+    async function rebuiltAfterBackup({ journal = {} } = {}) {
+      const a = await addFire({
+        fired_at: '2026-03-26T14:00:00Z',
+        ...journal,
+      });
+      const backup = await backupFires();
+      await pg.query(`DELETE FROM ${GAMMA} WHERE id = $1`, [a]);
+      const b = await addFire({
+        fired_at: '2026-03-26T14:00:00Z',
+        node_strike: 9001,
+      });
+      return { a, b, backup };
+    }
+    const restoreGamma = (backup) =>
+      doRestore({ table: GAMMA, backupPath: backup.path });
+
+    it('restore refuses a live fire with a journal entry the backup lacks', async () => {
+      const { b, backup } = await rebuiltAfterBackup();
+      await pg.query(
+        `UPDATE ${GAMMA} SET trade_taken = true, trade_notes = 'took it' WHERE id = $1`,
+        [b],
+      );
+      const before = await dumpFires();
+
+      await expect(restoreGamma(backup)).rejects.toThrow(
+        new RegExp(
+          `1 of the 1 fire in the restore's scope carries a journal entry the backup does not hold.*${b}`,
+          's',
+        ),
+      );
+      expect(await dumpFires()).toEqual(before);
+      // A dry run checks the same.
+      await expect(
+        restoreRows(sql, { table: GAMMA, backupPath: backup.path }),
+      ).rejects.toThrow(/journal entry the backup does not hold/);
+    });
+
+    it('refuses a fire the backup holds with other journal values than the live ones', async () => {
+      const a = await addFire({ fired_at: '2026-03-26T14:00:00Z' });
+      const backup = await backupFires();
+      await pg.query(
+        `UPDATE ${GAMMA} SET trade_pnl_dollars = -40 WHERE id = $1`,
+        [a],
+      );
+      const before = await dumpFires();
+
+      await expect(restoreGamma(backup)).rejects.toThrow(
+        new RegExp(`journal entry the backup does not hold.*${a}`, 's'),
+      );
+      expect(await dumpFires()).toEqual(before);
+    });
+
+    it('restores when the live journal is the backup journal, and brings a backed-up one back', async () => {
+      const journal = {
+        trade_taken: true,
+        trade_notes: 'took it',
+        trade_premium_cost: '1.5',
+      };
+      const { a, b, backup } = await rebuiltAfterBackup({ journal });
+
+      await expect(restoreGamma(backup)).resolves.toEqual({
+        restored: 1,
+        deleted: 1,
+      });
+      const { rows } = await pg.query(
+        `SELECT id::text AS id, trade_taken, trade_notes, trade_premium_cost::text AS cost FROM ${GAMMA}`,
+      );
+      expect(rows).toEqual([
+        { id: a, trade_taken: true, trade_notes: 'took it', cost: '1.5' },
+      ]);
+      expect(rows.map((r) => r.id)).not.toContain(b);
+
+      // The same journal still live (nothing was rebuilt): restore replaces it
+      // with itself.
+      const again = await backupFires();
+      await expect(restoreGamma(again)).resolves.toEqual({
+        restored: 1,
+        deleted: 1,
+      });
+    });
+
+    it.each([
+      ['trade_taken', 'true'],
+      ['trade_premium_cost', '1.25'],
+      ['trade_premium_close', '0'],
+      ['trade_pnl_dollars', '-40'],
+      ['trade_notes', "''"],
+    ])(
+      'a journal entry (%s) written on a rebuilt fire between the check and the delete refuses and changes nothing',
+      async (column, literal) => {
+        const { b, backup } = await rebuiltAfterBackup();
+        beforeWriteOnce('DELETE FROM', () =>
+          pg.query(`UPDATE ${GAMMA} SET ${column} = ${literal} WHERE id = $1`, [
+            b,
+          ]),
+        );
+
+        await expect(restoreGamma(backup)).rejects.toThrow(
+          /changed during the restore.*Nothing was changed/s,
+        );
+        // The rebuilt fire is still there with its entry; the backed-up one is not back.
+        const { rows } = await pg.query(
+          `SELECT id::text AS id, ${column} IS NOT NULL AS has_entry FROM ${GAMMA}`,
+        );
+        expect(rows).toEqual([{ id: b, has_entry: true }]);
+      },
+    );
+
+    it('a journal entry written on a backed-up fire between the check and the delete is not deleted: the restore fails and changes nothing', async () => {
+      const a = await addFire({ fired_at: '2026-03-26T14:00:00Z' });
+      const backup = await backupFires();
+      beforeWriteOnce('DELETE FROM', () =>
+        pg.query(`UPDATE ${GAMMA} SET trade_taken = true WHERE id = $1`, [a]),
+      );
+
+      // The delete skips the fire, so putting it back collides with itself.
+      await expect(restoreGamma(backup)).rejects.toThrow(
+        /ws_gamma_setup_fires_pkey/,
+      );
+      const { rows } = await pg.query(
+        `SELECT id::text AS id, trade_taken FROM ${GAMMA}`,
+      );
+      expect(rows).toEqual([{ id: a, trade_taken: true }]);
+    });
+  });
+
   it('refuses a backup of another table, or an edited one', async () => {
     await addFire();
     const gamma = await backupFires();
     await expect(
-      restoreRows(sql, { table: 'training_features', backupPath: gamma.path }),
+      doRestore({ table: 'training_features', backupPath: gamma.path }),
     ).rejects.toThrow(
       /backup is of ws_gamma_setup_fires, not training_features/,
     );
@@ -1445,7 +1728,7 @@ describe('restoreRows', () => {
       readFileSync(gamma.path, 'utf8').replace('e1_long_call', 'e5_long_put'),
     );
     await expect(
-      restoreRows(sql, { table: GAMMA, backupPath: gamma.path }),
+      doRestore({ table: GAMMA, backupPath: gamma.path }),
     ).rejects.toThrow(/does not match its manifest/);
   });
 
@@ -1458,7 +1741,6 @@ describe('restoreRows', () => {
     const result = await restoreRows(sql, {
       table: GAMMA,
       backupPath: backup.path,
-      dryRun: true,
     });
 
     expect(result).toEqual({
@@ -1492,7 +1774,7 @@ describe('dates', () => {
       '2026-03-01',
     ]);
     expect(datesBetween('2026-03-26', '2026-03-26')).toEqual(['2026-03-26']);
-    expect(datesBetween('2025-01-01', '2025-12-31')).toHaveLength(365);
+    expect(datesBetween('2026-01-01', '2026-03-03')).toHaveLength(62);
   });
 
   it.each([

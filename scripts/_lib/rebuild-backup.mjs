@@ -14,7 +14,11 @@
  * (table, key column, the dates in scope, column names and types, row count and
  * the file's SHA-256). Every mutation takes the .jsonl and refuses unless the
  * manifest is there and matches it, and the backup holds exactly the rows the
- * mutation will touch, column for column.
+ * mutation will touch, column for column, on dates that cover the whole window.
+ * A restore deletes everything in the backup's dates, so a backup is of at most
+ * MAX_DATES days, none of them today or later (ET), and the file's name and
+ * rows are checked against the manifest's dates (the checksum covers the file,
+ * not the manifest). The three writers are a dry run unless `apply` is true.
  *
  * Keys, from information_schema at run time (and the migrations):
  *   ws_gamma_setup_fires   `id BIGSERIAL PRIMARY KEY` (#179), with
@@ -51,6 +55,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
+import { getETDateStr } from '../../src/utils/timezone.ts';
 import { EXIT_FAILED, EXIT_OK } from './backfill-cli.mjs';
 import {
   parseBackupText,
@@ -92,16 +97,23 @@ const RETURN_COLUMNS = Object.freeze([
 ]);
 
 /**
- * The most days one backup, delete or NULLing covers. One read of a table must
- * stay far under Neon's 64 MiB response cap (a day_embeddings row is about
- * 25 kB of vector text, so 370 rows are about 9 MB), and no run of the
- * runbook spans more than 51 days.
+ * The most days one backup, delete or NULLing covers. A restore deletes every
+ * row in its backup's dates, so the scope must stay a slice of a table, never
+ * the table: 62 days is two months (the runbook's widest window is 51 days),
+ * and no span of that size reaches back over a table's whole history. It also
+ * bounds the size of every statement. A production probe measured 370 days of
+ * day_embeddings, the widest rows, at about 6.5 MB; Neon's cap is 64 MB.
  */
-export const MAX_DATES = 370;
+export const MAX_DATES = 62;
 
 /** A restore insert holds at most this many rows ... */
 export const RESTORE_BATCH_ROWS = 500;
-/** ... and about this many bytes of values (2000-dimension vectors are large). */
+/**
+ * ... and about this many bytes of values. This keeps one statement's text
+ * moderate; it does not bound the request. All batches go in one
+ * `sql.transaction` call, so one HTTP request, and its total is bounded by
+ * MAX_DATES (62 days of rows), not by this.
+ */
 const RESTORE_BATCH_BYTES = 4 * 1024 * 1024;
 
 /** A refusal: the tool saw a reason not to write, and wrote nothing. */
@@ -244,6 +256,16 @@ function scopeExpression(column) {
 }
 
 /**
+ * The ET session date of a timestamptz as Postgres writes it under the pinned
+ * UTC session (`2026-03-26 15:00:00.123456+00`), or null if it is not one.
+ */
+function etDateOfTimestampText(text) {
+  if (typeof text !== 'string') return null;
+  const at = new Date(text.replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00'));
+  return Number.isNaN(at.getTime()) ? null : getETDateStr(at);
+}
+
+/**
  * What a run needs to know about `table`, from the rows information_schema
  * gave for its columns and its primary key. Pure; throws a RebuildRefusal for a
  * table it could not back up and restore faithfully: a column with no safe cast
@@ -305,6 +327,11 @@ export function buildTableInfo(table, columnRows, keyColumns) {
     keyIdent: keyCol.ident,
     keyArrayType: `${keyCol.type}[]`,
     selectList: columns.map((c) => `${c.ident}::text AS ${c.ident}`).join(', '),
+    /** The date a row (columns as text) is in scope on, as scopeExpr computes it. */
+    scopeDateOf:
+      dateCol.type === 'date'
+        ? (row) => row[dateColumn]
+        : (row) => etDateOfTimestampText(row[dateColumn]),
   };
 }
 
@@ -436,7 +463,11 @@ function parseManifest(text, file) {
     Array.isArray(doc.dates) &&
     doc.dates.length > 0 &&
     doc.dates.length <= MAX_DATES &&
-    doc.dates.every(isIsoDate) &&
+    // Real dates, ascending and without repeats, as backupRows writes them:
+    // the file name is checked against the first and the last.
+    doc.dates.every(
+      (d, i, all) => isIsoDate(d) && (i === 0 || all[i - 1] < d),
+    ) &&
     Array.isArray(doc.columns) &&
     doc.columns.every(
       (c) => typeof c?.name === 'string' && typeof c.type === 'string',
@@ -484,9 +515,11 @@ function columnChanges(info, manifest) {
 /**
  * The backup at `backupPath` (a .jsonl from backupRows) for `info.table`, or a
  * RebuildRefusal: the file and its manifest must exist, the manifest must be
- * valid and for this table and key, the file must still be the one the manifest
- * checksummed, the table's columns must be the ones backed up, and no key may
- * repeat. Returns `{ path, manifest, rows }`.
+ * valid and for this table and key, the file's name must begin as backupRows
+ * named it (table and the manifest's first and last date), the file must still
+ * be the one the manifest checksummed, the table's columns must be the ones
+ * backed up, no key may repeat, and every row must be on one of the manifest's
+ * dates. Returns `{ path, manifest, rows }`.
  */
 async function loadBackup(backupPath, info) {
   requireBackupPath(backupPath);
@@ -525,6 +558,16 @@ async function loadBackup(backupPath, info) {
         `(${manifest.keyColumn}, ${manifest.dateColumn})`,
     );
   }
+  // The checksum covers the file, not the manifest, and the manifest's dates
+  // are what a restore deletes. The name backupRows gave the file carries the
+  // first and last of them, so a manifest edited to reach further is caught.
+  const namePrefix = `${manifest.table}-${manifest.dates[0]}..${manifest.dates.at(-1)}-`;
+  if (!basename(backupPath).startsWith(namePrefix)) {
+    throw new RebuildRefusal(
+      `the backup's file name does not match its manifest (expected it to ` +
+        `begin ${namePrefix}): ${basename(backupPath)}`,
+    );
+  }
   if (sha256(text) !== manifest.sha256) {
     throw new RebuildRefusal(
       `the backup file ${backupPath} does not match its manifest ` +
@@ -553,7 +596,36 @@ async function loadBackup(backupPath, info) {
       `the backup ${backupPath} has a row with no key, or a repeated key`,
     );
   }
+  // Every row must be on one of the manifest's dates, so the dates a restore
+  // deletes over are the dates of the rows it puts back.
+  const inScope = new Set(manifest.dates);
+  const stray = rows.filter((r) => !inScope.has(info.scopeDateOf(r)));
+  if (stray.length > 0) {
+    const where = stray.map(
+      (r) => `${r[info.keyColumn]} on ${info.scopeDateOf(r)}`,
+    );
+    throw new RebuildRefusal(
+      `the backup ${backupPath} holds rows outside the backup's dates: ${listSome(where)}`,
+    );
+  }
   return { path: backupPath, manifest, rows };
+}
+
+/**
+ * The backup must be of every day of the window the write covers: a restore
+ * puts back (and clears) only the backup's own dates, so a window that is wider
+ * leaves the undo partial. A day with no fires is still a day to cover.
+ */
+function assertBackupCovers(backup, days, window) {
+  const covered = new Set(backup.manifest.dates);
+  const missing = days.filter((d) => !covered.has(d));
+  if (missing.length > 0) {
+    throw new RebuildRefusal(
+      `the backup's dates do not cover the window ${window} ` +
+        `(missing ${listSome(missing)}): a restore would not put those days ` +
+        'back. Take a backup of the whole window.',
+    );
+  }
 }
 
 function requireBackupPath(backupPath) {
@@ -649,11 +721,22 @@ async function runGuarded(run, refusal) {
  * `<backupDir>/rebuild/<table>-<first>..<last>-<UTC stamp>.jsonl`, with a
  * manifest beside it. Read-only on the database. Never overwrites a file. An
  * empty scope is still recorded, so that a restore removes what the rebuild
- * adds there. Returns `{ rows, path, manifestPath }` (`rows` is the count).
+ * adds there. At most MAX_DATES days, and none on or after today's ET date:
+ * a restore deletes everything in the backup's dates, so a session still being
+ * written must not be in them. Returns `{ rows, path, manifestPath }` (`rows`
+ * is the count).
  */
 export async function backupRows(sql, { table, dates, backupDir }) {
   assertAllowedTable(table);
   const days = normalizeDates(dates);
+  const today = getETDateStr(new Date());
+  const open = days.filter((d) => d >= today);
+  if (open.length > 0) {
+    throw new RebuildRefusal(
+      `the backup would cover ${listSome(open)}, on or after today ` +
+        `(${today}, ET): a session still being written cannot be backed up`,
+    );
+  }
   if (typeof backupDir !== 'string' || backupDir === '') {
     throw new RebuildRefusal('a backup needs a backup directory');
   }
@@ -703,23 +786,25 @@ function hasJournalEntry(row) {
  * Delete the ws_gamma_setup_fires whose ET session date is in `from .. to`
  * (both included), once `backupPath` is a backup of exactly those fires.
  * Refuses (a RebuildRefusal, nothing written) unless the backup exists and its
- * manifest is intact; its rows are the live fires of the window, column for
- * column; and no fire has `trade_taken = true` or a non-NULL `trade_*` value.
- * The transaction checks again: it deletes only fires that are still exactly
- * the backed-up ones (so none has gained a journal entry), and raises, rolling
- * the delete back, if any fire of the window is left. `dryRun` does the checks
- * and stops.
+ * manifest is intact; its dates cover every day of the window (a restore puts
+ * back only the backup's own dates); its rows are the live fires of the
+ * window, column for column; and no fire has `trade_taken = true` or a
+ * non-NULL `trade_*` value. The transaction checks again: it deletes only fires
+ * that are still exactly the backed-up ones (so none has gained a journal
+ * entry), and raises, rolling the delete back, if any fire of the window is
+ * left. Without `apply` it does the checks and stops: a dry run.
  * Returns `{ deleted }` (a dry run `{ deleted: 0, wouldDelete, dryRun: true }`).
  */
 export async function deleteGammaFires(
   sql,
-  { from, to, backupPath, dryRun = false },
+  { from, to, backupPath, apply = false },
 ) {
   const days = datesBetween(from, to);
   requireBackupPath(backupPath);
   const info = await describeTable(sql, GAMMA_TABLE);
   requireGammaShape(info);
   const backup = await loadBackup(backupPath, info);
+  assertBackupCovers(backup, days, `${from} .. ${to}`);
   const live = await readScopeRows(sql, info, days);
 
   const journaled = live.filter(hasJournalEntry);
@@ -735,7 +820,7 @@ export async function deleteGammaFires(
     noun: 'fire',
     what: `the fires on ${from} .. ${to}`,
   });
-  if (dryRun) return { deleted: 0, wouldDelete: live.length, dryRun: true };
+  if (!apply) return { deleted: 0, wouldDelete: live.length, dryRun: true };
   if (live.length === 0) return { deleted: 0 };
 
   const ids = backup.rows.map((r) => r.id);
@@ -770,12 +855,13 @@ export async function deleteGammaFires(
  * columns are not touched). Nothing but those four columns changes. The
  * transaction updates only fires that are still exactly the backed-up ones and
  * raises, rolling back, unless every fire of the date is there and has all four
- * NULL. Returns `{ updated }`, the fires of the date (a dry run `{ updated: 0,
- * wouldUpdate, dryRun: true }`).
+ * NULL. Without `apply` it does the checks and stops: a dry run. Returns
+ * `{ updated }`, the fires of the date (a dry run `{ updated: 0, wouldUpdate,
+ * dryRun: true }`). The backup's dates must include `date`.
  */
 export async function nullGammaReturns(
   sql,
-  { date, backupPath, dryRun = false },
+  { date, backupPath, apply = false },
 ) {
   assertIsoDate(date, '--date');
   requireBackupPath(backupPath);
@@ -783,13 +869,14 @@ export async function nullGammaReturns(
   const info = await describeTable(sql, GAMMA_TABLE);
   requireGammaShape(info);
   const backup = await loadBackup(backupPath, info);
+  assertBackupCovers(backup, days, date);
   const live = await readScopeRows(sql, info, days);
 
   assertBackupMatches(live, backup, info, {
     noun: 'fire',
     what: `the fires on ${date}`,
   });
-  if (dryRun) return { updated: 0, wouldUpdate: live.length, dryRun: true };
+  if (!apply) return { updated: 0, wouldUpdate: live.length, dryRun: true };
   if (live.length === 0) return { updated: 0 };
 
   const ids = backup.rows.map((r) => r.id);
@@ -877,6 +964,69 @@ export function restoreInsertStatement(sql, info, rows) {
     RETURNING ${sql.unsafe(info.keyIdent)}::text AS key`;
 }
 
+/** The journal columns of ws_gamma_setup_fires, as described by information_schema. */
+const journalColumnsOf = (info) =>
+  info.columns.filter((c) => JOURNAL_COLUMNS.includes(c.name));
+
+/**
+ * Refuse a restore of ws_gamma_setup_fires that would delete a live fire in
+ * the backup's scope whose journal entry the backup does not hold: a fire with
+ * a journal entry, that is not in the backup or is there with other journal
+ * values (a restore puts the backup's journal back, so it must be the live one).
+ */
+async function assertJournalSurvives(sql, info, days, backup) {
+  const live = await readScopeRows(sql, info, days);
+  const kept = new Map(backup.rows.map((r) => [r[info.keyColumn], r]));
+  const lost = live.filter(
+    (row) =>
+      hasJournalEntry(row) &&
+      !JOURNAL_COLUMNS.every((c) => row[c] === kept.get(row.id)?.[c]),
+  );
+  if (lost.length > 0) {
+    const n = lost.length;
+    throw new RebuildRefusal(
+      `${n} of the ${count(live.length, 'fire')} in the restore's scope ` +
+        `${n === 1 ? 'carries' : 'carry'} a journal entry the backup does not ` +
+        `hold (ids ${listSome(lost.map((r) => r.id))}), and a restore would ` +
+        'delete it. Nothing was changed.',
+    );
+  }
+}
+
+/**
+ * The restore's DELETE: every row in the backup's dates or on a backed-up key.
+ * For ws_gamma_setup_fires a fire is kept when it has a journal entry and the
+ * backup does not hold its journal columns with the same values (compared by
+ * the same SHA-256 as the writers); the final count check of the transaction
+ * then raises. RETURNING the keys, as text.
+ */
+function restoreDeleteStatement(sql, info, backup) {
+  const days = backup.manifest.dates;
+  const keys = backup.rows.map((r) => r[info.keyColumn]);
+  const keyArray = sql.unsafe(info.keyArrayType);
+  if (info.table !== GAMMA_TABLE) {
+    return sql`DELETE FROM ${sql.unsafe(info.tableIdent)}
+        WHERE ${sql.unsafe(info.scopeExpr)} = ANY(${days}::date[])
+           OR ${sql.unsafe(info.keyIdent)} = ANY(${keys}::${keyArray})
+        RETURNING ${sql.unsafe(info.keyIdent)}::text AS key`;
+  }
+  const journal = journalColumnsOf(info);
+  const journalHashes = backup.rows.map((r) => rowHash(r, journal));
+  return sql`DELETE FROM ws_gamma_setup_fires AS f
+      WHERE (${sql.unsafe(info.scopeExpr)} = ANY(${days}::date[])
+             OR f.id = ANY(${keys}::bigint[]))
+        AND NOT (
+          (f.trade_taken OR f.trade_premium_cost IS NOT NULL
+           OR f.trade_premium_close IS NOT NULL
+           OR f.trade_pnl_dollars IS NOT NULL OR f.trade_notes IS NOT NULL)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM unnest(${keys}::bigint[], ${journalHashes}::text[]) AS b(id, hash)
+            WHERE b.id = f.id
+              AND ${sql.unsafe(rowHashSql(journal, 'f'))} = b.hash))
+      RETURNING f.id::text AS key`;
+}
+
 /**
  * Put `table` back as `backupPath` held it: in ONE transaction delete every
  * row in the backup's scope (its dates, and any row on a backed-up key), then
@@ -888,17 +1038,31 @@ export function restoreInsertStatement(sql, info, rows) {
  * holds exactly the backed-up rows at the end; any database error (a
  * constraint, say) rolls it back too, so a failed restore leaves the table as
  * it was. Refuses a backup of another table, a changed column list, or a file
- * that fails its checksum. Returns `{ restored, deleted }` (a dry run
- * `{ restored: 0, wouldRestore, wouldDelete, notInBackup, dryRun: true }`).
+ * that fails its checksum.
+ *
+ * ws_gamma_setup_fires carries manual journal entries, which deleteGammaFires
+ * never deletes, so the restore does not either: it refuses (before the
+ * transaction, and in a dry run too) when a live fire in the scope has a
+ * journal entry that the backup does not hold with the same values, and inside
+ * the transaction its DELETE skips such a fire, so the final count check
+ * raises and rolls everything back.
+ *
+ * Without `apply` it does the checks and stops: a dry run. Returns `{ restored,
+ * deleted }` (a dry run `{ restored: 0, wouldRestore, wouldDelete, notInBackup,
+ * dryRun: true }`).
  */
-export async function restoreRows(sql, { table, backupPath, dryRun = false }) {
+export async function restoreRows(sql, { table, backupPath, apply = false }) {
   assertAllowedTable(table);
   requireBackupPath(backupPath);
   const info = await describeTable(sql, table);
+  if (table === GAMMA_TABLE) requireGammaShape(info);
   const backup = await loadBackup(backupPath, info);
   const days = backup.manifest.dates;
   const keys = backup.rows.map((r) => r[info.keyColumn]);
   const keyArray = sql.unsafe(info.keyArrayType);
+  if (table === GAMMA_TABLE) {
+    await assertJournalSurvives(sql, info, days, backup);
+  }
 
   const [counts] = await sql`
     SELECT count(*)::int AS live,
@@ -907,7 +1071,7 @@ export async function restoreRows(sql, { table, backupPath, dryRun = false }) {
            ))::int AS extra
     FROM ${sql.unsafe(info.tableIdent)}
     WHERE ${sql.unsafe(info.scopeExpr)} = ANY(${days}::date[])`;
-  if (dryRun) {
+  if (!apply) {
     return {
       restored: 0,
       wouldRestore: backup.rows.length,
@@ -921,10 +1085,7 @@ export async function restoreRows(sql, { table, backupPath, dryRun = false }) {
   const results = await runGuarded(
     () =>
       sql.transaction([
-        sql`DELETE FROM ${sql.unsafe(info.tableIdent)}
-            WHERE ${sql.unsafe(info.scopeExpr)} = ANY(${days}::date[])
-               OR ${sql.unsafe(info.keyIdent)} = ANY(${keys}::${keyArray})
-            RETURNING ${sql.unsafe(info.keyIdent)}::text AS key`,
+        restoreDeleteStatement(sql, info, backup),
         ...batches.map((batch) => restoreInsertStatement(sql, info, batch)),
         sql`SELECT CAST(CASE WHEN (
                 SELECT count(*) FROM ${sql.unsafe(info.tableIdent)}
@@ -934,8 +1095,8 @@ export async function restoreRows(sql, { table, backupPath, dryRun = false }) {
               ELSE ${guardMessage(`${table} does not hold exactly the backed-up rows after the restore`)}::text
               END AS integer) AS guard`,
       ]),
-    `${table} changed during the restore (a row appeared in the backup's scope). ` +
-      'Nothing was changed.',
+    `${table} changed during the restore (a row appeared in the backup's ` +
+      'scope, or a fire gained a journal entry). Nothing was changed.',
   );
   const restored = results
     .slice(1, 1 + batches.length)
@@ -1101,10 +1262,10 @@ export async function runRebuildBackup(sql, plan, { backupDir } = {}) {
     throw new Error('runRebuildBackup: backup mode needs a backup directory');
   }
   // Dry run unless the plan says apply: a plan with no `apply` writes nothing.
-  const dry = plan.apply !== true;
+  const apply = plan.apply === true;
   try {
     return {
-      lines: await execute(sql, plan, { backupDir, dry }),
+      lines: await execute(sql, plan, { backupDir, apply }),
       exitCode: EXIT_OK,
     };
   } catch (err) {
@@ -1118,7 +1279,8 @@ export async function runRebuildBackup(sql, plan, { backupDir } = {}) {
 const DRY_NOTE = (verb) =>
   `DRY RUN: nothing written. Re-run with --apply to ${verb}.`;
 
-async function execute(sql, plan, { backupDir, dry }) {
+async function execute(sql, plan, { backupDir, apply }) {
+  const dry = !apply;
   switch (plan.mode) {
     case 'backup': {
       const { table, dates } = plan;
@@ -1145,7 +1307,7 @@ async function execute(sql, plan, { backupDir, dry }) {
         from,
         to,
         backupPath: backupFile,
-        dryRun: dry,
+        apply,
       });
       return dry
         ? [
@@ -1166,7 +1328,7 @@ async function execute(sql, plan, { backupDir, dry }) {
       const result = await nullGammaReturns(sql, {
         date,
         backupPath: backupFile,
-        dryRun: dry,
+        apply,
       });
       return dry
         ? [
@@ -1187,7 +1349,7 @@ async function execute(sql, plan, { backupDir, dry }) {
       const result = await restoreRows(sql, {
         table,
         backupPath: backupFile,
-        dryRun: dry,
+        apply,
       });
       return dry
         ? [

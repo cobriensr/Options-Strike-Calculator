@@ -17,19 +17,24 @@
  * and <same>.manifest.json (table, key, the dates in scope, columns, row count
  * and checksum). Every write below takes the .jsonl and refuses, writing
  * nothing, unless the manifest is there and intact and the backup holds exactly
- * the rows the write touches, column for column.
+ * the rows the write touches, column for column, on dates that cover the whole
+ * window.
  *
  *   --backup <table> --dates <list|from..to>
  *       Read-only on the database: writes the backup of the rows whose date
  *       column falls on those dates (the ET session date for fired_at). The
  *       dates are comma-separated, each a YYYY-MM-DD date or a from..to range
- *       of calendar days (at most 370 in all). It never overwrites a file and
- *       takes no --apply.
+ *       of calendar days, at most 62 in all (a restore deletes everything in
+ *       them, so a backup is a slice of a table, never the table), and none on
+ *       or after today's ET date. It never overwrites a file and takes no
+ *       --apply. It prints the absolute path of the backup, to pass to the
+ *       other modes as --backup-file.
  *   --delete-gamma-fires --from D --to D --backup-file <path> [--apply]
  *       Deletes the ws_gamma_setup_fires whose ET session date is in the
- *       window. Refuses a fire with trade_taken = true or a non-NULL
- *       trade_premium_cost, trade_premium_close, trade_pnl_dollars or
- *       trade_notes (manual journal entries).
+ *       window; the backup's dates must cover every day of it. Refuses a fire
+ *       with trade_taken = true or a non-NULL trade_premium_cost,
+ *       trade_premium_close, trade_pnl_dollars or trade_notes (manual journal
+ *       entries).
  *   --null-gamma-returns --date D --backup-file <path> [--apply]
  *       Sets ret_15m, ret_30m, ret_60m and ret_eod to NULL on that date's
  *       fires, and changes nothing else.
@@ -38,7 +43,9 @@
  *       (its dates, so the rows a rebuild created go too) and re-inserts the
  *       backed-up rows with their own keys, each value cast back to its
  *       column's type (::vector for an embedding), 500 rows at most per insert.
- *       A failed restore changes nothing.
+ *       For ws_gamma_setup_fires it refuses when a live fire in that scope has
+ *       a journal entry the backup does not hold, as the delete would. A
+ *       failed restore changes nothing.
  *
  * Dry run is the default for the three that write: they run every check and
  * print what they would do. --apply writes, in one transaction that checks
@@ -47,16 +54,18 @@
  *
  * Runs against whatever DATABASE_URL points at (.env.local = PRODUCTION).
  *
- * Usage (from the repo root; the URL is never printed):
+ * Usage (from the repo root, a worktree included; the URL is never printed).
+ * <backup.jsonl> is the absolute path the --backup run printed: the backups
+ * live in the main checkout, which a relative path from a worktree would miss.
  *   node --env-file=.env.local scripts/rebuild-backup.mjs \
  *     --backup ws_gamma_setup_fires --dates 2026-02-26..2026-04-17
  *   node --env-file=.env.local scripts/rebuild-backup.mjs \
  *     --delete-gamma-fires --from 2026-02-26 --to 2026-04-17 \
- *     --backup-file docs/tmp/spx-candle-repair/rebuild/<file>.jsonl [--apply]
+ *     --backup-file <backup.jsonl> [--apply]
  *   node --env-file=.env.local scripts/rebuild-backup.mjs \
- *     --null-gamma-returns --date 2026-09-21 --backup-file <file>.jsonl [--apply]
+ *     --null-gamma-returns --date 2026-09-21 --backup-file <backup.jsonl> [--apply]
  *   node --env-file=.env.local scripts/rebuild-backup.mjs \
- *     --restore day_embeddings --backup-file <file>.jsonl [--apply]
+ *     --restore day_embeddings --backup-file <backup.jsonl> [--apply]
  *
  * Environment: DATABASE_URL.
  *
