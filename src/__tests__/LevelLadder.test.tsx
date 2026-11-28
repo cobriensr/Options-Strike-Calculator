@@ -16,6 +16,10 @@ vi.mock('../hooks/useGexbotData', () => ({
 }));
 
 import { LevelLadder } from '../components/Gexbot/LevelLadder';
+import {
+  buildLevelLadder,
+  candidatesFromDeltas,
+} from '../components/Gexbot/level-ladder/build';
 import type { LadderStrikeIv } from '../components/Gexbot/level-ladder/types';
 import { titledGenericsWithoutHint } from './helpers/aria';
 import { dealerClaims } from './helpers/dealer-claims';
@@ -151,6 +155,31 @@ function renderLadder(over: Partial<ComponentProps<typeof LevelLadder>> = {}) {
 const rowText = (strike: number) =>
   screen.getByTestId(`level-ladder-row-${strike}`);
 
+/**
+ * The model's own ladder (the real, pure `buildLevelLadder`) for the same
+ * fixtures the component is given, so a rendered line can be compared with
+ * what the model prints. The component's inputs: the ladder's spot, the SPX
+ * rows, the row's strike IVs, the candidates, the test clock, the market open.
+ */
+function modelLadder(
+  snap: SnapshotsLatestRow,
+  move: ExpectedMoveRow,
+  allDeltas: ReadonlyArray<DeltaRow | DeltaRowError> | null,
+) {
+  return buildLevelLadder({
+    spot: SPOT,
+    snapshot: snap,
+    expectedMove: move,
+    strikeIvs: move.strikeIvs,
+    levelsFailed: false,
+    expectedMoveFailed: false,
+    candidates: candidatesFromDeltas(allDeltas),
+    openShortStrikes: [],
+    nowMs: NOW,
+    marketOpen: true,
+  });
+}
+
 beforeEach(() => {
   mockUseGexbotData.mockReset();
   answer(ready(snapshot()), ready(expectedMove()));
@@ -281,16 +310,23 @@ describe('<LevelLadder> layout', () => {
   });
 
   it('lists what fell outside the window on one line a side', () => {
-    answer(
-      ready(snapshot({ majorPosOi: 7700, majorNegOi: 7400 })),
-      ready(expectedMove()),
-    );
+    const snap = snapshot({ majorPosOi: 7700, majorNegOi: 7400 });
+    answer(ready(snap), ready(expectedMove()));
     renderLadder();
     expect(screen.getByTestId('level-ladder-edge-above')).toHaveTextContent(
       'Above: Classic major positive · OI 7,700',
     );
     expect(screen.getByTestId('level-ladder-edge-below')).toHaveTextContent(
       'Below: Classic major negative · OI 7,400',
+    );
+    // With no odds on them, each line is the model's own text, character for
+    // character.
+    const model = modelLadder(snap, expectedMove(), DELTAS);
+    expect(screen.getByTestId('level-ladder-edge-above').textContent).toBe(
+      model.above.text,
+    );
+    expect(screen.getByTestId('level-ladder-edge-below').textContent).toBe(
+      model.below.text,
     );
     // No odds on these lines, so nothing to call priced.
     expect(screen.getByTestId('level-ladder-edge-above')).not.toHaveTextContent(
@@ -339,27 +375,32 @@ describe('<LevelLadder> layout', () => {
   ])(
     'puts "priced" beside the short strike\'s odds on a mixed edge line: %s',
     (_where, level, expected) => {
-      answer(
-        ready(snapshot({ majorPosOi: level })),
-        ready(expectedMove({ expectedMove: 61.5 })),
-      );
-      renderLadder({ allDeltas: [deltaRow(10, 7670, 7510)] });
+      const snap = snapshot({ majorPosOi: level });
+      const move = expectedMove({ expectedMove: 61.5 });
+      const deltas = [deltaRow(10, 7670, 7510)];
+      answer(ready(snap), ready(move));
+      renderLadder({ allDeltas: deltas });
       const text = screen.getByTestId('level-ladder-edge-above').textContent;
       expect(text).toBe(expected);
       expect(text?.match(/priced/g)).toHaveLength(1);
       // The level carries no suffix of its own.
       expect(text).not.toMatch(/OI [\d,]+ · priced/);
+      // Take the insertions out and it is the model's line, side word and
+      // separator included.
+      expect(text?.replaceAll(' · priced odds', '')).toBe(
+        modelLadder(snap, move, deltas).above.text,
+      );
     },
   );
 
-  it('joins several edge items with "; " and carries no "priced" without odds', () => {
-    // Two levels above the window: the model's own line format, no odds.
-    answer(
-      ready(snapshot({ majorPosOi: 7700, zeroMcall: 7720 })),
-      ready(expectedMove()),
-    );
+  it('prints the model\'s own line, "; " join included, with no "priced" without odds', () => {
+    // Two levels above the window and no short strikes: nothing to insert.
+    const snap = snapshot({ majorPosOi: 7700, zeroMcall: 7720 });
+    answer(ready(snap), ready(expectedMove()));
     renderLadder({ allDeltas: null });
-    expect(screen.getByTestId('level-ladder-edge-above').textContent).toBe(
+    const text = screen.getByTestId('level-ladder-edge-above').textContent;
+    expect(text).toBe(modelLadder(snap, expectedMove(), null).above.text);
+    expect(text).toBe(
       'Above: Classic major positive · OI 7,700; State major call 7,720',
     );
   });

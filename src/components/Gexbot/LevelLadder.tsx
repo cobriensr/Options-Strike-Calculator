@@ -31,7 +31,7 @@
  * Spec: docs/superpowers/specs/gexbot-level-ladder-2026-11-22.md
  */
 
-import { Fragment, memo, useMemo, type ReactNode } from 'react';
+import { memo, useMemo, type ReactNode } from 'react';
 
 import { useGexbotData } from '../../hooks/useGexbotData';
 import type { MarketSession } from '../../hooks/useMarketData';
@@ -235,40 +235,41 @@ const MarkerRowItem = memo(function MarkerRowItem({
 });
 
 /**
- * What fell outside the window on one side: the model's items, "; "-joined
- * after the side word, as the model's own `edge.text` reads. A short strike
- * out there keeps its odds in its item, away from the column header that calls
- * them priced, so each item that prints a probability carries " · priced odds"
- * right after its own parenthesis, before the next item. That way the word
- * sits next to the odds it describes and not after a level that follows. A
- * breached strike prints no probability (only how far past it spot is), and a
- * level or bound has none, so those items get no suffix.
+ * What fell outside the window on one side: the model's own `edge.text`. A
+ * short strike out there keeps its odds in its item, away from the column
+ * header that calls them priced, so each item that prints a probability gets
+ * " · priced odds" inserted right after its own text, before the next item.
+ * That way the word sits next to the odds it describes and not after a level
+ * that follows. A breached strike prints no probability (only how far past it
+ * spot is), and a level or bound has none, so those items get no suffix.
+ *
+ * The line is the model's string with the insertions, so the side word and the
+ * separator stay the model's. Item texts are distinct and none holds another
+ * (each carries its own label and price), so the first match is the item.
  */
 function EdgeLine({
   testId,
-  side,
   edge,
   className,
 }: {
   testId: string;
-  side: 'Above' | 'Below';
   edge: LadderEdge;
   className: string;
 }) {
   if (edge.text == null) return null;
+  const line = edge.items.reduce(
+    (text, item) =>
+      item.odds?.finishBeyond == null
+        ? text
+        : text.replace(item.text, () => `${item.text} · priced odds`),
+    edge.text,
+  );
   return (
     <div
       data-testid={testId}
       className={`text-tertiary text-[10px] break-words ${className}`}
     >
-      {`${side}: `}
-      {edge.items.map((item, i) => (
-        <Fragment key={item.text}>
-          {i > 0 && '; '}
-          {item.text}
-          {item.odds?.finishBeyond != null && ' · priced odds'}
-        </Fragment>
-      ))}
+      {line}
     </div>
   );
 }
@@ -434,7 +435,6 @@ function LevelLadderInner({
 
       <EdgeLine
         testId="level-ladder-edge-above"
-        side="Above"
         edge={above}
         className="px-3 pt-2"
       />
@@ -452,7 +452,6 @@ function LevelLadderInner({
       </ul>
       <EdgeLine
         testId="level-ladder-edge-below"
-        side="Below"
         edge={below}
         className="px-3 pb-2"
       />
