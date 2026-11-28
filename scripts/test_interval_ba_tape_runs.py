@@ -8,12 +8,15 @@ scripts/test_interval_ba_tape.py. Run from the repo root with ml/.venv:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import interval_ba_tape_runs as runs
 import psycopg2
 import pytest
+from botocore.exceptions import ClientError
 
 _DIRECT = "postgresql://u:p@ep-cool-123.us-east-2.aws.neon.tech/neondb?sslmode=require"
 
@@ -123,6 +126,97 @@ def test_trading_days_name_a_range_the_calendar_does_not_cover_or_that_runs_back
         runs.trading_days(date(2024, 12, 30), date(2025, 1, 3))
     with pytest.raises(runs.UsageError, match="--from 2026-03-11 is after --to 2026-03-10"):
         runs.trading_days(date(2026, 3, 11), date(2026, 3, 10))
+
+
+@pytest.mark.parametrize(
+    ("now", "ends"),
+    [
+        # The window is 07:15 (included) to 12:30 (not included) UTC, every day.
+        (datetime(2026, 11, 28, 7, 14, 59, tzinfo=UTC), None),
+        (datetime(2026, 11, 28, 7, 15, tzinfo=UTC), datetime(2026, 11, 28, 12, 30, tzinfo=UTC)),
+        (datetime(2026, 11, 28, 9, 0, tzinfo=UTC), datetime(2026, 11, 28, 12, 30, tzinfo=UTC)),
+        (
+            datetime(2026, 11, 28, 12, 29, 59, tzinfo=UTC),
+            datetime(2026, 11, 28, 12, 30, tzinfo=UTC),
+        ),
+        (datetime(2026, 11, 28, 12, 30, tzinfo=UTC), None),
+        # A clock that is not UTC is read as the instant it is: 03:00 EST is 08:00 UTC.
+        (
+            datetime(2026, 11, 28, 3, 0, tzinfo=ZoneInfo("America/New_York")),
+            datetime(2026, 11, 28, 12, 30, tzinfo=UTC),
+        ),
+    ],
+)
+def test_nightly_window_end_is_when_the_nightly_window_closes_or_none_outside_it(
+    now: datetime, ends: datetime | None
+):
+    assert runs.nightly_window_end(now) == ends
+
+
+def test_the_window_refusal_for_the_nightly_run_is_the_same_window():
+    inside = datetime(2026, 11, 28, 9, 0, tzinfo=UTC)
+    assert runs.nightly_window_end(inside) is not None
+    assert "07:15-12:30 UTC" in (runs.window_refusal(inside, allow_market_hours=True) or "")
+    outside = datetime(2026, 11, 28, 12, 30, tzinfo=UTC)  # a Saturday: no market-hours window
+    assert runs.nightly_window_end(outside) is None
+    assert runs.window_refusal(outside, allow_market_hours=False) is None
+
+
+class _Pages:
+    """A paginator over fixed pages, as boto3's `list_objects_v2` one gives them."""
+
+    def __init__(self, pages: list[dict[str, Any]], asked: list[dict[str, Any]]) -> None:
+        self._pages = pages
+        self._asked = asked
+
+    def paginate(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self._asked.append(kwargs)
+        return self._pages
+
+
+class _ListingClient:
+    def __init__(self, pages: list[dict[str, Any]]) -> None:
+        self.pages = pages
+        self.asked: list[dict[str, Any]] = []
+
+    def get_paginator(self, name: str) -> _Pages:
+        assert name == "list_objects_v2"
+        return _Pages(self.pages, self.asked)
+
+
+def test_list_objects_gives_each_key_under_the_prefix_with_its_last_modified_in_utc():
+    first = datetime(2026, 11, 26, 21, 0, tzinfo=UTC)
+    second = datetime(2026, 11, 27, 7, 30, tzinfo=ZoneInfo("America/Chicago"))
+    client = _ListingClient(
+        [
+            {"Contents": [{"Key": "p/a.parquet", "LastModified": first}]},
+            {},  # a page with no Contents, as the last page of an empty prefix is
+            {"Contents": [{"Key": "p/b.parquet", "LastModified": second}]},
+        ]
+    )
+
+    found = runs.list_objects(runs.R2Bucket(client, "bucket"), "p/")
+
+    assert found == {"p/a.parquet": first, "p/b.parquet": second.astimezone(UTC)}
+    assert all(at.utcoffset() == timedelta(0) for at in found.values())
+    assert client.asked == [{"Bucket": "bucket", "Prefix": "p/"}]
+
+
+def test_list_objects_reads_a_naive_last_modified_as_utc():
+    client = _ListingClient([{"Contents": [{"Key": "k", "LastModified": datetime(2026, 1, 2)}]}])
+
+    assert runs.list_objects(runs.R2Bucket(client, "b"), "")["k"] == datetime(
+        2026, 1, 2, tzinfo=UTC
+    )
+
+
+def test_list_objects_lets_a_listing_error_through():
+    class Refusing:
+        def get_paginator(self, _name: str) -> Any:
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "ListObjectsV2")
+
+    with pytest.raises(ClientError):
+        runs.list_objects(runs.R2Bucket(Refusing(), "b"), "p/")
 
 
 def test_blob_hash_is_gits(tmp_path: Path):

@@ -139,10 +139,19 @@ def stamp(now: datetime) -> str:
     return now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
+def nightly_window_end(now: datetime) -> datetime | None:
+    """When the nightly run's window (07:15-12:30 UTC) closes, as an aware UTC instant, if `now`
+    is inside it; else None. The readers' repair names it as the time to retry."""
+    utc = now.astimezone(UTC)
+    if _NIGHTLY_START <= utc.time() < _NIGHTLY_END:
+        return datetime.combine(utc.date(), _NIGHTLY_END, tzinfo=UTC)
+    return None
+
+
 def window_refusal(now: datetime, *, allow_market_hours: bool) -> str | None:
     """Why a writing mode may not run at `now`, or None."""
     utc = now.astimezone(UTC)
-    if _NIGHTLY_START <= utc.time() < _NIGHTLY_END:
+    if nightly_window_end(now) is not None:
         return (
             f"{utc:%H:%M} UTC is inside 07:15-12:30 UTC, the nightly run's window"
             " (--allow-market-hours does not cover it)"
@@ -688,6 +697,18 @@ def put_verified(
     problems = [name for name, ok in checks if not ok]
     if problems:
         raise error(f"{what}: the R2 copy {key} does not verify ({', '.join(problems)})")
+
+
+def list_objects(r2: R2Bucket, prefix: str) -> dict[str, datetime]:
+    """Every key under `prefix` with its LastModified, as aware UTC. One paginated list, so a
+    prefix of any size comes back whole; the listing's own errors propagate. The readers' repair
+    compares a day file's time with its tape's."""
+    found: dict[str, datetime] = {}
+    for page in r2.client.get_paginator("list_objects_v2").paginate(Bucket=r2.name, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            at = obj["LastModified"]
+            found[obj["Key"]] = at.replace(tzinfo=UTC) if at.tzinfo is None else at.astimezone(UTC)
+    return found
 
 
 def object_exists(r2: R2Bucket, key: str) -> bool:

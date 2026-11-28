@@ -1,8 +1,9 @@
-"""Shared by the Interval B/A script tests: a replay export on disk, and a fake S3.
+"""Shared by the Interval B/A script tests: a replay export on disk, a fake S3, and a day-file world.
 
-Used by test_enrich_interval_ba_outcomes.py, test_analyze_interval_ba_cuts.py and
-test_analyze_confluence_vs_solo.py, so the export's schema and the fake bucket exist once.
-Nothing here runs on its own (pytest collects only test_*.py).
+Used by test_enrich_interval_ba_outcomes.py, test_analyze_interval_ba_cuts.py,
+test_analyze_confluence_vs_solo.py and test_interval_ba_days.py, so the export's schema, the fake
+bucket and the day-file world exist once. Nothing here runs on its own (pytest collects only
+test_*.py).
 
 - `EXPORT_SCHEMA`, `export_row` and `write_export` build a replay export with the export's columns
   (nightly/src/interval_ba_replay.py `EXPORT_COLUMNS`; test_export_columns_match_the_replay_module
@@ -10,19 +11,31 @@ Nothing here runs on its own (pytest collects only test_*.py).
 - `FakeS3` is a bucket on 127.0.0.1 for DuckDB's httpfs, started by the `fake_s3` fixture for one
   test and shut down in its teardown. `s3_connection` points a DuckDB connection at it and skips
   the test where httpfs is not installed.
+- `DayWorld(directory, monkeypatch)` is the replay day files and their tapes: day files as local
+  Parquet, an R2 listing of them and of the tapes (`FakeR2Client`, the one call the readers'
+  check makes), a clock, and a stand-in for the tool's `write_replay_days` that writes the day
+  files the real one would. The three boundaries are patched, so no test reaches R2. Each test
+  file wraps it in a `day_world` fixture of its own.
 """
 
 from __future__ import annotations
 
 import http.server
+import json
 import re
 import threading
 import urllib.parse
-from datetime import UTC, date, datetime, timedelta
+from collections.abc import Iterator
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
+from unittest.mock import create_autospec
 
+import _interval_ba_days as days
 import duckdb
+import interval_ba_tape as tool
+import interval_ba_tape_runs as runs
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -240,3 +253,175 @@ def s3_connection(fake: FakeS3) -> duckdb.DuckDBPyConnection:
     db.execute("SET s3_access_key_id = 'fake'")
     db.execute("SET s3_secret_access_key = 'fake'")
     return db
+
+
+# --- the replay day files and their tapes -----------------------------------------------------
+
+
+def day_alert(
+    day: date,
+    clock: str = '15:00:00',
+    *,
+    ticker: str = 'SPXW',
+    cp: str = 'C',
+    spot: str | None = '6700.00',
+    **fields: object,
+) -> dict[str, object]:
+    """One export row of `day`'s session: an alert of `ticker` that fired at `clock` UTC."""
+    chain = f'{ticker}{day:%y%m%d}{cp}{6700 * 1000:08d}'
+    return export_row(chain, clock, spot, expiry=day, **fields)
+
+
+def write_day_file(
+    path: Path,
+    day: date,
+    rows: list[dict[str, object]],
+    *,
+    rule: dict[str, str],
+    footer: bytes | bool | None = None,
+    footer_rows: int | None = None,
+) -> str:
+    """Write `rows` as a day file, with the `interval_ba` footer the replay module writes.
+    `footer=False` leaves the footer out, and bytes are written as it, for a damaged one;
+    `footer_rows` overrides the footer's row count."""
+    meta = {
+        'day': day.isoformat(),
+        'rows': len(rows) if footer_rows is None else footer_rows,
+        'rule': rule,
+        'created_at': '2026-11-28T07:20:00+00:00',
+    }
+    if footer is False:
+        schema = EXPORT_SCHEMA
+    else:
+        body = footer if isinstance(footer, bytes) else json.dumps(meta, sort_keys=True).encode()
+        schema = EXPORT_SCHEMA.with_metadata({b'interval_ba': body})
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
+    return path.as_posix()
+
+
+class FakeR2Client:
+    """The one call of a boto3 S3 client the readers' check makes: a `list_objects_v2` paginator
+    over `objects` (key to LastModified), in pages of `page_size` keys. Setting `fail` makes the
+    listing raise it, as a list does mid-iteration. `listed` records each prefix asked."""
+
+    def __init__(self, page_size: int = 1000) -> None:
+        self.objects: dict[str, datetime] = {}
+        self.page_size = page_size
+        self.fail: Exception | None = None
+        self.listed: list[str] = []
+
+    def get_paginator(self, name: str) -> Any:
+        assert name == 'list_objects_v2'
+        outer = self
+
+        class Paginator:
+            def paginate(self, *, Bucket: str, Prefix: str) -> Iterator[dict[str, Any]]:  # noqa: N803
+                assert Bucket == 'bucket'
+                outer.listed.append(Prefix)
+                if outer.fail is not None:
+                    raise outer.fail
+                keys = sorted(k for k in outer.objects if k.startswith(Prefix))
+                for start in range(0, max(len(keys), 1), outer.page_size):
+                    yield {
+                        'Contents': [
+                            {'Key': k, 'LastModified': outer.objects[k]}
+                            for k in keys[start : start + outer.page_size]
+                        ]
+                    }
+
+        return Paginator()
+
+
+class DayWorld:
+    """The bucket the readers' check looks at, with nothing in it.
+
+    `tape(day)` lands a tape (its LastModified the morning after, 07:45Z), `unavailable(day)`
+    marks UW's not posting one, and `file(day)` writes the day's file as local Parquet and lists
+    it (an hour after its tape, so it is not stale, or at `at=`). `write` stands in for the
+    tool's `write_replay_days`: it writes each day's file, `alerts[day]` (default one SPXW alert)
+    on the local rule, lists it at `now`, and returns the `DayFile`s the real one does; it raises
+    `write_error` instead when that is set. `now` is the clock the readers' windows read."""
+
+    def __init__(self, directory: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.dir = directory
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.client = FakeR2Client()
+        self.rule = runs.ibr.rule()  # what the local replay module would write
+        self.now = datetime(2026, 11, 28, 14, 0, tzinfo=UTC)  # Saturday 08:00 CT: outside both windows
+        self.alerts: dict[date, list[dict[str, object]]] = {}
+        self.write_error: Exception | None = None
+        self.write = create_autospec(tool.write_replay_days, side_effect=self._write)
+        for name, value in {
+            'R2_BUCKET_FULLTAPE': 'bucket',
+            'R2_ENDPOINT_URL': 'https://account.invalid',
+            'R2_ACCESS_KEY_ID': 'key-id',
+            'R2_SECRET_ACCESS_KEY': 'secret',
+        }.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setattr(days, 'day_url', self.url)
+        monkeypatch.setattr(
+            runs, 'r2_bucket', lambda env: runs.R2Bucket(self.client, env['R2_BUCKET_FULLTAPE'])
+        )
+        monkeypatch.setattr(runs, 'utc_now', lambda: self.now)
+        monkeypatch.setattr(tool, 'write_replay_days', self.write)
+
+    def url(self, day: date) -> str:
+        return (self.dir / f'{day.isoformat()}.parquet').as_posix()
+
+    @staticmethod
+    def landed(day: date) -> datetime:
+        """When a day's tape landed: 07:45Z the morning after."""
+        return datetime.combine(day + timedelta(days=1), time(7, 45), tzinfo=UTC)
+
+    def tape(self, *tape_days: date, at: datetime | None = None) -> None:
+        for day in tape_days:
+            self.client.objects[f'fulltape/{day.isoformat()}-fulltape.parquet'] = (
+                at or self.landed(day)
+            )
+
+    def unavailable(self, *unposted: date) -> None:
+        for day in unposted:
+            self.client.objects[f'fulltape/_unavailable/{day.isoformat()}.json'] = self.landed(day)
+
+    def file(
+        self,
+        day: date,
+        alerts: list[dict[str, object]] | None = None,
+        *,
+        rule: dict[str, str] | None = None,
+        at: datetime | None = None,
+        **footer: Any,
+    ) -> None:
+        rows = [day_alert(day)] if alerts is None else alerts
+        write_day_file(self.dir / f'{day.isoformat()}.parquet', day, rows, rule=rule or self.rule, **footer)
+        self.client.objects[f'{days.DAYS_PREFIX}{day.isoformat()}.parquet'] = (
+            at or self.landed(day) + timedelta(hours=1)
+        )
+
+    def full(self, *session_days: date) -> None:
+        """Land each day's tape and write its file."""
+        for day in session_days:
+            self.tape(day)
+            self.file(day, self.alerts.get(day))
+
+    def _write(
+        self,
+        write_days: list[date],
+        *,
+        allow_market_hours: bool,
+        env_file: str | None = None,
+        out: Any = None,
+    ) -> list[Any]:
+        if self.write_error is not None:
+            raise self.write_error
+        done = []
+        for day in write_days:
+            rows = self.alerts.get(day, [day_alert(day)])
+            self.file(day, rows, at=self.now)
+            done.append(tool.DayFile(day, runs.ibr.day_key(day), len(rows), 1000, 'sha', 0))
+        return done
+
+    @property
+    def written(self) -> list[date]:
+        """Every day the stand-in was asked to write, in order."""
+        return [day for call in self.write.call_args_list for day in call.args[0]]
